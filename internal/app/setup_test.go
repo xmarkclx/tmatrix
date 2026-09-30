@@ -7,7 +7,7 @@ import (
 )
 
 func TestSetupDefersUntilConnected(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "private")
 	s, err := New(dir, "")
 	if err != nil {
 		t.Fatal(err)

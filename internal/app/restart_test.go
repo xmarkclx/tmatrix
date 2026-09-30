@@ -64,7 +64,7 @@ func TestRestartWaitsAndCancellationPreservesSettings(t *testing.T) {
 }
 
 func TestRestartRefusesUnverifiedEngine(t *testing.T) {
-	s, err := New(t.TempDir(), "")
+	s, err := New(filepath.Join(t.TempDir(), "private"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
