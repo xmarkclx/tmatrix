@@ -33,6 +33,8 @@ else
   "$binary" service uninstall
 fi
 '@
+# Normalize Windows line endings before passing shell source to WSL.
+$uninstallScript = $uninstallScript.Replace("`r", "")
 # Nonempty placeholders survive Windows PowerShell's native argument passing.
 $prefixArg = if ($Prefix) { $Prefix } else { '-' }
 $configArg = if ($ConfigDir) { $ConfigDir } else { '-' }
