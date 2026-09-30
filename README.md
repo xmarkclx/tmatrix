@@ -1,12 +1,13 @@
 # TMatrix
 
 Use your own cheaper AI subscriptions and powerful models to add AI powers to supported apps.
+
 Use your own computers to save from using expensive Cloud computers.
 
 Concept:
-- Your computer runs TMatrix.
-- A **poller** gets data from a **source**.
-- An **AI worker** works on those data using **adapters** in parallel.
+- Your computer runs TMatrix to orchestrate the tasks, pollers and workers.
+- A **poller** gets tasks from a **source**.
+- An **AI worker** works on those tasks using **adapters** in parallel.
 - Adapter translates models like Codex or Claude Code
 
 ---
