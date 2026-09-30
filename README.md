@@ -30,6 +30,9 @@ Mac, Linux, or Windows WSL:
 curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh | sh
 ```
 
+- Connect using your TzuDo API key on https://tzudo.app/settings.
+- Currently only supports Codex for now. Claude Code Integration is on the roadmap.
+
 Uninstall the daemon and command (default installation):
 
 ```sh
