@@ -19,6 +19,22 @@ Im not using Claude this month, so I may not work on a Claude adapter until I ge
 
 ![example](images/sample.png)
 
+## Quick install
+
+Mac, Linux, or Windows WSL:
+
+```sh
+curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh | sh
+```
+
+Uninstall the daemon and command (default installation):
+
+```sh
+tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
+```
+
+Settings and downloaded bundles are retained.
+
 # Security Recommendations
 - Best to run on its own secure environment like on a VM.
 - Turn off / pause intake when not being used.
