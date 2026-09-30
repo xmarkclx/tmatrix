@@ -1,13 +1,16 @@
 # TMatrix
 
-Use your own cheaper AI subscriptions and powerful models to add AI powers to supported apps.
-Use your own computers to save from using expensive Cloud computers.
+Use your own AI subscriptions, computers and models to add AI powers to supported apps.
+
+Save money since AI subscriptions are cheaper, your own computers are already paid for (vs expensive cloud servers).
+Furthermore the models you pay for are possibly more powerful, and you already pay for them so may as well use them.
 
 Concept:
-- Your computer runs TMatrix.
-- A **poller** gets data from a **source**.
-- An **AI worker** works on those data using **adapters** in parallel.
-- Adapter translates models like Codex or Claude Code
+- Your computer runs TMatrix app, this app, which is very easy to install/uninstall.
+- TMatrix orchestraters tasks, pollers and workers.
+- A **poller** gets tasks from a **source** like tzudo.app.
+- An **AI worker** works on those tasks, a worker can be something like Codex.
+- This goes on until the number of workers limit is reached. You can set the max # yourself.
 
 ---
 
