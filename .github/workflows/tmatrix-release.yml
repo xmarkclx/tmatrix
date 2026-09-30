@@ -1,0 +1,67 @@
+name: TMatrix release
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          # go.mod declares the minimum; build with a maintained, patched toolchain.
+          go-version: 'stable'
+          check-latest: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: python3 scripts/test_install.py
+      - run: python3 scripts/test_release.py
+      - run: npm audit
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          # go.mod declares the minimum; build with a maintained, patched toolchain.
+          go-version: 'stable'
+          check-latest: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - run: npm ci
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: 'v2.18.2'
+          workdir: .
+          args: release --clean --skip=publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: python3 scripts/verify-release.py
+      - name: Create a draft from verified archives only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" --verify-tag --draft \
+            --title "TMatrix $RELEASE_TAG" --generate-notes \
+            dist/*.tar.gz dist/*.zip dist/checksums.txt scripts/install.sh scripts/install.ps1
