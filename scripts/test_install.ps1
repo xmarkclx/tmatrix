@@ -30,6 +30,8 @@ try {
         try { & "$PSScriptRoot/$script" } catch { $failed = $true }
         Assert $failed "$script hid a WSL failure"
     }
+    # The final mocked failure is expected; do not leak it to the CI shell.
+    $global:LASTEXITCODE = 0
     Write-Host 'PowerShell WSL wrapper tests passed.'
 } finally {
     Remove-Item Function:\wsl.exe
