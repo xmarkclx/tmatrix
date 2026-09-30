@@ -1,9 +1,6 @@
 name: TMatrix release
 on:
-  pull_request:
-    branches: [main]
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 permissions:
