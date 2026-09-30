@@ -19,6 +19,143 @@ Im not using Claude this month, so I may not work on a Claude adapter until I ge
 
 ![example](images/sample.png)
 
+## Releases and installation
+
+TMatrix is a standalone source project. Everything needed to build it is inside
+this directory; the former parent AI Worker checkout is not used.
+
+```text
+tmatrix/                  repository root (can live anywhere)
+  src/                    TypeScript engine: poll Tzu Do, run Codex, report results
+  test/                   engine and worktree regression tests
+  package.json            engine dependencies and build commands
+  scripts/worktrees.py     checkout lifecycle used by the engine
+  cmd/ and internal/      Go terminal interface and service controls
+  .github/workflows/      standalone tests and release automation
+```
+
+Source and release layout are different. `npm ci` installs the engine's build
+and runtime dependencies here. Staging compiles `src/` to JavaScript. GoReleaser
+then packages `tmatrix` (or `tmatrix.exe`) beside `engine/dist/`, the npm lockfile,
+and the worktree helper. The installer installs the engine's pinned production
+npm dependencies and configures the service. End users do not need the TypeScript
+source or the former parent directory. Node, Python and a Codex login remain
+runtime prerequisites. The engine and terminal are separate processes delivered
+as one application.
+
+AI Worker and TMatrix use the [MIT license](LICENSE). Contributions use that
+license too; third-party dependencies retain their own licenses.
+
+GoReleaser compiles into fresh release-only staging using
+`scripts/stage-release.py`. It never copies from or changes the live
+`staging/engine` directory. The payload includes freshly compiled JavaScript,
+the npm manifests, the worktree helper, and project/Go dependency license notices.
+An external manifest records the allowed payload files. CI runs
+`scripts/verify-release.py` before uploading: missing, extra, duplicate and
+non-regular archive files fail the release. The six platform archives, checksums
+and installer scripts are uploaded to a draft for human review. Action commits
+and GoReleaser v2.18.2 are pinned. This is archive hygiene, not release signing or
+provenance attestation. npm dependencies install separately with their notices.
+
+The installers select the latest published release for amd64 or arm64 and
+verify its SHA-256 checksum before installing. Linux and macOS install the TUI,
+the bundled engine and its pinned npm dependencies under `~/.local`, then add
+`~/.local/bin` to `.profile`, `.bashrc` and `.zshrc`. Open a new terminal afterwards.
+Node.js 20.19 or 22.12+, npm, Python 3.11+ and curl are prerequisites; Linux needs a working
+user systemd session, and macOS needs a logged-in GUI session for launchd.
+The scripts check these prerequisites; they do not install system dependencies.
+On Macs with Homebrew, `brew install node python` supplies Node/npm and Python.
+On Windows, first install a WSL distribution with `wsl --install` if needed,
+then install the prerequisites inside that distribution.
+
+These commands require a published release in a public GitHub repository.
+The publishing repository is `xmarkclx/tmatrix`. Public release
+downloads do not require GitHub authentication; these installers do not support
+private repository downloads.
+
+```sh
+curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh \
+  -o /tmp/tmatrix-install.sh && sh /tmp/tmatrix-install.sh
+```
+
+The repository defaults to `xmarkclx/tmatrix`; forks can use `--repo OWNER/REPO`.
+Piping to `sh` also works. Downloading first prevents a
+failed/truncated transfer from being executed. Use `--version v1.2.3` to pin a
+release or `--prefix /absolute/path` to change the installation directory.
+`TMATRIX_REPO`, `TMATRIX_VERSION`, and `TMATRIX_PREFIX` provide equivalent defaults.
+
+On Windows, run in PowerShell:
+
+```powershell
+curl.exe -fSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.ps1 -o "$env:TEMP/tmatrix-install.ps1"
+if ($LASTEXITCODE -eq 0) { powershell -ExecutionPolicy Bypass -File "$env:TEMP/tmatrix-install.ps1" }
+```
+
+The default Windows setup installs the full worker **inside an existing WSL
+distribution** using the Linux installer. Use `-Distribution Ubuntu` to choose
+one. WSL needs the Linux prerequisites above and systemd enabled; the installer
+does not install/reboot Windows or provision a distribution. Open that WSL
+terminal to run `tmatrix`; its daemon runs while WSL is running. Add `-Native`
+to install the Windows binary on the Windows user PATH for `tmatrix --demo` only.
+Native Windows live workers remain unsupported by the POSIX engine.
+
+On first installation, follow the printed Codex login command, open `tmatrix`,
+and connect with `c`. The installer records pending service setup; connecting
+then automatically installs and starts the login service. On an already
+connected installation it installs/upgrades the service immediately. Credentials,
+instance identity, conversations and saved intake settings are retained.
+
+Rerun the same installer to upgrade. It prepares a new immutable release directory,
+atomically switches the TUI executable, then uses the existing service lifecycle
+to pause intake, wait without a deadline for admitted workers, and start the new
+engine. Keep the installer open until completion. It never deletes old bundles
+or modifies a separate AI Worker service. Concurrent installers are rejected.
+If interrupted, inspect the service and `~/.local/lib/tmatrix/install.lock`
+before removing a stale lock. An interrupted/failed service setup returns an
+error and retains both bundles; after resolving the error, run `tmatrix setup`.
+There is no automatic rollback after service startup failure. Only remove old
+release directories once their engines are stopped. Custom `--config-dir`
+instances must be managed separately; the installer targets the default instance.
+
+Publishing uses `.github/workflows/tmatrix-release.yml` in this directory.
+It checks the engine and Go code from the repository root, then
+GoReleaser creates a **draft** release for a `vX.Y.Z` tag. Review and publish the
+draft to make it available through `latest`. Archives include the engine and
+lockfile; `checksums.txt`, both installers and both daemon-uninstall scripts are
+release assets.
+Publish this directory as the repository root; no parent source or build files
+are needed. The old parent service and its private configuration are not copied.
+
+### Uninstall the daemon
+
+On macOS or Linux/WSL:
+
+```sh
+curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/uninstall-daemon.sh \
+  -o /tmp/tmatrix-uninstall-daemon.sh && sh /tmp/tmatrix-uninstall-daemon.sh
+```
+
+On Windows, from PowerShell:
+
+```powershell
+curl.exe -fSL https://github.com/xmarkclx/tmatrix/releases/latest/download/uninstall-daemon.ps1 -o "$env:TEMP/tmatrix-uninstall-daemon.ps1"
+if ($LASTEXITCODE -eq 0) { powershell -ExecutionPolicy Bypass -File "$env:TEMP/tmatrix-uninstall-daemon.ps1" }
+```
+
+Use the same WSL distribution as installation (`-Distribution Ubuntu` if needed).
+For custom locations, the shell script accepts `--prefix` and `--config-dir`;
+PowerShell accepts `-Prefix` and `-ConfigDir` as absolute **WSL paths**.
+Both scripts call the installed `tmatrix service uninstall`, wait for service
+workers to drain, and remove login startup. Keep the terminal open until they
+finish; failures do not confirm removal. They retain the executable, PATH,
+credentials, settings and conversations. They do not remove WSL or touch other
+worker services. A native Windows demo has no daemon to uninstall.
+
+If TMatrix is already on PATH, no download is needed: run
+`tmatrix service uninstall` in the Mac or WSL terminal. Downloaded uninstall
+scripts also work offline. Opening `tmatrix` again can start its engine;
+`tmatrix service install` restores login startup after account connection.
+
 # Security Recommendations
 - Best to run on its own secure environment like on a VM.
 - Turn off / pause intake when not being used.
@@ -527,143 +664,6 @@ ownership locks and withholds a successful cancellation receipt. A stop request
 alone is not proof of termination. No-process adapters can implement a no-op
 `close()`. Verify normal completion, successive turns, resume/missing history,
 abort, and failed teardown before using an adapter with real tasks.
-
-## Releases and installation
-
-TMatrix is a standalone source project. Everything needed to build it is inside
-this directory; the former parent AI Worker checkout is not used.
-
-```text
-tmatrix/                  repository root (can live anywhere)
-  src/                    TypeScript engine: poll Tzu Do, run Codex, report results
-  test/                   engine and worktree regression tests
-  package.json            engine dependencies and build commands
-  scripts/worktrees.py     checkout lifecycle used by the engine
-  cmd/ and internal/      Go terminal interface and service controls
-  .github/workflows/      standalone tests and release automation
-```
-
-Source and release layout are different. `npm ci` installs the engine's build
-and runtime dependencies here. Staging compiles `src/` to JavaScript. GoReleaser
-then packages `tmatrix` (or `tmatrix.exe`) beside `engine/dist/`, the npm lockfile,
-and the worktree helper. The installer installs the engine's pinned production
-npm dependencies and configures the service. End users do not need the TypeScript
-source or the former parent directory. Node, Python and a Codex login remain
-runtime prerequisites. The engine and terminal are separate processes delivered
-as one application.
-
-AI Worker and TMatrix use the [MIT license](LICENSE). Contributions use that
-license too; third-party dependencies retain their own licenses.
-
-GoReleaser compiles into fresh release-only staging using
-`scripts/stage-release.py`. It never copies from or changes the live
-`staging/engine` directory. The payload includes freshly compiled JavaScript,
-the npm manifests, the worktree helper, and project/Go dependency license notices.
-An external manifest records the allowed payload files. CI runs
-`scripts/verify-release.py` before uploading: missing, extra, duplicate and
-non-regular archive files fail the release. The six platform archives, checksums
-and installer scripts are uploaded to a draft for human review. Action commits
-and GoReleaser v2.18.2 are pinned. This is archive hygiene, not release signing or
-provenance attestation. npm dependencies install separately with their notices.
-
-The installers select the latest published release for amd64 or arm64 and
-verify its SHA-256 checksum before installing. Linux and macOS install the TUI,
-the bundled engine and its pinned npm dependencies under `~/.local`, then add
-`~/.local/bin` to `.profile`, `.bashrc` and `.zshrc`. Open a new terminal afterwards.
-Node.js 20.19 or 22.12+, npm, Python 3.11+ and curl are prerequisites; Linux needs a working
-user systemd session, and macOS needs a logged-in GUI session for launchd.
-The scripts check these prerequisites; they do not install system dependencies.
-On Macs with Homebrew, `brew install node python` supplies Node/npm and Python.
-On Windows, first install a WSL distribution with `wsl --install` if needed,
-then install the prerequisites inside that distribution.
-
-These commands require a published release in a public GitHub repository.
-The publishing repository is `xmarkclx/tmatrix`. Public release
-downloads do not require GitHub authentication; these installers do not support
-private repository downloads.
-
-```sh
-curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh \
-  -o /tmp/tmatrix-install.sh && sh /tmp/tmatrix-install.sh
-```
-
-The repository defaults to `xmarkclx/tmatrix`; forks can use `--repo OWNER/REPO`.
-Piping to `sh` also works. Downloading first prevents a
-failed/truncated transfer from being executed. Use `--version v1.2.3` to pin a
-release or `--prefix /absolute/path` to change the installation directory.
-`TMATRIX_REPO`, `TMATRIX_VERSION`, and `TMATRIX_PREFIX` provide equivalent defaults.
-
-On Windows, run in PowerShell:
-
-```powershell
-curl.exe -fSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.ps1 -o "$env:TEMP/tmatrix-install.ps1"
-if ($LASTEXITCODE -eq 0) { powershell -ExecutionPolicy Bypass -File "$env:TEMP/tmatrix-install.ps1" }
-```
-
-The default Windows setup installs the full worker **inside an existing WSL
-distribution** using the Linux installer. Use `-Distribution Ubuntu` to choose
-one. WSL needs the Linux prerequisites above and systemd enabled; the installer
-does not install/reboot Windows or provision a distribution. Open that WSL
-terminal to run `tmatrix`; its daemon runs while WSL is running. Add `-Native`
-to install the Windows binary on the Windows user PATH for `tmatrix --demo` only.
-Native Windows live workers remain unsupported by the POSIX engine.
-
-On first installation, follow the printed Codex login command, open `tmatrix`,
-and connect with `c`. The installer records pending service setup; connecting
-then automatically installs and starts the login service. On an already
-connected installation it installs/upgrades the service immediately. Credentials,
-instance identity, conversations and saved intake settings are retained.
-
-Rerun the same installer to upgrade. It prepares a new immutable release directory,
-atomically switches the TUI executable, then uses the existing service lifecycle
-to pause intake, wait without a deadline for admitted workers, and start the new
-engine. Keep the installer open until completion. It never deletes old bundles
-or modifies a separate AI Worker service. Concurrent installers are rejected.
-If interrupted, inspect the service and `~/.local/lib/tmatrix/install.lock`
-before removing a stale lock. An interrupted/failed service setup returns an
-error and retains both bundles; after resolving the error, run `tmatrix setup`.
-There is no automatic rollback after service startup failure. Only remove old
-release directories once their engines are stopped. Custom `--config-dir`
-instances must be managed separately; the installer targets the default instance.
-
-Publishing uses `.github/workflows/tmatrix-release.yml` in this directory.
-It checks the engine and Go code from the repository root, then
-GoReleaser creates a **draft** release for a `vX.Y.Z` tag. Review and publish the
-draft to make it available through `latest`. Archives include the engine and
-lockfile; `checksums.txt`, both installers and both daemon-uninstall scripts are
-release assets.
-Publish this directory as the repository root; no parent source or build files
-are needed. The old parent service and its private configuration are not copied.
-
-### Uninstall the daemon
-
-On macOS or Linux/WSL:
-
-```sh
-curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/uninstall-daemon.sh \
-  -o /tmp/tmatrix-uninstall-daemon.sh && sh /tmp/tmatrix-uninstall-daemon.sh
-```
-
-On Windows, from PowerShell:
-
-```powershell
-curl.exe -fSL https://github.com/xmarkclx/tmatrix/releases/latest/download/uninstall-daemon.ps1 -o "$env:TEMP/tmatrix-uninstall-daemon.ps1"
-if ($LASTEXITCODE -eq 0) { powershell -ExecutionPolicy Bypass -File "$env:TEMP/tmatrix-uninstall-daemon.ps1" }
-```
-
-Use the same WSL distribution as installation (`-Distribution Ubuntu` if needed).
-For custom locations, the shell script accepts `--prefix` and `--config-dir`;
-PowerShell accepts `-Prefix` and `-ConfigDir` as absolute **WSL paths**.
-Both scripts call the installed `tmatrix service uninstall`, wait for service
-workers to drain, and remove login startup. Keep the terminal open until they
-finish; failures do not confirm removal. They retain the executable, PATH,
-credentials, settings and conversations. They do not remove WSL or touch other
-worker services. A native Windows demo has no daemon to uninstall.
-
-If TMatrix is already on PATH, no download is needed: run
-`tmatrix service uninstall` in the Mac or WSL terminal. Downloaded uninstall
-scripts also work offline. Opening `tmatrix` again can start its engine;
-`tmatrix service install` restores login startup after account connection.
 
 ## Verification
 
