@@ -27,6 +27,8 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: python3 scripts/test_install.py
+      - run: ./scripts/test_install.ps1
+        shell: pwsh
       - run: python3 scripts/test_release.py
       - run: npm audit
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
@@ -64,4 +66,4 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" --verify-tag --draft \
             --title "TMatrix $RELEASE_TAG" --generate-notes \
-            dist/*.tar.gz dist/*.zip dist/checksums.txt scripts/install.sh scripts/install.ps1
+            dist/*.tar.gz dist/*.zip dist/checksums.txt scripts/install.sh scripts/install.ps1 scripts/uninstall-daemon.sh scripts/uninstall-daemon.ps1

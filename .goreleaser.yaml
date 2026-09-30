@@ -35,3 +35,5 @@ release:
   extra_files:
     - glob: scripts/install.sh
     - glob: scripts/install.ps1
+    - glob: scripts/uninstall-daemon.sh
+    - glob: scripts/uninstall-daemon.ps1

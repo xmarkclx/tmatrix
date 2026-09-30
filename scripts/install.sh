@@ -1,13 +1,13 @@
 #!/bin/sh
-# Usage: curl -fsSL <published install.sh URL> | sh -s -- --repo OWNER/REPO
-# Requires a real GitHub release. Never guesses the publishing repository.
+# Usage: sh install.sh [--repo OWNER/REPO] [--version vX.Y.Z]
+# Requires a published release; defaults to the official public repository.
 set -eu
-repo=${TMATRIX_REPO:-}
+repo=${TMATRIX_REPO:-xmarkclx/tmatrix}
 version=${TMATRIX_VERSION:-latest}
 prefix=${TMATRIX_PREFIX:-"$HOME/.local"}
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --help) echo "Usage: install.sh --repo OWNER/REPO [--version vX.Y.Z] [--prefix /absolute/path]"; exit 0 ;;
+    --help) echo "Usage: install.sh [--repo OWNER/REPO] [--version vX.Y.Z] [--prefix /absolute/path]"; exit 0 ;;
     --repo|--version|--prefix) [ "$#" -ge 2 ] || { echo "Missing value for $1" >&2; exit 1; }; case "$1" in
     --repo) repo=$2; shift 2 ;;
     --version) version=$2; shift 2 ;;
