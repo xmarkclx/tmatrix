@@ -47,7 +47,7 @@ if name == 'latest':
     Path(args[args.index('-o')+1]).write_text('{"tag_name":"v1.2.3"}')
     sys.exit(0)
 assert name in ('tmatrix_1.2.3_linux_amd64.tar.gz','tmatrix_1.2.3_darwin_arm64.tar.gz','tmatrix_1.2.3_darwin_amd64.tar.gz','checksums.txt')
-assert url.startswith('https://github.com/fixture/tmatrix/releases/download/v1.2.3/')
+assert any(url.startswith('https://github.com/'+repo+'/releases/download/v1.2.3/') for repo in ('fixture/tmatrix', 'xmarkclx/tmatrix'))
 shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1])
 ''')
 
@@ -67,6 +67,12 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.assertTrue((self.prefix / "bin/tmatrix").resolve().with_name("engine").joinpath("dist/index.js").is_file())
         self.assertTrue((self.root / "npm-called").exists())
         self.assertIn("engine/node_modules/.bin/codex login", result.stdout)
+
+    def test_official_repository_default(self):
+        env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], INSTALL_FIXTURE=str(self.root), HOME=str(self.home))
+        env.pop("TMATRIX_REPO", None)
+        result = subprocess.run(["sh", str(INSTALLER), "--version", "1.2.3", "--prefix", str(self.prefix)], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_macos_archives(self):
         for machine, arch in (("arm64", "arm64"), ("x86_64", "amd64")):
@@ -130,6 +136,69 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.assertTrue(old.exists())
         self.assertTrue((self.prefix / "bin/tmatrix").exists())
         self.assertFalse((self.prefix / "lib/tmatrix/install.lock").exists())
+
+
+class UninstallerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="tmatrix-uninstall-test-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.prefix = self.root / "install with spaces"
+        (self.prefix / "bin").mkdir(parents=True)
+        self.binary = self.prefix / "bin/tmatrix"
+        self.binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$UNINSTALL_ARGS"\nexit "${UNINSTALL_STATUS:-0}"\n')
+        self.binary.chmod(0o755)
+        self.log = self.root / "args"
+        self.env = dict(os.environ, UNINSTALL_ARGS=str(self.log), TMATRIX_PREFIX=str(self.prefix))
+        self.script = INSTALLER.with_name("uninstall-daemon.sh")
+
+    def run_uninstaller(self, *args, status="0"):
+        return subprocess.run(["sh", str(self.script), *args], env=dict(self.env, UNINSTALL_STATUS=status), capture_output=True, text=True)
+
+    def test_removes_only_daemon_and_preserves_application(self):
+        result = self.run_uninstaller()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.log.read_text().splitlines(), ["service", "uninstall"])
+        self.assertTrue(self.binary.exists())
+        self.assertFalse((self.prefix / "lib/tmatrix/install.lock").exists())
+
+    def test_custom_config_is_one_argument(self):
+        config = str(self.root / "config with spaces;literal")
+        result = self.run_uninstaller("--prefix", str(self.prefix), "--config-dir", config)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.log.read_text().splitlines(), ["--config-dir", config, "service", "uninstall"])
+
+    def test_failure_does_not_report_success(self):
+        result = self.run_uninstaller(status="42")
+        self.assertEqual(result.returncode, 42)
+        self.assertNotIn("Daemon removed.", result.stdout)
+        self.assertTrue(self.binary.exists())
+        self.assertFalse((self.prefix / "lib/tmatrix/install.lock").exists())
+
+    def test_active_installer_lock_is_preserved(self):
+        lock = self.prefix / "lib/tmatrix/install.lock"
+        lock.mkdir(parents=True)
+        result = self.run_uninstaller()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(lock.exists())
+        self.assertFalse(self.log.exists())
+
+    def test_missing_install_and_invalid_arguments(self):
+        for args in [("--prefix", str(self.root / "missing")), ("--prefix", "relative"), ("--config-dir",), ("--unknown",)]:
+            with self.subTest(args=args):
+                self.assertNotEqual(self.run_uninstaller(*args).returncode, 0)
+                self.assertFalse(self.log.exists())
+
+    def test_windows_embedded_shell_defaults_custom_paths_and_failure(self):
+        # Execute the exact shell sent to WSL, using a fictional installed CLI.
+        source = self.script.with_suffix(".ps1").read_text()
+        script = source.split("$uninstallScript = @'\n", 1)[1].split("\n'@", 1)[0]
+        for config, status in [("-", "0"), (str(self.root / "config with spaces;literal"), "0"), ("-", "42")]:
+            result = subprocess.run(["sh", "-c", script, "sh", str(self.prefix), config], env=dict(self.env, UNINSTALL_STATUS=status), capture_output=True, text=True)
+            self.assertEqual(result.returncode, int(status), result.stderr)
+            expected = ["service", "uninstall"] if config == "-" else ["--config-dir", config, "service", "uninstall"]
+            self.assertEqual(self.log.read_text().splitlines(), expected)
+            self.assertFalse((self.prefix / "lib/tmatrix/install.lock").exists())
 
 
 if __name__ == "__main__":

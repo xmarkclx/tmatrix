@@ -23,6 +23,8 @@ Im not using Claude this month, so I may not work on a Claude adapter until I ge
 - Best to run on its own secure environment like on a VM.
 - Turn off / pause intake when not being used.
 
+For an installed app and background daemon, see [Install on Mac or Windows](#releases-and-installation). To remove login startup later, see [Uninstall the daemon](#uninstall-the-daemon).
+
 ## Try it now
 
 From this workspace:
@@ -526,7 +528,7 @@ alone is not proof of termination. No-process adapters can implement a no-op
 `close()`. Verify normal completion, successive turns, resume/missing history,
 abort, and failed teardown before using an adapter with real tasks.
 
-## Releases and curl installation
+## Releases and installation
 
 TMatrix is a standalone source project. Everything needed to build it is inside
 this directory; the former parent AI Worker checkout is not used.
@@ -570,6 +572,10 @@ the bundled engine and its pinned npm dependencies under `~/.local`, then add
 `~/.local/bin` to `.profile`, `.bashrc` and `.zshrc`. Open a new terminal afterwards.
 Node.js 20.19 or 22.12+, npm, Python 3.11+ and curl are prerequisites; Linux needs a working
 user systemd session, and macOS needs a logged-in GUI session for launchd.
+The scripts check these prerequisites; they do not install system dependencies.
+On Macs with Homebrew, `brew install node python` supplies Node/npm and Python.
+On Windows, first install a WSL distribution with `wsl --install` if needed,
+then install the prerequisites inside that distribution.
 
 These commands require a published release in a public GitHub repository.
 The publishing repository is `xmarkclx/tmatrix`. Public release
@@ -578,10 +584,11 @@ private repository downloads.
 
 ```sh
 curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh \
-  -o /tmp/tmatrix-install.sh && sh /tmp/tmatrix-install.sh --repo xmarkclx/tmatrix
+  -o /tmp/tmatrix-install.sh && sh /tmp/tmatrix-install.sh
 ```
 
-Piping to `sh -s -- --repo xmarkclx/tmatrix` also works. Downloading first prevents a
+The repository defaults to `xmarkclx/tmatrix`; forks can use `--repo OWNER/REPO`.
+Piping to `sh` also works. Downloading first prevents a
 failed/truncated transfer from being executed. Use `--version v1.2.3` to pin a
 release or `--prefix /absolute/path` to change the installation directory.
 `TMATRIX_REPO`, `TMATRIX_VERSION`, and `TMATRIX_PREFIX` provide equivalent defaults.
@@ -590,7 +597,7 @@ On Windows, run in PowerShell:
 
 ```powershell
 curl.exe -fSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.ps1 -o "$env:TEMP/tmatrix-install.ps1"
-if ($LASTEXITCODE -eq 0) { powershell -ExecutionPolicy Bypass -File "$env:TEMP/tmatrix-install.ps1" -Repo xmarkclx/tmatrix }
+if ($LASTEXITCODE -eq 0) { powershell -ExecutionPolicy Bypass -File "$env:TEMP/tmatrix-install.ps1" }
 ```
 
 The default Windows setup installs the full worker **inside an existing WSL
@@ -623,9 +630,40 @@ Publishing uses `.github/workflows/tmatrix-release.yml` in this directory.
 It checks the engine and Go code from the repository root, then
 GoReleaser creates a **draft** release for a `vX.Y.Z` tag. Review and publish the
 draft to make it available through `latest`. Archives include the engine and
-lockfile; `checksums.txt`, `install.sh` and `install.ps1` are release assets.
+lockfile; `checksums.txt`, both installers and both daemon-uninstall scripts are
+release assets.
 Publish this directory as the repository root; no parent source or build files
 are needed. The old parent service and its private configuration are not copied.
+
+### Uninstall the daemon
+
+On macOS or Linux/WSL:
+
+```sh
+curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/uninstall-daemon.sh \
+  -o /tmp/tmatrix-uninstall-daemon.sh && sh /tmp/tmatrix-uninstall-daemon.sh
+```
+
+On Windows, from PowerShell:
+
+```powershell
+curl.exe -fSL https://github.com/xmarkclx/tmatrix/releases/latest/download/uninstall-daemon.ps1 -o "$env:TEMP/tmatrix-uninstall-daemon.ps1"
+if ($LASTEXITCODE -eq 0) { powershell -ExecutionPolicy Bypass -File "$env:TEMP/tmatrix-uninstall-daemon.ps1" }
+```
+
+Use the same WSL distribution as installation (`-Distribution Ubuntu` if needed).
+For custom locations, the shell script accepts `--prefix` and `--config-dir`;
+PowerShell accepts `-Prefix` and `-ConfigDir` as absolute **WSL paths**.
+Both scripts call the installed `tmatrix service uninstall`, wait for service
+workers to drain, and remove login startup. Keep the terminal open until they
+finish; failures do not confirm removal. They retain the executable, PATH,
+credentials, settings and conversations. They do not remove WSL or touch other
+worker services. A native Windows demo has no daemon to uninstall.
+
+If TMatrix is already on PATH, no download is needed: run
+`tmatrix service uninstall` in the Mac or WSL terminal. Downloaded uninstall
+scripts also work offline. Opening `tmatrix` again can start its engine;
+`tmatrix service install` restores login startup after account connection.
 
 ## Verification
 
@@ -641,6 +679,7 @@ sh scripts/stage-engine.sh
 go test -race ./...
 go vet ./...
 python3 scripts/test_install.py
+pwsh -File scripts/test_install.ps1 # offline Windows wrapper checks; requires PowerShell
 python3 scripts/test_release.py
 npm audit
 TMATRIX_TEST_ENGINE_DIR="$PWD/staging/engine" go test -race ./internal/app -run TestActualEngineConnectionLifecycle -v
