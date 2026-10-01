@@ -9,13 +9,12 @@
   },
   "scripts": {
     "build": "sh scripts/stage-engine.sh",
-    "check": "npm run typecheck && npm test && npm run test:worktrees",
+    "check": "npm run typecheck && npm test",
     "check:config": "tsx src/index.ts --check-config",
     "dev": "tsx watch src/index.ts",
     "start": "node staging/engine/dist/index.js",
     "start:once": "node staging/engine/dist/index.js --once",
     "test": "vitest run",
-    "test:worktrees": "python3 -m unittest discover -s test -p '*_test.py'",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },

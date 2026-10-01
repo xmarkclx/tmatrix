@@ -3,7 +3,6 @@ import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
 import { workerTitle } from "./helpers/worker-title.js";
 import type { ConversationStore } from "./conversation-store.js";
 import type { WorkerObservation } from "./local-worker-state.js";
-import type { WorktreeLifecycle } from "./worktrees.js";
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { Input, Usage, RuntimeFactory, RuntimeLike, RuntimeThreadOptions,
@@ -128,7 +127,6 @@ export class TicketRunner {
   private readonly metrics: Metrics;
   private readonly fallbackWorkingDirectory: string;
   private readonly fetch: typeof globalThis.fetch;
-  private readonly worktreeLifecycle: WorktreeLifecycle | undefined;
   private readonly conversationStore: ConversationStore | undefined;
 
   constructor(options: {
@@ -140,7 +138,6 @@ export class TicketRunner {
     metrics: Metrics;
     workingDirectory?: string;
     fetch?: typeof globalThis.fetch;
-    worktreeLifecycle?: WorktreeLifecycle;
     conversationStore?: ConversationStore;
   }) {
     const factory = options.runtimeFactory ?? options.codexFactory;
@@ -151,7 +148,6 @@ export class TicketRunner {
     this.metrics = options.metrics;
     this.fallbackWorkingDirectory = options.workingDirectory ?? DEFAULT_WORKING_DIRECTORY;
     this.fetch = options.fetch ?? globalThis.fetch;
-    this.worktreeLifecycle = options.worktreeLifecycle;
     this.conversationStore = options.conversationStore;
   }
 
@@ -206,8 +202,7 @@ export class TicketRunner {
         if (this.conversationStore && !resumeId && hasReplyAncestry(ticket, history)) {
           options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
         }
-        const lifecyclePrompt = await this.worktreeLifecycle?.start(ticket, options.runId) ?? "";
-        const fullPrompt = buildPrompt(ticket, history) + lifecyclePrompt;
+        const fullPrompt = buildPrompt(ticket, history);
         const workingDirectory = await resolveWorkingDirectory(
           ticket.project_path,
           this.fallbackWorkingDirectory
@@ -219,9 +214,7 @@ export class TicketRunner {
           ? await this.conversationStore?.contextChanges(ticket, resumeId, context) ?? {}
           : {};
         const updates = Object.keys(changes).length ? `# Updated task context\n${JSON.stringify(changes, null, 2)}\n\n` : "";
-        // Session ownership changes each run; keep it current without replaying the checklist.
-        const sessionUpdate = lifecyclePrompt ? `\n\nCurrent worktree session: ${options.runId}` : "";
-        const prompt = commentPrompt === undefined ? fullPrompt : updates + commentPrompt + sessionUpdate;
+        const prompt = commentPrompt === undefined ? fullPrompt : updates + commentPrompt;
         let missingConversationText = commentPrompt === undefined ? undefined : fullPrompt;
 
 
@@ -402,11 +395,6 @@ export class TicketRunner {
             ...errorContext(cause)
           }, "Runtime did not close cleanly after the ticket run");
         }
-      }
-
-      // A failed teardown keeps the lease: a child may still be using its checkout.
-      if (runtimeCloseFailure === undefined) {
-        await this.worktreeLifecycle?.end(options.runId);
       }
 
       cancelled = cancellationReason(options.signal) ?? cancelled;
