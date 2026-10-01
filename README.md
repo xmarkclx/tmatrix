@@ -30,6 +30,17 @@ Mac, Linux, or Windows WSL:
 curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh | sh
 ```
 
+On macOS, the installer reuses compatible Node.js/npm and Python installations.
+Missing or outdated runtimes are installed through Homebrew; if Homebrew is
+missing, its official installer runs first and may request administrator access
+or Command Line Tools. The installer selects the installed runtimes for setup
+and saves their paths for future terminals. No TypeScript compiler is needed.
+Homebrew must support your macOS version and hardware.
+
+Linux/WSL still requires Node.js 20.19 or 22.12+, npm, and Python 3.11+ to be
+installed beforehand. Python runs the managed Git worktree helper (task checkout
+ownership, cleanup and recovery) and updates shell PATH entries during install.
+
 - Connect using your TzuDo API key on https://tzudo.app/settings.
 - Currently only supports Codex for now. Claude Code Integration is on the roadmap.
 

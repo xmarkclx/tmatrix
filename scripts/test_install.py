@@ -1,4 +1,5 @@
 """Exercise the curl installer offline, including a corrupt release archive."""
+import shutil
 import hashlib
 import io
 import json
@@ -14,6 +15,117 @@ import unittest
 
 
 INSTALLER = Path(__file__).with_name("install.sh")
+
+
+class PrerequisiteTests(unittest.TestCase):
+    """Run actual preflight with a hermetic PATH; never install host packages."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bin = self.root / "tools"
+        self.bin.mkdir()
+        self.env = dict(os.environ, PATH=str(self.bin), FIXTURE=str(self.root))
+        for name in ("rm", "mktemp", "tar", "install", "mkdir", "chmod", "cp"):
+            (self.bin / name).symlink_to(shutil.which(name))
+        self.tool("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
+        self.tool("curl", 'exit 55')
+        self.script = self.root / "preflight.sh"
+        self.script.write_text(INSTALLER.read_text().split('release_label="Selected release"')[0] +
+                               '\nprintf "%s\\n" "$PATH" > "$FIXTURE/result-path"\n')
+        self.brew_source = self.root / "brew-source"
+        self.brew_source.write_text("""#!/bin/sh
+case "$1" in
+  install)
+    echo "$2" >> "$FIXTURE/packages"
+    [ ! -f "$FIXTURE/fail-brew" ] || exit 42
+    case "$2" in
+      node@24) target="$FIXTURE/node/bin"; names="node npm";;
+      python@3.13) target="$FIXTURE/python/libexec/bin"; names="python3";;
+      *) exit 99;;
+    esac
+    mkdir -p "$target"
+    for name in $names; do
+      printf '#!/bin/sh\nexit 0\n' > "$target/$name"
+      chmod +x "$target/$name"
+    done;;
+  --prefix)
+    case "$2" in node@24) echo "$FIXTURE/node";; python@3.13) echo "$FIXTURE/python";; esac;;
+esac
+""")
+
+    def tool(self, name, body):
+        path = self.bin / name
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+
+    def brew(self):
+        shutil.copyfile(self.brew_source, self.bin / "brew")
+        (self.bin / "brew").chmod(0o755)
+
+    def run_preflight(self):
+        return subprocess.run(["/bin/sh", str(self.script)], env=self.env, capture_output=True, text=True)
+
+    def test_compatible_runtimes_skip_homebrew(self):
+        for name in ("node", "npm", "python3"):
+            self.tool(name, "exit 0")
+        result = self.run_preflight()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "packages").exists())
+
+    def test_missing_runtimes_installed_and_selected(self):
+        self.brew()
+        result = self.run_preflight()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "packages").read_text().splitlines(), ["node@24", "python@3.13"])
+        self.assertTrue((self.root / "result-path").read_text().startswith(
+            str(self.root / "python/libexec/bin") + ":" + str(self.root / "node/bin")))
+
+    def test_old_python_only_installs_python(self):
+        self.brew()
+        for name in ("node", "npm"):
+            self.tool(name, "exit 0")
+        self.tool("python3", "exit 1")
+        result = self.run_preflight()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "packages").read_text().strip(), "python@3.13")
+
+    def test_old_node_or_broken_npm_installs_node(self):
+        self.brew()
+        self.tool("python3", "exit 0")
+        for node_status, npm_status in ((1, 0), (0, 1)):
+            self.tool("node", f"exit {node_status}")
+            self.tool("npm", f"exit {npm_status}")
+            result = self.run_preflight()
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "packages").read_text().splitlines(), ["node@24", "node@24"])
+
+    def test_brew_failure_stops_before_release_install(self):
+        self.brew()
+        (self.root / "fail-brew").touch()
+        result = self.run_preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "result-path").exists())
+
+    @unittest.skipIf(Path("/opt/homebrew/bin/brew").exists() or Path("/usr/local/bin/brew").exists(),
+                     "Host Homebrew would bypass the bootstrap fixture")
+    def test_homebrew_bootstrap_then_runtime_install(self):
+        self.tool("curl", """while [ "$1" != -o ]; do shift; done
+printf '#!/bin/sh\ncp "$FIXTURE/brew-source" "$FIXTURE/tools/brew"\nchmod +x "$FIXTURE/tools/brew"\n' > "$2"
+""")
+        result = self.run_preflight()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Installing Homebrew", result.stdout)
+        self.assertEqual((self.root / "packages").read_text().splitlines(), ["node@24", "python@3.13"])
+
+    def test_linux_does_not_bootstrap_homebrew(self):
+        self.tool("uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac')
+        self.brew()
+        result = self.run_preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Node.js", result.stderr)
+        self.assertFalse((self.root / "packages").exists())
 
 
 class InstallerTests(unittest.TestCase):
@@ -40,7 +152,7 @@ class InstallerTests(unittest.TestCase):
         self.checksum = self.root / "checksums.txt"
         self.checksum.write_text(hashlib.sha256(self.archive.read_bytes()).hexdigest() + "  " + self.archive.name + "\n")
         self.tool("uname", '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
-        self.tool("npm", '#!/bin/sh\ntouch "$INSTALL_FIXTURE/npm-called"\n')
+        self.tool("npm", '#!/bin/sh\n[ "$1" = --version ] && exit 0\ntouch "$INSTALL_FIXTURE/npm-called"\n')
         self.tool("curl", '''#!/usr/bin/env python3
 import os,sys,shutil
 from pathlib import Path

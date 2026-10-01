@@ -23,19 +23,62 @@ case "$repo" in
 esac
 case "$version" in *[!a-zA-Z0-9._-]*|'') echo 'Invalid release version.' >&2; exit 1 ;; esac
 case "$prefix" in /*) ;; *) echo 'Prefix must be an absolute path.' >&2; exit 1 ;; esac
-for tool in curl tar node npm python3 install; do
-  command -v "$tool" >/dev/null 2>&1 || { echo "Missing prerequisite: $tool" >&2; exit 1; }
-done
-node -e 'const [major,minor]=process.versions.node.split(".").map(Number);if(!((major===20&&minor>=19)||(major===22&&minor>=12)||major>22))process.exit(1)' || { echo 'Node.js 20.19 or 22.12+ is required by the Codex adapter.' >&2; exit 1; }
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' || { echo 'Python 3.11+ is required by the worker lifecycle.' >&2; exit 1; }
 case $(uname -s) in Linux) os=linux ;; Darwin) os=darwin ;; *) echo 'Use WSL or the Windows release ZIP.' >&2; exit 1 ;; esac
 case $(uname -m) in x86_64|amd64) arch=amd64 ;; arm64|aarch64) arch=arm64 ;; *) echo 'Supported CPUs: amd64 and arm64.' >&2; exit 1 ;; esac
+for tool in curl tar install; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "Missing prerequisite: $tool" >&2; exit 1; }
+done
 temp=$(mktemp -d)
 lock=
 cleanup() { rm -rf "$temp"; if [ -n "$lock" ]; then rmdir "$lock"; fi; }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
+
+node_ready() {
+  command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 &&
+    node -e 'const [major,minor]=process.versions.node.split(".").map(Number);if(!((major===20&&minor>=19)||(major===22&&minor>=12)||major>22))process.exit(1)' >/dev/null 2>&1 &&
+    npm --version >/dev/null 2>&1
+}
+python_ready() {
+  command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1
+}
+find_brew() {
+  if command -v brew >/dev/null 2>&1; then command -v brew
+  elif [ -x /opt/homebrew/bin/brew ]; then echo /opt/homebrew/bin/brew
+  elif [ -x /usr/local/bin/brew ]; then echo /usr/local/bin/brew
+  else return 1
+  fi
+}
+# Persist only paths we actually add, not the caller's entire environment.
+runtime_paths=
+if [ "$os" = darwin ] && { ! node_ready || ! python_ready; }; then
+  if ! brew_command=$(find_brew); then
+    echo 'Installing Homebrew for missing runtimes. Homebrew may request administrator access or Command Line Tools.'
+    curl -fsSL --proto '=https' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$temp/homebrew-install.sh"
+    /bin/bash "$temp/homebrew-install.sh" || {
+      echo 'Homebrew installation failed. Resolve its reported requirements and rerun this installer.' >&2; exit 1;
+    }
+    brew_command=$(find_brew) || { echo 'Homebrew was not found after installation.' >&2; exit 1; }
+  fi
+  if ! node_ready; then
+    echo 'Installing Node.js and npm with Homebrew (node@24).'
+    "$brew_command" install node@24
+    node_prefix=$("$brew_command" --prefix node@24)
+    runtime_paths="$node_prefix/bin"
+    export PATH="$node_prefix/bin:$PATH"
+  fi
+  if ! python_ready; then
+    echo 'Installing Python for managed task worktrees (python@3.13).'
+    "$brew_command" install python@3.13
+    python_prefix=$("$brew_command" --prefix python@3.13)
+    runtime_paths="$python_prefix/libexec/bin${runtime_paths:+:$runtime_paths}"
+    export PATH="$python_prefix/libexec/bin:$PATH"
+  fi
+fi
+node_ready || { echo 'Node.js 20.19 or 22.12+ and working npm are required. Install them and rerun.' >&2; exit 1; }
+python_ready || { echo 'Python 3.11+ is required for managed task worktrees. Install it and rerun.' >&2; exit 1; }
 release_label="Selected release"
 if [ "$version" = latest ]; then
   release_label="Latest release"
@@ -89,7 +132,7 @@ mv -f "$temp/tmatrix-link" "$prefix/bin/.tmatrix-new"
 mv -f "$prefix/bin/.tmatrix-new" "$prefix/bin/tmatrix"
 export PATH="$prefix/bin:$PATH"
 # Persist PATH without interpolating executable shell syntax from custom paths.
-python3 - "$prefix/bin" <<'PYTHON'
+python3 - "$prefix/bin${runtime_paths:+:$runtime_paths}" <<'PYTHON'
 import os, pathlib, shlex, sys
 home = pathlib.Path.home()
 line = '\n# TMatrix installer\nexport PATH=' + shlex.quote(sys.argv[1]) + ':"$PATH"\n'
