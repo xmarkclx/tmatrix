@@ -146,7 +146,7 @@ func (m Model) workerContent() layoutBlock {
 		}
 	} else if m.composing {
 		if !m.compact() {
-			b.lines = append(b.lines, accentStyle.Render(" Message · same conversation · queues next turn"))
+			b.lines = append(b.lines, accentStyle.Render(ellipsis(" Your message will be processed once the AI's turn finishes", width)))
 		}
 		b.targets = append(b.targets, hitTarget{x: 0, y: len(b.lines), width: width, height: 1, action: "composer"})
 		b.lines = append(b.lines, composerView(m.composer))
