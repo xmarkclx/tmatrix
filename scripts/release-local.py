@@ -34,15 +34,41 @@ def identity(tag, root, env):
     return head
 
 
-def release(tag, upload=False, root=ROOT):
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
-        raise RuntimeError("Use a stable version tag, for example v0.1.2.")
+PREREQUISITES = {
+    "git": "Git — https://git-scm.com/downloads",
+    "go": "Go toolchain — https://go.dev/doc/install",
+    "node": "Node.js 22 — https://nodejs.org/en/download",
+    "npm": "npm (included with Node.js) — https://nodejs.org/en/download",
+    "goreleaser": "GoReleaser v2 packages the six release archives — "
+                  "https://goreleaser.com/getting-started/install/oss/",
+    "pwsh": "PowerShell 7 runs the Windows installer tests, including on Linux/macOS — "
+            "https://learn.microsoft.com/powershell/scripting/install/installing-powershell",
+    "gh": "GitHub CLI uploads the verified draft — https://cli.github.com/",
+}
+
+
+def check_prerequisites(upload=False):
+    """Check executable availability without requiring a tag or changing anything."""
     required = ["git", "go", "node", "npm", "goreleaser", "pwsh"]
     if upload:
         required.append("gh")
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
-        raise RuntimeError("Missing prerequisites: " + ", ".join(missing))
+        hints = [f"  {tool}: {PREREQUISITES[tool]}" for tool in missing]
+        raise RuntimeError(
+            "Missing prerequisites: " + ", ".join(missing) + "\n"
+            + "\n".join(hints)
+            + "\nInstall these tools and ensure they are on PATH, then rerun "
+              "python3 scripts/release-local.py --check-prerequisites"
+            + (" --upload" if upload else "")
+            + ". No tag, build, or upload is performed by that check."
+        )
+
+
+def release(tag, upload=False, root=ROOT):
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise RuntimeError("Use a stable version tag, for example v0.1.2.")
+    check_prerequisites(upload)
     env = dict(os.environ)
     head = identity(tag, root, env)
     count = run(["git", "rev-list", "--count", "HEAD"], root, env, True)
@@ -96,11 +122,20 @@ def release(tag, upload=False, root=ROOT):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tag", help="existing local version tag at HEAD, e.g. v0.1.2")
+    parser.add_argument("tag", nargs="?", help="existing local version tag at HEAD, e.g. v0.1.2")
     parser.add_argument("--upload", action="store_true", help="push the verified tag and upload a draft")
+    parser.add_argument("--check-prerequisites", action="store_true",
+                        help="only check required tools on PATH; no tag or build needed")
     args = parser.parse_args()
+    if not args.check_prerequisites and not args.tag:
+        parser.error("tag is required unless --check-prerequisites is used")
     try:
-        release(args.tag, args.upload)
+        if args.check_prerequisites:
+            check_prerequisites(args.upload)
+            print("All required tools are on PATH. Tool versions, authentication, and "
+                  "release checks are validated when you run the release.")
+        else:
+            release(args.tag, args.upload)
     except (RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Release failed: {error}\n")
 

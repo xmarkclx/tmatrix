@@ -63,6 +63,45 @@ class LocalReleaseTests(unittest.TestCase):
              patch("builtins.print"):
             release_local.release("v1.2.3", upload, self.root)
 
+    def test_missing_packaging_tools_explain_setup_before_any_command(self):
+        with patch.object(release_local.shutil, "which",
+                          side_effect=lambda tool: None if tool in ("goreleaser", "pwsh") else "/tool"), \
+             patch.object(release_local, "run") as run:
+            with self.assertRaises(RuntimeError) as error:
+                release_local.release("v1.2.3", True, self.root)
+            message = str(error.exception)
+            self.assertIn("Missing prerequisites: goreleaser, pwsh", message)
+            self.assertIn("https://goreleaser.com/", message)
+            self.assertIn("https://learn.microsoft.com/", message)
+            self.assertIn("including on Linux/macOS", message)
+            self.assertIn("--check-prerequisites --upload", message)
+            run.assert_not_called()
+
+    def test_github_cli_only_required_for_upload(self):
+        with patch.object(release_local.shutil, "which",
+                          side_effect=lambda tool: None if tool == "gh" else "/tool"):
+            release_local.check_prerequisites()
+            with self.assertRaisesRegex(RuntimeError, "Missing prerequisites: gh"):
+                release_local.check_prerequisites(upload=True)
+
+    def test_preflight_cli_needs_no_tag_and_never_releases(self):
+        with patch.object(release_local.sys, "argv",
+                          ["release-local.py", "--check-prerequisites", "--upload"]), \
+             patch.object(release_local.shutil, "which", return_value="/tool"), \
+             patch.object(release_local, "release") as release, \
+             patch.object(release_local, "run") as run, \
+             patch("builtins.print"):
+            release_local.main()
+            release.assert_not_called()
+            run.assert_not_called()
+
+    def test_release_cli_still_requires_tag(self):
+        with patch.object(release_local.sys, "argv", ["release-local.py"]), \
+             patch.object(release_local.sys, "stderr"), \
+             self.assertRaises(SystemExit) as error:
+            release_local.main()
+        self.assertEqual(error.exception.code, 2)
+
     def test_build_only_never_pushes_or_uploads(self):
         self.release()
         self.assertTrue(any("scripts/verify-release.py" in args for args in self.calls))
