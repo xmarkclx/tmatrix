@@ -193,7 +193,7 @@ export class TicketRunner {
     let runtime: RuntimeLike | undefined;
     let runtimeCloseFailure: unknown;
     let cancelled = cancellationReason(options.signal);
-    let releaseConversation: (() => Promise<void>) | undefined;
+    let releaseConversation: import("./conversation-store.js").ConversationLease | undefined;
 
     try {
       log.info({ event: "worker.run_started", stage: "claim" }, "Ticket run started");
@@ -202,6 +202,9 @@ export class TicketRunner {
         await this.stage(log, "claim", () => this.api.markTaken(ticket, options.signal));
         const history = await this.stage(log, "history", () => this.api.getHistory(ticket, options.signal));
         releaseConversation = await this.conversationStore?.acquire(ticket, options.signal);
+        if (releaseConversation?.recovered) {
+          options.observe?.({ kind: "conversation.recovered", text: "Recovered the previous worker's conversation lock automatically. Resuming saved context; a missing conversation will be rebuilt from the durable handoff." });
+        }
         let resumeId = await this.conversationStore?.resolve(ticket, history);
         if (this.conversationStore && !resumeId && hasReplyAncestry(ticket, history)) {
           options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
@@ -212,7 +215,7 @@ export class TicketRunner {
           ticket.project_path,
           this.fallbackWorkingDirectory
         );
-        runtime = this.runtimeFactory(profile);
+        runtime = this.runtimeFactory(profile, releaseConversation?.environment);
         const commentPrompt = resumeId && runtime.resumeThread ? buildCommentPrompt(ticket, history) : undefined;
         const context = conversationContext(history);
         const changes = commentPrompt !== undefined && resumeId
@@ -239,6 +242,7 @@ export class TicketRunner {
           workingDirectory,
           workerTitle(ticket)
         );
+        if (releaseConversation?.recovered) threadOptions.rebuildOnResumeRejection = true;
         if (resumeId && !runtime.resumeThread) {
           options.observe?.({ kind: "conversation.unlinked", text: "This runtime cannot resume conversations. Starting a fresh conversation from the task history and saved handoff." });
         }

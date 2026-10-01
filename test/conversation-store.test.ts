@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, unlink,
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as recovery from "../src/conversation-recovery.js";
 import { ConversationStore } from "../src/conversation-store.js";
 import { makeTicket } from "./helpers.js";
 
@@ -144,6 +145,28 @@ describe("ConversationStore", () => {
     await symlink(encoded, path);
     return { store, directory, path, encoded };
   }
+
+  it("migrates a same-host preboot legacy lock automatically and preserves its route", async () => {
+    const { store } = await locked({ pid: process.pid });
+    await store.remember(ticket, "legacy-route");
+    const evidence = vi.spyOn(recovery, "legacyLockPredatesBoot").mockResolvedValue(true);
+    try {
+      const lease = await store.acquire(ticket);
+      expect(lease.recovered).toBe(true);
+      expect(await store.resolve(ticket, {})).toBe("legacy-route");
+      await lease();
+    } finally { evidence.mockRestore(); }
+  });
+
+  it("retains a tracked lease when orphan teardown cannot be verified", async () => {
+    const { store, path, encoded } = await locked({ identity: currentBoot, tracking: 1, start: "42" });
+    const teardown = vi.spyOn(recovery, "stopLeaseProcesses").mockResolvedValue(false);
+    try {
+      await expect(store.acquire(ticket)).rejects.toMatchObject({ code: "CONVERSATION_OWNER_LOST" });
+      expect(await readlink(path)).toBe(encoded);
+      expect(teardown).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000000", undefined, "42");
+    } finally { teardown.mockRestore(); }
+  });
 
   it("automatically recovers after a verified reboot even when the old PID is reused", async () => {
     const { store, path } = await locked({ pid: process.pid, identity: oldBoot });

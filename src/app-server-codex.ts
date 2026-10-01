@@ -204,7 +204,7 @@ class AppServerThread implements ThreadLike {
     if (!this.emittedThreadStarted) {
       this.emittedThreadStarted = true;
       if (this.replacedMissingThread) {
-        yield { type: "local.activity", kind: "conversation.rebuilt", text: "Saved conversation no longer exists. Rebuilding from task context, comments and the saved handoff." };
+        yield { type: "local.activity", kind: "conversation.rebuilt", text: "Saved conversation could not be resumed. Rebuilding from task context, comments and the saved handoff." };
       } else if (this.resumeId) {
         yield { type: "local.activity", kind: "conversation.resumed", text: "Continuing the saved conversation with its existing context." };
       }
@@ -354,10 +354,11 @@ class AppServerThread implements ThreadLike {
           excludeTurns: true
         }, signal ? { signal } : {}));
       } catch (cause) {
-        // Only the exact missing-rollout response from thread/resume confirms
-        // loss. Authentication, configuration, transport and timeout failures
-        // must never erase a healthy conversation by starting another one.
-        if (!(cause instanceof MissingConversationError)) throw cause;
+        // Crash recovery may rebuild after an explicit server refusal, before
+        // any turn input was sent. A timeout/disconnection is ambiguous and must
+        // not start another conversation. Ordinary resumes still require loss.
+        if (!(cause instanceof MissingConversationError) &&
+            !(this.options.rebuildOnResumeRejection && cause instanceof ResumeRejectedError)) throw cause;
         this.replacedMissingThread = true;
         response = asRecord(await transport.request("thread/start", {
           ...configuration, serviceName: SERVICE_NAME, ephemeral: false
@@ -624,9 +625,9 @@ class AppServerTransport {
           return;
         }
         const suffix = typeof code === "number" ? ` (${code})` : "";
-        pending.reject(new Error(
-          `Codex App Server request ${pending.method} failed${suffix}`
-        ));
+        const failure = `Codex App Server request ${pending.method} failed${suffix}`;
+        pending.reject(pending.method === "thread/resume"
+          ? new ResumeRejectedError(failure) : new Error(failure));
       } else {
         pending.resolve(message.result);
       }
@@ -659,6 +660,8 @@ class AppServerTransport {
 }
 
 /** Carries no raw protocol message, which could otherwise leak credentials. */
+class ResumeRejectedError extends Error {}
+
 class MissingConversationError extends Error {
   constructor() {
     super("Saved Codex conversation no longer exists");

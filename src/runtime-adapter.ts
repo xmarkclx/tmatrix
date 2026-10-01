@@ -38,7 +38,7 @@ export interface ThreadLike {
   runStreamed(input: Input, options?: {
     outputSchema?: unknown;
     signal?: AbortSignal;
-    /** Use only after confirmed conversation loss, never on transient failures. */
+    /** Use after confirmed conversation loss or an explicit resume rejection during crash recovery. */
     missingConversationInput?: () => Promise<Input>;
   }): Promise<StreamedTurnLike>;
 }
@@ -51,13 +51,15 @@ export interface RuntimeThreadOptions {
   approvalPolicy: "never";
   networkAccessEnabled: true;
   threadName: string;
+  /** Set only after the task lease was safely recovered from a dead owner. */
+  rebuildOnResumeRejection?: boolean;
 }
 export interface RuntimeLike {
   startThread(options: RuntimeThreadOptions): ThreadLike;
   resumeThread?(threadId: string, options: RuntimeThreadOptions): ThreadLike;
   close?(): Promise<void>;
 }
-export type RuntimeFactory = (profile: ExecutionProfile) => RuntimeLike;
+export type RuntimeFactory = (profile: ExecutionProfile, leaseEnvironment?: Record<string, string>) => RuntimeLike;
 export interface AdapterContext {
   /** Sanitized child environment. Never pass the queue's API_KEY to a harness. */
   environment: Record<string, string>;

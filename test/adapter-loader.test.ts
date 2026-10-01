@@ -67,6 +67,19 @@ describe("runtime adapters", () => {
     expect(() => createRuntimeFactory(invalid, context)(makeTicket())).toThrow("close");
   });
 
+  it("passes each run's lease tag without mutating the shared environment", () => {
+    const environments: Record<string, string>[] = [];
+    const adapter: RuntimeAdapter = { apiVersion: 1, id: "custom", create({ environment }) {
+      environments.push(environment);
+      return { startThread() { throw new Error("unused"); }, async close() {} };
+    } };
+    const factory = createRuntimeFactory(adapter, context);
+    factory(makeTicket(), { TMATRIX_CONVERSATION_LEASE: "first" });
+    factory(makeTicket(), { TMATRIX_CONVERSATION_LEASE: "second" });
+    expect(environments.map(env => env.TMATRIX_CONVERSATION_LEASE)).toEqual(["first", "second"]);
+    expect(context.environment.TMATRIX_CONVERSATION_LEASE).toBeUndefined();
+  });
+
   it("runs an installed module through the real ticket runner and closes it", async () => {
     const adapter = await loadAdapter("echo", resolve("examples/echo-adapter.mjs"));
     const factory = createRuntimeFactory(adapter, context);

@@ -4,6 +4,8 @@ export function sanitizedCodexEnvironment(env: NodeJS.ProcessEnv): Record<string
   );
   // API_KEY authenticates the daemon to the task app. It must not enter the agent process.
   delete sanitized.API_KEY;
+  // Each run receives its own lease tag; never inherit an ancestor run's tag.
+  delete sanitized.TMATRIX_CONVERSATION_LEASE;
   // App Server receives an honest public clientInfo identity. Never inherit a
   // private originator override from a shell, desktop app, or parent process.
   delete sanitized.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
