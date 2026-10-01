@@ -46,3 +46,43 @@ tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
 
 For an installed app and background daemon, see [Install on Mac or Windows](#releases-and-installation). To remove login startup later, see [Uninstall the daemon](#uninstall-the-daemon).
 
+
+
+## Build releases on your machine
+
+Release compilation and packaging run locally. GitHub Actions still checks pull
+requests and pushes to `main`, but tag pushes do not start hosted release builds.
+GitHub only stores the uploaded release assets.
+
+Use Linux, macOS, or WSL with full Git history, a current Go toolchain, Node/npm,
+Python 3.11+, PowerShell (`pwsh`, for the Windows installer tests), and GoReleaser
+2.18.2. Uploads also require authenticated GitHub CLI (`gh auth login`) and Git
+push access to `origin`.
+
+From a clean checkout of the commit you want to release:
+
+```sh
+git fetch origin main --tags
+git switch main
+git pull --ff-only origin main
+git tag v0.1.2 # choose a new version; one version tag per commit
+python3 scripts/release-local.py v0.1.2 --upload
+```
+
+The command runs the CI checks locally, builds all six Linux/macOS/Windows
+archives, embeds the commit count and hash, and verifies the archive manifest.
+Only after verification does it push the tag and upload a **draft**. It never
+restarts the daemon or modifies the running development engine. Omit `--upload`
+to build and verify without pushing or uploading anything.
+
+After reviewing the draft:
+
+```sh
+gh release edit v0.1.2 --repo xmarkclx/tmatrix --draft=false --latest
+```
+
+Publishing makes the existing `releases/latest/download/install.sh` URL serve
+the new installer. Failed local builds leave the local tag available for a retry;
+the command never moves tags or overwrites an existing release. If an upload
+fails partway through, inspect its draft before retrying. Changes to the source
+require committing them and choosing a matching new tag.
