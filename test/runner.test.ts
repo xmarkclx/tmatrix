@@ -78,6 +78,28 @@ function handoffText(
 }
 
 describe("TicketRunner", () => {
+  it("screens initial and steering text before executable turns without holding a flagged job", async () => {
+    const screened: string[] = [];
+    const api = apiMock();
+    const mailbox = new SteeringMailbox();
+    mailbox.enqueue({ worker_id: makeTicket().worker_id, input_revision: 2, content: "Changed suspicious instructions" });
+    const runner = new TicketRunner({
+      api, logger: nullLogger(), metrics: new Metrics(),
+      screenPrompt: async (_ticket, text) => { screened.push(text); },
+      runtimeFactory: () => ({ startThread: () => ({ runStreamed: async (input) => {
+        expect(screened).toContain(input);
+        return { events: (async function* () {
+          yield { type: "item.completed" as const, item: { id: "answer", type: "agent_message" as const,
+            text: handoffText("AI_DONE", "done", "done") } };
+          yield { type: "turn.completed" as const, usage };
+        })() };
+      } }) }),
+    });
+    await runner.run(makeTicket({ input_revision: 1 }), { runId: "screen-test", recovered: false, steering: mailbox });
+    expect(screened.some(text => text.includes("Changed suspicious instructions"))).toBe(true);
+    expect(api.reportResult).toHaveBeenCalled();
+  });
+
   it.each([
     ["FAST", "low", "priority"],
     ["NORMAL", "medium", "default"],

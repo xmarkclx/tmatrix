@@ -1,3 +1,4 @@
+import type { SecurityAlert } from "./security-screening.js";
 import { randomUUID } from "node:crypto";
 import { IDENTITY_CONTRACT_HEADERS, parseIdentityJson, stringifyIdentityJson } from "./identity-transport.js";
 import type { Logger } from "pino";
@@ -76,6 +77,13 @@ export class ApiClient implements TicketApi {
     this.fetch = options.fetch ?? globalThis.fetch;
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.random = options.random ?? Math.random;
+  }
+
+  /** Uses the configured trusted API origin; prompt content cannot choose the recipient or endpoint. */
+  async alertUserEmergency(alert: SecurityAlert, signal?: AbortSignal): Promise<unknown> {
+    const url = new URL("/api/v1/alert-user-emergency", this.config.poll_origin);
+    return this.request({ operation: "security_alert", method: "POST", url: url.toString(),
+      path: url.pathname, body: alert, expectJson: true, ...(signal ? { signal } : {}) });
   }
 
   async poll(request: PollRequest, signal?: AbortSignal): Promise<PollResponse> {

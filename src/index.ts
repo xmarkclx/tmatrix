@@ -1,3 +1,4 @@
+import { createPromptScreen } from "./security-screening.js";
 import { startLocalControlServer, type LocalControlServer } from "./local-control-server.js";
 import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
@@ -50,7 +51,12 @@ async function main(): Promise<void> {
     runtimeHome: adapter.id === "codex" ? (codexEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex")) : homedir(),
     referenceKey: config.api_key
   });
-  const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, conversationStore });
+  const screenPrompt = createPromptScreen({
+    apiKey: process.env.TMATRIX_SECURITY_OPENAI_API_KEY,
+    model: process.env.TMATRIX_SECURITY_MODEL || "gpt-5-mini",
+    alert: (alert, signal) => api.alertUserEmergency(alert, signal), logger,
+  });
+  const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, conversationStore, screenPrompt });
   let supervisor!: Supervisor;
   const control = new ControlClient({
     config,
