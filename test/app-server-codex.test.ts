@@ -326,6 +326,33 @@ describe("AppServerCodex", () => {
     }, "Repaired Codex App Server JSON split by literal string newlines");
   });
 
+  it.each([
+    [["Checking the failing path.", "Then validating the fix."], "Checking the failing path.\nThen validating the fix."],
+    [[], ""],
+    [undefined, ""]
+  ])("exposes only reasoning summaries, never raw content (%j)", async (summary, expected) => {
+    const server = standardServer();
+    const originalNotify = server.notify.bind(server);
+    server.notify = (method, params) => {
+      if (method === "turn/completed") {
+        originalNotify("item/completed", {
+          threadId: params.threadId,
+          turnId: (params.turn as { id: string }).id,
+          item: { id: "reasoning", type: "reasoning", summary, content: ["RAW_CONTENT_SENTINEL"] }
+        });
+      }
+      originalNotify(method, params);
+    };
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess() });
+    const streamed = await codex.startThread(threadOptions).runStreamed("Check the failure");
+    const events = await collect(streamed.events);
+    await codex.close();
+    expect(events).toContainEqual({
+      type: "item.completed", item: { id: "reasoning", type: "reasoning", text: expected }
+    });
+    expect(JSON.stringify(events)).not.toContain("RAW_CONTENT_SENTINEL");
+  });
+
   it("creates, names, and runs a persistent explicitly configured App Server thread", async () => {
     const server = standardServer();
     let launchArguments: readonly string[] | undefined;
@@ -439,6 +466,7 @@ describe("AppServerCodex", () => {
       input: [{ type: "text", text: "Do the ticket", text_elements: [] }],
       model: "gpt-5.6-sol",
       effort: "medium",
+      summary: "auto",
       serviceTier: "default",
       cwd: "/work/project",
       approvalPolicy: "never",

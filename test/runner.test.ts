@@ -829,6 +829,8 @@ describe("TMatrix local steering", () => {
     const turn = (id: string): WorkerThreadEvent[] => [
       { type: "turn.started" },
       { type: "local.activity", kind: "command.output", text: "private terminal output" },
+      { type: "item.completed", item: { id: "reasoning", type: "reasoning", text: "Checking keyboard navigation before changing focus handling." } },
+      { type: "item.completed", item: { id: "empty-reasoning", type: "reasoning", text: "  " } },
       { type: "item.completed", item: { id, type: "agent_message", text: handoffText("AI_DONE", "private handoff", "Ready") } },
       { type: "turn.completed", usage }
     ];
@@ -848,6 +850,9 @@ describe("TMatrix local steering", () => {
       api.reportProgress.mock.calls.map((call) => call[1]),
       api.reportResult.mock.calls.map((call) => call[1])
     ]);
+    expect(remotePayload).not.toContain("Checking keyboard navigation");
+    expect(events).toContainEqual({ kind: "item.completed.reasoning", text: "Checking keyboard navigation before changing focus handling." });
+    expect(events).toContainEqual({ kind: "item.completed.reasoning", text: "No reasoning summary provided" });
     expect(remotePayload).not.toContain("LOCAL_PREPARED_INPUT");
     expect(remotePayload).not.toContain("LOCAL_LIFECYCLE_INPUT");
     expect(api.reportResult.mock.calls[0]?.[1].input_revision).toBe(3);

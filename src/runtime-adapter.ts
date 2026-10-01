@@ -16,7 +16,9 @@ export interface DetailedFileChangeItem {
   id: string; type: "file_change"; changes: DetailedFileChange[]; status: "completed" | "failed";
 }
 export type WorkerThreadItem =
-  | { id: string; type: "agent_message" | "reasoning"; text: string }
+  | { id: string; type: "agent_message"; text: string }
+  /** Provider-authored summary only; never raw hidden reasoning. */
+  | { id: string; type: "reasoning"; text: string }
   | { id: string; type: "command_execution"; command: string; aggregated_output: string; exit_code?: number; status: "in_progress" | "completed" | "failed" }
   | DetailedFileChangeItem
   | { id: string; type: "mcp_tool_call"; server: string; tool: string; arguments: unknown; result?: { content: unknown[]; structured_content: unknown; _meta?: unknown }; error?: { message: string }; status: "in_progress" | "completed" | "failed" }
