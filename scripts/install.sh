@@ -36,7 +36,9 @@ cleanup() { rm -rf "$temp"; if [ -n "$lock" ]; then rmdir "$lock"; fi; }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
+release_label="Selected release"
 if [ "$version" = latest ]; then
+  release_label="Latest release"
   curl -fsSL --proto '=https' "https://api.github.com/repos/$repo/releases/latest" -o "$temp/release.json"
   version=$(node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!/^v?[0-9]+\.[0-9]+\.[0-9]+(?:[-.][A-Za-z0-9.-]+)?$/.test(j.tag_name||""))process.exit(1);process.stdout.write(j.tag_name)' "$temp/release.json")
 fi
@@ -72,6 +74,15 @@ fi
 bundle=$(mktemp -d "$prefix/lib/tmatrix/releases/${archive_version}.XXXXXX")
 mv "$temp/engine" "$bundle/engine"
 install -m 755 "$temp/tmatrix" "$bundle/tmatrix"
+# Report the installed and verified target builds before switching the CLI.
+if [ -x "$prefix/bin/tmatrix" ]; then
+  current_identity=$("$prefix/bin/tmatrix" --version 2>/dev/null) || current_identity="unknown (could not read installed version)"
+  echo "Currently installed CLI: $current_identity"
+else
+  echo "Currently installed CLI: none"
+fi
+target_identity=$("$bundle/tmatrix" --version)
+echo "$release_label ($tag): $target_identity"
 # Atomic rename works even while the old executable is in use.
 ln -s "$bundle/tmatrix" "$temp/tmatrix-link"
 mv -f "$temp/tmatrix-link" "$prefix/bin/.tmatrix-new"
@@ -82,11 +93,13 @@ python3 - "$prefix/bin" <<'PYTHON'
 import os, pathlib, shlex, sys
 home = pathlib.Path.home()
 line = '\n# TMatrix installer\nexport PATH=' + shlex.quote(sys.argv[1]) + ':"$PATH"\n'
+# Shell profiles may contain legacy encodings. Preserve every existing byte.
+entry = os.fsencode(line)
 for name in ('.profile', '.bashrc', '.zshrc'):
     path = home / name
-    text = path.read_text() if path.exists() else ''
-    if line not in text:
-        with path.open('a') as f: f.write(line)
+    text = path.read_bytes() if path.exists() else b''
+    if entry not in text:
+        with path.open('ab') as f: f.write(entry)
 PYTHON
 echo "Installed: $prefix/bin/tmatrix (open a new terminal to refresh PATH)"
 echo "Authenticate Codex: $bundle/engine/node_modules/.bin/codex login"
