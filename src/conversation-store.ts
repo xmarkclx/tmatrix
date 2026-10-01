@@ -1,11 +1,23 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, open, readFile, readlink, rename, symlink, unlink } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readlink, rename, rmdir, symlink, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { WorkerError } from "./errors.js";
 import { conversationReferenceSchema, type Ticket, type ConversationReference } from "./types.js";
+
+export type BootIdentity = { machine: string; boot: string };
+
+/** Linux/WSL boot identity: unavailable platforms deliberately fail closed. */
+export async function bootIdentity(): Promise<BootIdentity | undefined> {
+  try {
+    const machine = (await readFile("/etc/machine-id", "utf8")).trim();
+    const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    if (/^[a-f0-9]{32}$/.test(machine) && /^[a-f0-9-]{36}$/.test(boot)) return { machine, boot };
+  } catch { /* Recovery needs positive evidence, not a failed process probe. */ }
+  return undefined;
+}
 
 const threadId = z.string().min(1).max(255);
 const recordSchema = z.object({
@@ -27,9 +39,11 @@ export class ConversationStore {
   private readonly lockDirectory: string;
   private readonly namespace: string;
   private readonly referenceKey: string | undefined;
+  private readonly getBootIdentity: () => Promise<BootIdentity | undefined>;
   private readonly writes = new Map<string, Promise<void>>();
 
-  constructor(options: { directory: string; namespace: string; referenceKey?: string; adapterId?: string; runtimeHome?: string }) {
+  constructor(options: { directory: string; namespace: string; referenceKey?: string; adapterId?: string; runtimeHome?: string; bootIdentity?: () => Promise<BootIdentity | undefined> }) {
+    this.getBootIdentity = options.bootIdentity ?? bootIdentity;
     this.lockDirectory = join(options.directory, this.hash(options.namespace));
     // Preserve all existing Codex routes. Other adapters cannot consume their IDs.
     this.namespace = this.hash(!options.adapterId || options.adapterId === "codex"
@@ -166,7 +180,8 @@ export class ConversationStore {
     await this.prepare();
     await mkdir(this.lockDirectory, { recursive: true, mode: 0o700 });
     const path = join(this.lockDirectory, `${this.hash(this.task(ticket))}.json.lock`);
-    const owner = JSON.stringify({ pid: process.pid, host: hostname(), token: randomUUID() });
+    const identity = await this.getBootIdentity();
+    const owner = JSON.stringify({ pid: process.pid, host: hostname(), token: randomUUID(), identity });
     for (;;) {
       signal?.throwIfAborted();
       try {
@@ -193,25 +208,84 @@ export class ConversationStore {
         if (this.isCode(error, "ENOENT")) continue;
         throw this.busy();
       }
-      let parsed: unknown;
-      try { parsed = JSON.parse(stale); } catch { throw this.busy(); }
-      const previous = this.object(parsed);
-      if (previous?.host !== hostname() || !Number.isSafeInteger(previous.pid) || Number(previous.pid) <= 0 ||
-          typeof previous.token !== "string" || !/^[a-f0-9-]{36}$/.test(previous.token)) throw this.busy();
-      let alive = true;
-      try { process.kill(Number(previous.pid), 0); } catch (error) {
-        if (!this.isCode(error, "ESRCH")) throw this.busy();
-        alive = false;
+      const previous = this.lockOwner(stale);
+      if (this.fromPreviousBoot(previous, identity)) {
+        await this.removeStaleLock(path, stale);
+        continue;
       }
-      if (alive) {
+      if (this.ownerAlive(previous)) {
         await delay(250, undefined, signal ? { signal } : {});
         continue;
       }
-
-      // A dead daemon does not prove that its detached runtime descendants
-      // stopped. Leave the lease intact until a human verifies teardown.
-      throw new WorkerError({ message: "The previous daemon exited while holding this conversation. Confirm its runtime stopped, then remove the stale conversation lock before retrying.", code: "CONVERSATION_OWNER_LOST", stage: "conversation.lock" });
+      throw this.ownerLost();
     }
+  }
+
+  /** Offline recovery never starts a runtime or contacts the task API. */
+  async recover(taskId: string, confirmRuntimeStopped = false): Promise<boolean> {
+    if (!taskId.trim()) throw new Error("A canonical task ID is required.");
+    const path = join(this.lockDirectory, `${this.hash(taskId)}.json.lock`);
+    let stale: string;
+    try { stale = await readlink(path); } catch (error) {
+      if (this.isCode(error, "ENOENT")) return false;
+      throw this.busy();
+    }
+    const previous = this.lockOwner(stale);
+    if (!this.fromPreviousBoot(previous, await this.getBootIdentity())) {
+      if (this.ownerAlive(previous)) throw this.busy();
+      if (!confirmRuntimeStopped) throw this.ownerLost();
+    }
+    await this.removeStaleLock(path, stale);
+    return true;
+  }
+
+  private lockOwner(encoded: string): Record<string, unknown> {
+    let previous: Record<string, unknown> | undefined;
+    try { previous = this.object(JSON.parse(encoded)); } catch { throw this.busy(); }
+    if (previous?.host !== hostname() || !Number.isSafeInteger(previous.pid) || Number(previous.pid) <= 0 ||
+        typeof previous.token !== "string" || !/^[a-f0-9-]{36}$/.test(previous.token)) throw this.busy();
+    return previous;
+  }
+
+  private fromPreviousBoot(owner: Record<string, unknown>, current: BootIdentity | undefined): boolean {
+    const saved = this.object(owner.identity);
+    return !!current && saved?.machine === current.machine && typeof saved.boot === "string" &&
+      /^[a-f0-9-]{36}$/.test(saved.boot) && saved.boot !== current.boot;
+  }
+
+  private ownerAlive(owner: Record<string, unknown>): boolean {
+    try { process.kill(Number(owner.pid), 0); return true; } catch (error) {
+      if (this.isCode(error, "ESRCH")) return false;
+      throw this.busy();
+    }
+  }
+
+  private async removeStaleLock(path: string, expected: string): Promise<void> {
+    // Serialize recoverers, including the offline command. Without this guard,
+    // two stale readers could unlink a newly acquired lease (check/unlink race).
+    const guard = `${path}.recovery`;
+    try { await mkdir(guard, { mode: 0o700 }); } catch (error) {
+      if (this.isCode(error, "EEXIST")) throw new WorkerError({
+        message: "Conversation recovery is in progress or was interrupted. If it was interrupted, confirm all recovery commands stopped before removing the .json.lock.recovery directory.",
+        code: "CONVERSATION_RECOVERY_BUSY", stage: "conversation.lock", retryable: true
+      });
+      throw error;
+    }
+    try {
+      const current = await readlink(path).catch((error: unknown) => {
+        if (this.isCode(error, "ENOENT")) return undefined;
+        throw error;
+      });
+      if (current !== expected) throw this.busy();
+      await unlink(path);
+    } finally { await rmdir(guard); }
+  }
+
+  private ownerLost(): WorkerError {
+    return new WorkerError({
+      message: "The previous daemon exited while holding this conversation, but runtime teardown is unverified. Outside this conversation, run tmatrix conversation recover <canonical-task-id> after a verified reboot, or add --confirm-runtime-stopped only after confirming its runtime and descendants stopped.",
+      code: "CONVERSATION_OWNER_LOST", stage: "conversation.lock"
+    });
   }
 
   private contextReference(ticket: Ticket, summary: unknown): { thread: string; ticket: string } | undefined {

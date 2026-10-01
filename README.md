@@ -43,3 +43,6 @@ tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
 # Security Recommendations
 - Best to run on its own secure environment like on a VM.
 - Turn off / pause intake when not being used.
+
+For an installed app and background daemon, see [Install on Mac or Windows](#releases-and-installation). To remove login startup later, see [Uninstall the daemon](#uninstall-the-daemon).
+
