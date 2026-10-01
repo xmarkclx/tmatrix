@@ -223,6 +223,25 @@ func (s *Service) StartConsole(ctx context.Context) error {
 }
 
 func (s *Service) startConsole(ctx context.Context, restart bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !restart {
+		// A draining daemon keeps its bridge open so the console can monitor
+		// admitted work. Starting its unit would cancel the installer's stop
+		// job and then wait for that same drain instead of opening the console.
+		if client, err := s.client(); err == nil {
+			probe, cancel := context.WithTimeout(ctx, time.Second)
+			_, err = client.Snapshot(probe)
+			cancel()
+			if err == nil {
+				return nil
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if runtime.GOOS == "darwin" {
 		return s.startLaunchAgentConsole(ctx, restart)
 	}
@@ -239,9 +258,11 @@ func (s *Service) startConsole(ctx context.Context, restart bool) error {
 				// Wait for the old supervisor to exit before launching its replacement.
 				action = "restart"
 			}
-			cmd := exec.CommandContext(ctx, "systemctl", "--user", action, "tmatrix.service")
+			// Refuse conflicting jobs rather than replacing an upgrade's stop
+			// request if its bridge disappeared between the probe and this call.
+			cmd := exec.CommandContext(ctx, "systemctl", "--user", "--job-mode=fail", action, "tmatrix.service")
 			if err := cmd.Run(); err != nil {
-				return errors.New("cannot start installed TMatrix service; inspect systemctl --user status tmatrix.service")
+				return errors.New("cannot start installed TMatrix service (it may be draining for an upgrade); inspect tmatrix status and systemctl --user status tmatrix.service")
 			}
 			return nil
 		}
