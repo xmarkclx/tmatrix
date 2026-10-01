@@ -641,10 +641,12 @@ then automatically installs and starts the login service. On an already
 connected installation it installs/upgrades the service immediately. Credentials,
 instance identity, conversations and saved intake settings are retained.
 
-Rerun the same installer to upgrade. It prepares a new immutable release directory,
+**Yes: rerunning the same installer also upgrades an existing TMatrix daemon**
+for the default configuration. It prepares a new immutable release directory,
 atomically switches the TUI executable, then uses the existing service lifecycle
 to pause intake, wait without a deadline for admitted workers, and start the new
-engine. Keep the installer open until completion. It never deletes old bundles
+engine. The installer announces draining and confirms when the service has
+started; keep it open until completion. It never deletes old bundles
 or modifies a separate AI Worker service. Concurrent installers are rejected.
 If interrupted, inspect the service and `~/.local/lib/tmatrix/install.lock`
 before removing a stale lock. An interrupted/failed service setup returns an

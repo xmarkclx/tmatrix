@@ -23,11 +23,11 @@ func (s *Service) SetupService() error {
 		fmt.Println("Service setup queued. Authenticate Codex, then open tmatrix and connect with c; the service will be installed automatically.")
 		return nil
 	}
-	return s.finishServiceSetup()
+	return s.finishServiceSetup(os.Stdout)
 }
 
-func (s *Service) finishServiceSetup() error {
-	if err := manageService(s.Dir, "install", io.Discard); err != nil {
+func (s *Service) finishServiceSetup(output io.Writer) error {
+	if err := manageService(s.Dir, "install", output); err != nil {
 		return err
 	}
 	err := os.Remove(filepath.Join(s.Dir, "install-service-on-connect"))
