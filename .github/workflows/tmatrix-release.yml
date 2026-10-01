@@ -51,6 +51,8 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci
+      - name: Record commit count from full release history
+        run: echo "TMATRIX_COMMIT_COUNT=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: 'v2.18.2'
@@ -65,5 +67,5 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           gh release create "$RELEASE_TAG" --verify-tag --draft \
-            --title "TMatrix $RELEASE_TAG" --generate-notes \
+            --title "TMatrix $RELEASE_TAG (build $TMATRIX_COMMIT_COUNT, ${GITHUB_SHA:0:12})" --generate-notes \
             dist/*.tar.gz dist/*.zip dist/checksums.txt scripts/install.sh scripts/install.ps1 scripts/uninstall-daemon.sh scripts/uninstall-daemon.ps1

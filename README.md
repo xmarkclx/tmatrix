@@ -642,7 +642,17 @@ connected installation it installs/upgrades the service immediately. Credentials
 instance identity, conversations and saved intake settings are retained.
 
 **Yes: rerunning the same installer also upgrades an existing TMatrix daemon**
-for the default configuration. It prepares a new immutable release directory,
+for the default configuration. Before switching, the installer displays the
+currently installed CLI and the selected release (the latest published release
+unless you pass `--version`). New builds include the release tag, total reachable
+Git commit count, and 12-character commit ID, for example
+`TMatrix 0.1.1 (build 42, commit 0123456789ab)`. Run `tmatrix --version`
+anytime to inspect the installed CLI without starting or stopping the daemon.
+The count is `git rev-list --count HEAD` from full history; the commit ID
+distinguishes branches with equal counts. This identifies the CLI on disk,
+not an older daemon still draining. Old releases may lack the count.
+
+It prepares a new immutable release directory,
 atomically switches the TUI executable, then uses the existing service lifecycle
 to pause intake, wait without a deadline for admitted workers, and start the new
 engine. The installer announces draining and confirms when the service has
@@ -712,12 +722,20 @@ pwsh -File scripts/test_install.ps1 # offline Windows wrapper checks; requires P
 python3 scripts/test_release.py
 npm audit
 TMATRIX_TEST_ENGINE_DIR="$PWD/staging/engine" go test -race ./internal/app -run TestActualEngineConnectionLifecycle -v
+export TMATRIX_COMMIT_COUNT=$(git rev-list --count HEAD)
 goreleaser check
 goreleaser release --snapshot --clean --skip=publish,announce
 python3 scripts/verify-release.py
 ```
 
-GoReleaser needs a Git checkout with commits. Run the snapshot build and archive
+Use `sh scripts/build.sh` (or `sh scripts/build.sh bin/tmatrix-<pr-number>`)
+for local binaries with commit counts and IDs. Modified checkouts append
+`-dirty` to the commit ID. The helper requires full Git history; fetch with
+`git fetch --unshallow` when needed. A plain `go build` reports the embedded
+Git revision when available and explicitly shows `build unknown`.
+
+GoReleaser needs a Git checkout with full history. The release workflow records
+the same count in every platform binary and the GitHub release title. Run the snapshot build and archive
 verification above before publishing; packaging unit tests use fixtures and do
 not verify actual release artifacts. The lifecycle integration uses an isolated
 config directory and fake credentials,
