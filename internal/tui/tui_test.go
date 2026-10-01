@@ -285,7 +285,7 @@ func TestCompactHelpAndFormsKeepControlsReachable(t *testing.T) {
 	m = resized.(Model)
 	m, _ = press(m, "?")
 	m, _ = press(m, "end")
-	if !strings.Contains(m.View(), "selecting.") {
+	if !strings.Contains(m.View(), "q / Ctrl+C   Detach") {
 		t.Fatalf("guide cannot reach last content: %s", m.View())
 	}
 	for _, target := range []screen{connectScreen, settingsScreen} {
