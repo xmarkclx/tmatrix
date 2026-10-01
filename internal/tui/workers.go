@@ -166,7 +166,7 @@ func (m Model) workerContent() layoutBlock {
 		items = append(items, control{pinLabel, "P"})
 		b.append(controls(items, width))
 		if !m.compact() {
-			hint := "Messages queue for the next turn; receipt is separate."
+			hint := ""
 			if m.drafts[m.selected] != "" {
 				hint = "Draft saved for this conversation · Enter to continue."
 			}
