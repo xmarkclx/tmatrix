@@ -198,6 +198,7 @@ if action == "start":
         saved.update(max_workers=3, resume_intake=False)
         config_path.write_text(json.dumps(saved))
         (config_dir / "credentials").write_text("offline-fixture")
+        (config_dir / "credentials").chmod(0o600)
         (config_dir / "bridge.json").write_text(discovery)
         (config_dir / "bridge.json").chmod(0o600)
         unit = self.home / ".config/systemd/user/tmatrix.service"
