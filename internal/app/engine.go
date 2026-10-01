@@ -135,10 +135,6 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 	if check.Run() != nil {
 		return errors.New("engine prerequisites missing; install Node.js 20.19 or 22.12+ and run npm ci --omit=dev in the engine directory")
 	}
-	python := exec.CommandContext(ctx, "python3", "-c", "import sys,fcntl; sys.exit(0 if sys.version_info >= (3,11) else 1)")
-	if python.Run() != nil {
-		return errors.New("Python 3.11+ is required for the engine's task worktree lifecycle")
-	}
 	engineConfig := map[string]any{
 		"poll_url": cfg.PollURL, "instance_id": cfg.InstanceID,
 		"max_workers": cfg.MaxWorkers, "poll_interval_ms": cfg.PollIntervalMS,

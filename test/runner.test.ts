@@ -792,33 +792,6 @@ describe("TicketRunner", () => {
   });
 });
 
-describe("worktree activity lease", () => {
-  it.each([false, true])("releases only after successful Codex teardown (failure=%s)", async (failClose) => {
-    const events: string[] = [];
-    const capture: CodexCapture = {};
-    const codex = codexMock([[{
-      type: "item.completed",
-      item: { id: "result", type: "agent_message", text: handoffText("AI_DONE", "saved", "ready") }
-    }, { type: "turn.completed", usage }]], capture);
-    codex.close = async () => {
-      events.push("close");
-      if (failClose) throw new Error("child still active");
-    };
-    const runner = new TicketRunner({
-      codexFactory: () => codex,
-      api: apiMock(), logger: nullLogger(), metrics: new Metrics(),
-      worktreeLifecycle: {
-        start: async () => { events.push("start"); return "MANAGED_WORKTREE_POLICY"; },
-        end: async () => { events.push("end"); }
-      }
-    });
-    await runner.run(makeTicket(), { runId: "lease-test", recovered: false });
-    expect(events).toEqual(failClose ? ["start", "close"] : ["start", "close", "end"]);
-    expect(capture.prompts?.[0]).toContain("MANAGED_WORKTREE_POLICY");
-  });
-});
-
-
 describe("TMatrix local steering", () => {
   it("keeps queued messages on the same thread without inventing task revisions", async () => {
     const mailbox = new SteeringMailbox();
@@ -835,17 +808,19 @@ describe("TMatrix local steering", () => {
       { type: "turn.completed", usage }
     ];
     const runner = new TicketRunner({
-      codexFactory: () => codexMock([turn("one"), turn("two")], capture), api, logger: nullLogger(), metrics: new Metrics(),
-      worktreeLifecycle: { start: async () => "LOCAL_LIFECYCLE_INPUT", end: async () => undefined }
+      codexFactory: () => codexMock([turn("one"), turn("two")], capture), api, logger: nullLogger(), metrics: new Metrics()
     });
-    await runner.run(makeTicket({ input_revision: 3, instructions: "LOCAL_PREPARED_INPUT" }), { runId: "local-test", recovered: false, steering: mailbox, observe: (event) => events.push(event) });
+    await runner.run(makeTicket({ input_revision: 3, instructions: "LOCAL_PREPARED_INPUT: Follow the repository checkout conventions." }), { runId: "local-test", recovered: false, steering: mailbox, observe: (event) => events.push(event) });
     expect(capture.startThreadCalls).toBe(1);
     expect(capture.prompts).toHaveLength(2);
     expect(capture.prompts?.[1]).toContain("Check keyboard navigation");
     expect(events.filter((event) => event.kind === "prompt.prepared")).toEqual([
       { kind: "prompt.prepared", text: capture.prompts?.[0], input_revision: 3 }
     ]);
-    expect(events[0]?.text).toContain("LOCAL_LIFECYCLE_INPUT");
+    expect(events[0]?.text).toContain("LOCAL_PREPARED_INPUT");
+    expect(capture.prompts?.[0]).not.toContain("Before PR work: worktree checklist");
+    expect(capture.prompts?.[0]).not.toContain("worktrees.py");
+    expect(capture.prompts?.[0]).toContain("Follow the repository checkout conventions.");
     const remotePayload = JSON.stringify([
       api.reportProgress.mock.calls.map((call) => call[1]),
       api.reportResult.mock.calls.map((call) => call[1])
@@ -854,7 +829,6 @@ describe("TMatrix local steering", () => {
     expect(events).toContainEqual({ kind: "item.completed.reasoning", text: "Checking keyboard navigation before changing focus handling." });
     expect(events).toContainEqual({ kind: "item.completed.reasoning", text: "No reasoning summary provided" });
     expect(remotePayload).not.toContain("LOCAL_PREPARED_INPUT");
-    expect(remotePayload).not.toContain("LOCAL_LIFECYCLE_INPUT");
     expect(api.reportResult.mock.calls[0]?.[1].input_revision).toBe(3);
     expect(events.filter((event) => event.steering_id === "local-1").map((event) => event.kind)).toEqual(["steering.runtime_received", "steering.response_observed"]);
     expect(events.some((event) => event.text === "private terminal output")).toBe(true);

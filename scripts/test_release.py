@@ -30,7 +30,7 @@ class ReleaseTests(unittest.TestCase):
         self.source = self.root
         (self.source / "src").mkdir()
         for name in ("tsconfig.build.json", "package.json", "package-lock.json",
-                     "scripts/worktrees.py", "LICENSE"):
+                     "LICENSE"):
             path = self.source / name
             path.parent.mkdir(exist_ok=True)
             path.write_text("fictional fixture")
@@ -60,6 +60,7 @@ class ReleaseTests(unittest.TestCase):
         manifest = json.loads((self.root / "staging/release-manifest.json").read_text())
         self.assertIn("dist/index.js", manifest)
         self.assertNotIn("dist/private.log", manifest)
+        self.assertFalse(any(name.endswith(".py") for name in manifest))
 
     def test_failed_compiler_preserves_previous_release_and_live_engine(self):
         with patch.object(stage.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "tsc")):

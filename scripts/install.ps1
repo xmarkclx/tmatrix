@@ -15,7 +15,7 @@ if (!$Native) {
     $release = if ($Version -eq 'latest') { 'latest/download' } else { 'download/v' + $Version.TrimStart('v') }
     $scriptUrl = "https://github.com/$Repo/releases/$release/install.sh"
     & wsl.exe @wslArgs -- sh -c 'set -eu; t=$(mktemp); trap ''rm -f "$t"'' EXIT; curl -fsSL --proto ''=https'' "$1" -o "$t"; sh "$t" --repo "$2" --version "$3"' sh $scriptUrl $Repo $Version
-    if ($LASTEXITCODE -ne 0) { throw 'WSL setup failed. Ensure the distribution has Node 20.19 or 22.12+, npm, Python 3.11+, curl and a working user systemd session, then rerun.' }
+    if ($LASTEXITCODE -ne 0) { throw 'WSL setup failed. Ensure the distribution has Node 20.19 or 22.12+, npm, curl and a working user systemd session, then rerun.' }
     Write-Host 'Installed in WSL. Open that distribution and run tmatrix. The daemon runs while WSL is running.'
     return
 }

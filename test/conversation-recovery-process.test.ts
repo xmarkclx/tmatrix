@@ -1,18 +1,25 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import * as fs from "node:fs/promises";
 import { mkdtemp, readdir, readlink, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConversationStore } from "../src/conversation-store.js";
 import { LEASE_ENV, processStart } from "../src/conversation-recovery.js";
 import { makeTicket } from "./helpers.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, readdir: vi.fn(actual.readdir) };
+});
 
 const children: ChildProcess[] = [];
 const detached: number[] = [];
 const directories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const pid of detached.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch {} }
   for (const child of children.splice(0)) {
     if (child.exitCode === null && child.signalCode === null) {
@@ -54,6 +61,14 @@ describe.skipIf(process.platform !== "linux")("real orphan runtime recovery", ()
     await finished;
     expect(await processStart(orphanPid)).toBeDefined();
     await symlink(JSON.stringify({ ...owner, pid: 2147483647 }), lock);
+    // Exercise real process inspection/signalling against fixture processes.
+    // Unrelated user services can make /proc/environ inaccessible, correctly
+    // blocking production recovery but making this success-path test flaky.
+    // Denied inspection is covered separately by conversation-recovery.test.ts.
+    const readDirectory = vi.mocked(fs.readdir).getMockImplementation()!;
+    vi.spyOn(fs, "readdir").mockImplementation(async (...args) => String(args[0]) === "/proc"
+      ? [String(orphanPid), String(unrelated.pid)] as never
+      : readDirectory(...args));
     const recovered = await store.acquire(ticket);
     expect(recovered.recovered).toBe(true);
     expect(await processStart(orphanPid)).toBeUndefined();
