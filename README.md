@@ -30,26 +30,6 @@ Mac, Linux, or Windows WSL:
 curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh | sh
 ```
 
-On macOS, the installer reuses compatible Node.js/npm installations.
-Missing or outdated Node.js/npm are installed through Homebrew; if Homebrew is
-missing, its official installer runs first and may request administrator access
-or Command Line Tools. The installer selects the installed runtimes for setup
-and saves their paths for future terminals. No TypeScript compiler is needed.
-Homebrew must support your macOS version and hardware.
-
-Linux/WSL still requires Node.js 20.19 or 22.12+ and npm to be installed
-beforehand. Installing and running TMatrix does not require Python.
-
-Worktree conventions come from task and repository instructions. TMatrix does not
-inject a checkout workflow, allocate worktrees, or manage their cleanup. Existing
-checkouts and recovery archives are left untouched. Task execution ownership,
-cancellation confirmation, and draining remain enforced by the engine. Previously
-started conversations may still contain the old worktree instructions in their
-history; removing the workflow does not rewrite that history.
-
-Python is still used by contributor release and test scripts; it is not shipped
-as a runtime dependency.
-
 - Connect using your TzuDo API key on https://tzudo.app/settings.
 - Currently only supports Codex for now. Claude Code Integration is on the roadmap.
 
