@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -164,7 +165,7 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(s.Dir, "install-service-on-connect")); err == nil {
-		return s.finishServiceSetup()
+		return s.finishServiceSetup(io.Discard)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

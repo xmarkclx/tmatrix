@@ -92,6 +92,7 @@ echo "Installed: $prefix/bin/tmatrix (open a new terminal to refresh PATH)"
 echo "Authenticate Codex: $bundle/engine/node_modules/.bin/codex login"
 # The new CLI drains existing workers via the bridge and refreshes the OS service.
 # First installs defer service creation until the user connects with credentials.
+echo "Setting up the daemon. Existing workers will finish before the new engine starts; keep this terminal open."
 if ! "$prefix/bin/tmatrix" --engine-dir "$bundle/engine" setup; then
   echo "Service setup incomplete. Bundle retained at $bundle; rerun tmatrix setup after resolving the reported error. Previous releases are retained." >&2
   exit 1

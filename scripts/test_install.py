@@ -1,6 +1,10 @@
 """Exercise the curl installer offline, including a corrupt release archive."""
 import hashlib
 import io
+import json
+import http.server
+import sys
+import threading
 import os
 from pathlib import Path
 import subprocess
@@ -57,7 +61,7 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         path.chmod(0o755)
 
     def run_installer(self, version="1.2.3"):
-        env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], INSTALL_FIXTURE=str(self.root), HOME=str(self.home))
+        env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], INSTALL_FIXTURE=str(self.root), HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"))
         return subprocess.run(["sh", str(INSTALLER), "--repo", "fixture/tmatrix", "--version", version, "--prefix", str(self.prefix)], env=env, capture_output=True, text=True)
 
     def test_valid_archive_installs_binary_and_engine(self):
@@ -69,7 +73,7 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.assertIn("engine/node_modules/.bin/codex login", result.stdout)
 
     def test_official_repository_default(self):
-        env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], INSTALL_FIXTURE=str(self.root), HOME=str(self.home))
+        env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], INSTALL_FIXTURE=str(self.root), HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"))
         env.pop("TMATRIX_REPO", None)
         result = subprocess.run(["sh", str(INSTALLER), "--version", "1.2.3", "--prefix", str(self.prefix)], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -125,6 +129,106 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.assertEqual(args[0], "--engine-dir")
         self.assertTrue(Path(args[1]).joinpath("dist/index.js").exists())
         self.assertEqual(args[2], "setup")
+
+    @unittest.skipUnless(sys.platform == "linux", "systemd upgrade fixture requires Linux")
+    def test_real_cli_upgrades_existing_daemon(self):
+        # Run the actual CLI while replacing only OS supervision and the bridge.
+        # No host service, credentials, or engine process is touched.
+        binary = self.root / "tmatrix"
+        subprocess.run(["go", "build", "-o", str(binary), "./cmd/tmatrix"],
+                       cwd=INSTALLER.parent.parent, check=True, capture_output=True)
+        with tarfile.open(self.archive, "w:gz") as archive:
+            archive.add(binary, arcname="tmatrix")
+            for name, data in {
+                "engine/dist/index.js": b"// TMATRIX_CONTROL_FILE TMATRIX_INTAKE_PAUSED",
+                "engine/dist/local-control-server.js": b"// fixture",
+                "engine/package.json": b'{"private":true}',
+            }.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        self.checksum.write_text(hashlib.sha256(self.archive.read_bytes()).hexdigest()
+                                 + "  " + self.archive.name + "\n")
+
+        class Bridge(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"version":1,"max_workers":3,"running_workers":0}')
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Bridge)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        discovery = json.dumps({"version": 1, "pid": os.getpid(),
+                                "url": f"http://127.0.0.1:{server.server_port}",
+                                "token": "offline-bridge-fixture"})
+        (self.root / "discovery").write_text(discovery)
+        self.tool("systemctl", """#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+root = Path(os.environ["INSTALL_FIXTURE"])
+args = sys.argv[1:]
+assert args[0] == "--user"
+action = args[1]
+with (root / "service-calls").open("a") as f:
+    f.write(action + "\\n")
+bridge = Path(os.environ["XDG_CONFIG_HOME"]) / "tmatrix/bridge.json"
+if action == "stop":
+    bridge.unlink(missing_ok=True)
+if action == "start":
+    if (root / "fail-start").exists():
+        sys.exit(42)
+    bridge.write_text((root / "discovery").read_text())
+    bridge.chmod(0o600)
+""")
+        first = self.run_installer()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("Service setup queued", first.stdout)
+        self.assertFalse((self.root / "service-calls").exists())
+        old = (self.prefix / "bin/tmatrix").resolve()
+        config_dir = self.home / ".config/tmatrix"
+        config_path = config_dir / "config.json"
+        saved = json.loads(config_path.read_text())
+        saved.update(max_workers=3, resume_intake=False)
+        config_path.write_text(json.dumps(saved))
+        (config_dir / "credentials").write_text("offline-fixture")
+        (config_dir / "bridge.json").write_text(discovery)
+        (config_dir / "bridge.json").chmod(0o600)
+        unit = self.home / ".config/systemd/user/tmatrix.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text('# Managed by tmatrix service install\n'
+                        + f'ExecStart="{old}" --config-dir "{config_dir}" daemon\n')
+
+        upgraded = self.run_installer()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        new = (self.prefix / "bin/tmatrix").resolve()
+        self.assertNotEqual(new, old)
+        self.assertTrue(old.exists())
+        self.assertIn(str(new), unit.read_text())
+        expected = dict(saved, engine_dir=str(new.with_name("engine")))
+        actual = json.loads(config_path.read_text())
+        actual.setdefault("resume_intake", False)
+        self.assertEqual(actual, expected)
+        self.assertEqual((config_dir / "credentials").read_text(), "offline-fixture")
+        self.assertFalse((config_dir / "install-service-on-connect").exists())
+        self.assertEqual((self.root / "service-calls").read_text().splitlines(),
+                         ["daemon-reload", "enable", "stop", "start"])
+        self.assertIn("Draining existing TMatrix workers", upgraded.stdout)
+        self.assertIn("Service enabled and started", upgraded.stdout)
+
+        (self.root / "fail-start").touch()
+        failed = self.run_installer()
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Service setup incomplete", failed.stderr)
+        self.assertNotIn("Service enabled and started", failed.stdout)
+        self.assertTrue((config_dir / "install-service-on-connect").exists())
+        self.assertTrue(new.exists())
 
     def test_service_failure_reports_failure_and_retains_previous_bundle(self):
         self.assertEqual(self.run_installer().returncode, 0)
