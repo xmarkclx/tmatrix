@@ -29,7 +29,7 @@ class InstallerTests(unittest.TestCase):
         self.archive = self.root / "tmatrix_1.2.3_linux_amd64.tar.gz"
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, data in {
-                "tmatrix": b'#!/bin/sh\nprintf "%s\\n" "$@" >> "$INSTALL_FIXTURE/setup-args"\nif [ -f "$INSTALL_FIXTURE/fail-setup" ]; then exit 1; fi\n' ,
+                "tmatrix": b'#!/bin/sh\nif [ "$1" = --version ]; then echo "TMatrix 1.2.3 (build 42, commit 0123456789ab)"; exit 0; fi\nprintf "%s\\n" "$@" >> "$INSTALL_FIXTURE/setup-args"\nif [ -f "$INSTALL_FIXTURE/fail-setup" ]; then exit 1; fi\n' ,
                 "engine/dist/index.js": b"// offline installer fixture\n",
                 "engine/package.json": b'{"private":true}',
             }.items():
@@ -116,6 +116,32 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.assertNotEqual(old, (self.prefix / "bin/tmatrix").resolve())
         self.assertEqual((self.home / ".profile").read_text().count("# TMatrix installer"), 1)
 
+    def test_non_utf8_profiles_are_preserved_and_setup_runs(self):
+        original = b"# legacy shell profile\n# byte: \x9c\xff\nexport EXISTING=yes\n"
+        # Exercise shell quoting at the same time as preserving arbitrary bytes.
+        self.prefix = self.root / "install with spaces and 'quotes'"
+        for name in (".profile", ".bashrc", ".zshrc"):
+            (self.home / name).write_bytes(original)
+        for _ in range(2):
+            result = self.run_installer()
+            self.assertEqual(result.returncode, 0, result.stderr)
+        for name in (".profile", ".bashrc", ".zshrc"):
+            profile = (self.home / name).read_bytes()
+            self.assertTrue(profile.startswith(original))
+            self.assertEqual(profile.count(b"# TMatrix installer"), 1)
+        self.assertEqual((self.root / "setup-args").read_text().splitlines().count("setup"), 2)
+
+    def test_reports_old_and_new_build_before_upgrade(self):
+        (self.prefix / "bin").mkdir(parents=True)
+        binary = self.prefix / "bin/tmatrix"
+        binary.write_text('#!/bin/sh\necho "TMatrix 1.2.2 (build 41, commit fedcba987654)"\n')
+        binary.chmod(0o755)
+        result = self.run_installer("latest")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Currently installed CLI: TMatrix 1.2.2 (build 41, commit fedcba987654)", result.stdout)
+        self.assertIn("Latest release (v1.2.3): TMatrix 1.2.3 (build 42, commit 0123456789ab)", result.stdout)
+        self.assertLess(result.stdout.index("Latest release"), result.stdout.index("Installed:"))
+
     def test_dependency_failure_leaves_install_untouched(self):
         self.tool("npm", '#!/bin/sh\nexit 42\n')
         result = self.run_installer()
@@ -125,6 +151,7 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
     def test_latest_and_service_setup_arguments(self):
         result = self.run_installer("latest")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Latest release (v1.2.3): TMatrix 1.2.3 (build 42, commit 0123456789ab)", result.stdout)
         args = (self.root / "setup-args").read_text().splitlines()
         self.assertEqual(args[0], "--engine-dir")
         self.assertTrue(Path(args[1]).joinpath("dist/index.js").exists())
@@ -135,7 +162,9 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         # Run the actual CLI while replacing only OS supervision and the bridge.
         # No host service, credentials, or engine process is touched.
         binary = self.root / "tmatrix"
-        subprocess.run(["go", "build", "-o", str(binary), "./cmd/tmatrix"],
+        subprocess.run(["go", "build", "-ldflags",
+                        "-X main.version=1.2.3 -X main.commit=0123456789abcdef -X main.commitCount=42",
+                        "-o", str(binary), "./cmd/tmatrix"],
                        cwd=INSTALLER.parent.parent, check=True, capture_output=True)
         with tarfile.open(self.archive, "w:gz") as archive:
             archive.add(binary, arcname="tmatrix")
@@ -190,6 +219,8 @@ if action == "start":
         first = self.run_installer()
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertIn("Service setup queued", first.stdout)
+        self.assertIn("Currently installed CLI: none", first.stdout)
+        self.assertIn("Selected release (v1.2.3): TMatrix 1.2.3 (build 42, commit 0123456789ab)", first.stdout)
         self.assertFalse((self.root / "service-calls").exists())
         old = (self.prefix / "bin/tmatrix").resolve()
         config_dir = self.home / ".config/tmatrix"
@@ -220,6 +251,7 @@ if action == "start":
         self.assertFalse((config_dir / "install-service-on-connect").exists())
         self.assertEqual((self.root / "service-calls").read_text().splitlines(),
                          ["daemon-reload", "enable", "stop", "start"])
+        self.assertIn("Currently installed CLI: TMatrix 1.2.3 (build 42, commit 0123456789ab)", upgraded.stdout)
         self.assertIn("Draining existing TMatrix workers", upgraded.stdout)
         self.assertIn("Service enabled and started", upgraded.stdout)
 

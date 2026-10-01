@@ -23,6 +23,7 @@ import (
 
 var version = "dev"
 var commit = "local"
+var commitCount = "unknown"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -51,7 +52,7 @@ func run(args []string) error {
 		return err
 	}
 	if *showVersion {
-		fmt.Printf("TMatrix %s (%s)\n", version, commit)
+		fmt.Println(buildVersion())
 		return nil
 	}
 	portable, profile, err := terminalSettings(*terminal, *color, os.Getenv)

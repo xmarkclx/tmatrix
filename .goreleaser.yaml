@@ -13,7 +13,7 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.commitCount={{.Env.TMATRIX_COMMIT_COUNT}}
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -31,7 +31,7 @@ changelog:
   disable: true
 release:
   draft: true
-  name_template: "TMatrix {{.Version}}"
+  name_template: "TMatrix {{.Version}} (build {{.Env.TMATRIX_COMMIT_COUNT}}, {{.ShortCommit}})"
   extra_files:
     - glob: scripts/install.sh
     - glob: scripts/install.ps1
