@@ -96,11 +96,11 @@ func (m Model) workerContent() layoutBlock {
 	worker := m.worker()
 	if worker == nil {
 		return layoutBlock{lines: strings.Split(strings.Join([]string{
-			accentStyle.Render(" Your workers, within reach."), "",
+			accentStyle.Render("No tasks yet."), "",
 			mutedStyle.Render("  ┌───┐    ┌───┐    ┌───┐"),
 			mutedStyle.Render("  │ > │    │ > │    │ > │"),
 			mutedStyle.Render("  └─┬─┘    └─┬─┘    └─┬─┘"), "",
-			textBlock("Connect Tzu Do below, then resume intake. Each worker gets its own activity tab.", m.width-4),
+			textBlock("Connect Tzu Do below, then resume intake(space key)...", m.width-4),
 		}, "\n"), "\n")}
 	}
 	width := m.width - 4
