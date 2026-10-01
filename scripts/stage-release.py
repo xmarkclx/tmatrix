@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def prepare(root=ROOT):
     source = root
     for name in ("src", "tsconfig.build.json", "package.json", "package-lock.json",
-                 "scripts/worktrees.py", "LICENSE"):
+                 "LICENSE"):
         if not (source / name).exists():
             raise RuntimeError("Release requires the TMatrix source tree: missing " + name)
     staging = root / "staging"
@@ -37,7 +37,7 @@ def prepare(root=ROOT):
             for path in emitted:
                 if path.is_symlink() or (not path.is_dir() and path.suffix != ".js"):
                     raise RuntimeError("Unexpected compiler output in release staging")
-            for name in ("package.json", "package-lock.json", "LICENSE", "scripts/worktrees.py"):
+            for name in ("package.json", "package-lock.json", "LICENSE"):
                 target = candidate / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source / name, target)

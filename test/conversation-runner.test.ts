@@ -28,7 +28,6 @@ function harness(store: ConversationStore, options: {
   cannotResume?: boolean;
   beforeTurn?: (id: string) => Promise<void>;
   close?: () => Promise<void>;
-  lifecycle?: boolean;
 } = {}) {
   const calls: { kind: "start" | "resume"; id: string }[] = [];
   const prompts: unknown[] = [];
@@ -64,7 +63,7 @@ function harness(store: ConversationStore, options: {
     close: options.close ?? (async () => undefined)
   };
   if (options.cannotResume) delete codex.resumeThread;
-  const runner = new TicketRunner({ api, codexFactory: () => codex, logger: nullLogger(), metrics: new Metrics(), conversationStore: store, ...(options.lifecycle ? { worktreeLifecycle: { start: async () => "\nFULL_WORKTREE_CHECKLIST", end: async () => undefined } } : {}) });
+  const runner = new TicketRunner({ api, codexFactory: () => codex, logger: nullLogger(), metrics: new Metrics(), conversationStore: store });
   return { runner, calls, prompts, results, api };
 }
 
@@ -139,18 +138,18 @@ describe("conversation continuity across worker tickets", () => {
   it("persists context deltas across restarts and does not repeat delivery rules", async () => {
     const store = await stores();
     const base = { task: { title: "Title", description: "Original" }, global_context: "Standing rules" };
-    await harness(store(), { history: base, lifecycle: true }).runner.run(ticket("root"), { runId: "root", recovered: false });
+    await harness(store(), { history: base }).runner.run(ticket("root"), { runId: "root", recovered: false });
     const run = async (id: string, description: string) => {
-      const reply = harness(store(), { lifecycle: true, history: { ...base, task: { ...base.task, description }, input_revision: 1, trigger_comment: { id: "trigger", content: "New comment" } } });
+      const reply = harness(store(), { history: { ...base, task: { ...base.task, description }, input_revision: 1, trigger_comment: { id: "trigger", content: "New comment" } } });
       await reply.runner.run({ ...ticket(id, "result-root"), trigger_comment_id: "trigger" }, { runId: id, recovered: false });
       return reply.prompts[0];
     };
-    expect(await run("unchanged", "Original")).toBe("New comment\n\nCurrent worktree session: unchanged");
+    expect(await run("unchanged", "Original")).toBe("New comment");
     const changed = await run("changed", "Revised");
     expect(changed).toContain('"task.description": "Revised"');
     expect(changed).not.toContain("Standing rules");
     expect(changed).not.toContain("FULL_WORKTREE_CHECKLIST");
-    expect(await run("again", "Revised")).toBe("New comment\n\nCurrent worktree session: again");
+    expect(await run("again", "Revised")).toBe("New comment");
     expect(await run("cleared", "")).toContain('"task.description": ""');
   });
 

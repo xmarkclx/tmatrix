@@ -100,18 +100,15 @@ describe("runtime adapters", () => {
       markTaken: vi.fn(async () => undefined), getHistory: vi.fn(async () => ({})),
       reportProgress: vi.fn(async () => undefined), reportResult: vi.fn(async () => undefined)
     };
-    const lifecycle = { start: vi.fn(async () => ""), end: vi.fn(async () => undefined) };
-    const runner = new TicketRunner({ runtimeFactory: factory, api, logger: nullLogger(), metrics: new Metrics(), worktreeLifecycle: lifecycle });
+    const runner = new TicketRunner({ runtimeFactory: factory, api, logger: nullLogger(), metrics: new Metrics() });
     const result = runner.run(makeTicket(), {
       runId: "cancel-extension", recovered: false, signal: controller.signal,
       observe(event) { if (event.kind === "turn.started") controller.abort(new RunCancellationError({ kind: "user", ticketId: "T-1001", workerId: "w-1001" })); }
     });
     if (failClose) {
       await expect(result).rejects.toThrow("teardown failed");
-      expect(lifecycle.end).not.toHaveBeenCalled();
     } else {
       await expect(result).resolves.toEqual({ status: "cancelled" });
-      expect(lifecycle.end).toHaveBeenCalledOnce();
     }
     expect(api.reportResult).not.toHaveBeenCalled();
   });

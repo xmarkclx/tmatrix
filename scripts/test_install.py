@@ -42,7 +42,6 @@ case "$1" in
     [ ! -f "$FIXTURE/fail-brew" ] || exit 42
     case "$2" in
       node@24) target="$FIXTURE/node/bin"; names="node npm";;
-      python@3.13) target="$FIXTURE/python/libexec/bin"; names="python3";;
       *) exit 99;;
     esac
     mkdir -p "$target"
@@ -51,7 +50,7 @@ case "$1" in
       chmod +x "$target/$name"
     done;;
   --prefix)
-    case "$2" in node@24) echo "$FIXTURE/node";; python@3.13) echo "$FIXTURE/python";; esac;;
+    case "$2" in node@24) echo "$FIXTURE/node";; esac;;
 esac
 """)
 
@@ -68,7 +67,7 @@ esac
         return subprocess.run(["/bin/sh", str(self.script)], env=self.env, capture_output=True, text=True)
 
     def test_compatible_runtimes_skip_homebrew(self):
-        for name in ("node", "npm", "python3"):
+        for name in ("node", "npm"):
             self.tool(name, "exit 0")
         result = self.run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -78,22 +77,22 @@ esac
         self.brew()
         result = self.run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.root / "packages").read_text().splitlines(), ["node@24", "python@3.13"])
+        self.assertEqual((self.root / "packages").read_text().splitlines(), ["node@24"])
         self.assertTrue((self.root / "result-path").read_text().startswith(
-            str(self.root / "python/libexec/bin") + ":" + str(self.root / "node/bin")))
+            str(self.root / "node/bin")))
 
-    def test_old_python_only_installs_python(self):
+    def test_broken_python_is_never_used(self):
         self.brew()
         for name in ("node", "npm"):
             self.tool(name, "exit 0")
-        self.tool("python3", "exit 1")
+        self.tool("python3", 'echo unexpected-python >&2; exit 1')
         result = self.run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.root / "packages").read_text().strip(), "python@3.13")
+        self.assertFalse((self.root / "packages").exists())
+        self.assertNotIn("unexpected-python", result.stderr)
 
     def test_old_node_or_broken_npm_installs_node(self):
         self.brew()
-        self.tool("python3", "exit 0")
         for node_status, npm_status in ((1, 0), (0, 1)):
             self.tool("node", f"exit {node_status}")
             self.tool("npm", f"exit {npm_status}")
@@ -117,7 +116,7 @@ printf '#!/bin/sh\ncp "$FIXTURE/brew-source" "$FIXTURE/tools/brew"\nchmod +x "$F
         result = self.run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Installing Homebrew", result.stdout)
-        self.assertEqual((self.root / "packages").read_text().splitlines(), ["node@24", "python@3.13"])
+        self.assertEqual((self.root / "packages").read_text().splitlines(), ["node@24"])
 
     def test_linux_does_not_bootstrap_homebrew(self):
         self.tool("uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac')
@@ -153,7 +152,7 @@ class InstallerTests(unittest.TestCase):
         self.checksum.write_text(hashlib.sha256(self.archive.read_bytes()).hexdigest() + "  " + self.archive.name + "\n")
         self.tool("uname", '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
         self.tool("npm", '#!/bin/sh\n[ "$1" = --version ] && exit 0\ntouch "$INSTALL_FIXTURE/npm-called"\n')
-        self.tool("curl", '''#!/usr/bin/env python3
+        self.tool("curl", f'#!{sys.executable}\n' + '''
 import os,sys,shutil
 from pathlib import Path
 args=sys.argv[1:]
@@ -183,6 +182,13 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.assertTrue((self.prefix / "bin/tmatrix").resolve().with_name("engine").joinpath("dist/index.js").is_file())
         self.assertTrue((self.root / "npm-called").exists())
         self.assertIn("engine/node_modules/.bin/codex login", result.stdout)
+
+    def test_full_install_does_not_invoke_python(self):
+        self.tool("python3", '#!/bin/sh\necho unexpected-python >&2\nexit 99\n')
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("unexpected-python", result.stderr)
+        self.assertTrue((self.home / ".zshrc").exists())
 
     def test_official_repository_default(self):
         env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], INSTALL_FIXTURE=str(self.root), HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"))

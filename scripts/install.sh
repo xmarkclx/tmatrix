@@ -40,10 +40,6 @@ node_ready() {
     node -e 'const [major,minor]=process.versions.node.split(".").map(Number);if(!((major===20&&minor>=19)||(major===22&&minor>=12)||major>22))process.exit(1)' >/dev/null 2>&1 &&
     npm --version >/dev/null 2>&1
 }
-python_ready() {
-  command -v python3 >/dev/null 2>&1 &&
-    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1
-}
 find_brew() {
   if command -v brew >/dev/null 2>&1; then command -v brew
   elif [ -x /opt/homebrew/bin/brew ]; then echo /opt/homebrew/bin/brew
@@ -53,7 +49,7 @@ find_brew() {
 }
 # Persist only paths we actually add, not the caller's entire environment.
 runtime_paths=
-if [ "$os" = darwin ] && { ! node_ready || ! python_ready; }; then
+if [ "$os" = darwin ] && ! node_ready; then
   if ! brew_command=$(find_brew); then
     echo 'Installing Homebrew for missing runtimes. Homebrew may request administrator access or Command Line Tools.'
     curl -fsSL --proto '=https' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$temp/homebrew-install.sh"
@@ -69,16 +65,9 @@ if [ "$os" = darwin ] && { ! node_ready || ! python_ready; }; then
     runtime_paths="$node_prefix/bin"
     export PATH="$node_prefix/bin:$PATH"
   fi
-  if ! python_ready; then
-    echo 'Installing Python for managed task worktrees (python@3.13).'
-    "$brew_command" install python@3.13
-    python_prefix=$("$brew_command" --prefix python@3.13)
-    runtime_paths="$python_prefix/libexec/bin${runtime_paths:+:$runtime_paths}"
-    export PATH="$python_prefix/libexec/bin:$PATH"
-  fi
+
 fi
 node_ready || { echo 'Node.js 20.19 or 22.12+ and working npm are required. Install them and rerun.' >&2; exit 1; }
-python_ready || { echo 'Python 3.11+ is required for managed task worktrees. Install it and rerun.' >&2; exit 1; }
 release_label="Selected release"
 if [ "$version" = latest ]; then
   release_label="Latest release"
@@ -132,18 +121,18 @@ mv -f "$temp/tmatrix-link" "$prefix/bin/.tmatrix-new"
 mv -f "$prefix/bin/.tmatrix-new" "$prefix/bin/tmatrix"
 export PATH="$prefix/bin:$PATH"
 # Persist PATH without interpolating executable shell syntax from custom paths.
-python3 - "$prefix/bin${runtime_paths:+:$runtime_paths}" <<'PYTHON'
-import os, pathlib, shlex, sys
-home = pathlib.Path.home()
-line = '\n# TMatrix installer\nexport PATH=' + shlex.quote(sys.argv[1]) + ':"$PATH"\n'
-# Shell profiles may contain legacy encodings. Preserve every existing byte.
-entry = os.fsencode(line)
-for name in ('.profile', '.bashrc', '.zshrc'):
-    path = home / name
-    text = path.read_bytes() if path.exists() else b''
-    if entry not in text:
-        with path.open('ab') as f: f.write(entry)
-PYTHON
+node --input-type=module - "$prefix/bin${runtime_paths:+:$runtime_paths}" <<'NODE'
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+const entry = Buffer.from("\n# TMatrix installer\nexport PATH=" + quote(process.argv[2]) + ':"$PATH"\n');
+for (const name of ['.profile', '.bashrc', '.zshrc']) {
+  const file = path.join(os.homedir(), name);
+  const existing = fs.existsSync(file) ? fs.readFileSync(file) : Buffer.alloc(0);
+  if (!existing.includes(entry)) fs.appendFileSync(file, entry);
+}
+NODE
 echo "Installed: $prefix/bin/tmatrix (open a new terminal to refresh PATH)"
 echo "Authenticate Codex: $bundle/engine/node_modules/.bin/codex login"
 # The new CLI drains existing workers via the bridge and refreshes the OS service.

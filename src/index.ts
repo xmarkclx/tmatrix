@@ -1,6 +1,5 @@
 import { startLocalControlServer, type LocalControlServer } from "./local-control-server.js";
 import { LocalWorkerState } from "./local-worker-state.js";
-import { worktreeLifecycle } from "./worktrees.js";
 import { ApiClient } from "./api-client.js";
 import { loadAdapter, createRuntimeFactory } from "./adapter-loader.js";
 import { sanitizedCodexEnvironment } from "./codex-env.js";
@@ -50,7 +49,7 @@ async function main(): Promise<void> {
     runtimeHome: adapter.id === "codex" ? (codexEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex")) : homedir(),
     referenceKey: config.api_key
   });
-  const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, worktreeLifecycle, conversationStore });
+  const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, conversationStore });
   let supervisor!: Supervisor;
   const control = new ControlClient({
     config,

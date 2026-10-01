@@ -13,7 +13,7 @@ terminal/service code is in `cmd/` and `internal/`.
 - Keep the terminal separate from transport and runtime logic. Keep helpers
   small and dependencies explicit; do not reorganize unrelated code.
 - `npm ci` installs this project's pinned engine dependencies. Run `npm run check`
-  for TypeScript and worktree tests; run `go test -race ./...` and `go vet ./...`
+  for TypeScript checks and tests; run `go test -race ./...` and `go vet ./...`
   for Go changes. Rebuild `bin/tmatrix` with `go build -o bin/tmatrix ./cmd/tmatrix`.
 - `scripts/stage-engine.sh` refreshes the development runtime; only restage it
   when that engine is stopped. `scripts/stage-release.py` builds separate clean
