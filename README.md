@@ -254,6 +254,11 @@ or its parent. For live development with `go run`, explicitly use
 `go run ./cmd/tmatrix --engine-dir "$PWD/staging/engine"`. You can also set
 `TMATRIX_ENGINE_DIR` to a trusted engine directory.
 
+The activity feed shows provider-authored reasoning summaries when each reasoning
+item completes. If the model supplies no summary, it says so. Raw hidden reasoning
+is excluded, and summary text stays in local activity rather than Tzu Do progress
+reports.
+
 1. Press `c`, enter your Tzu Do URL and **worker API key**, and save. A bare
   `https://tzudo.app` URL expands to `/api/v1/ai/poll`. An empty key reuses a
    previously saved key.

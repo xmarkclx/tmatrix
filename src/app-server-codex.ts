@@ -253,6 +253,7 @@ class AppServerThread implements ThreadLike {
         model: this.options.model,
         serviceTier: this.options.serviceTier,
         effort: this.options.modelReasoningEffort,
+        summary: "auto",
         ...(turnOptions.outputSchema !== undefined
           ? { outputSchema: turnOptions.outputSchema }
           : {})
@@ -776,7 +777,9 @@ function mapCompletedItem(
     case "agentMessage":
       return { id, type: "agent_message", text: optionalString(item.text) ?? "" };
     case "reasoning": {
-      const text = [...stringArray(item.summary), ...stringArray(item.content)].join("\n");
+      // Only provider-authored summaries belong in the local activity feed.
+      // Raw reasoning content must never be used as a display fallback.
+      const text = stringArray(item.summary).join("\n");
       return { id, type: "reasoning", text };
     }
     case "commandExecution":

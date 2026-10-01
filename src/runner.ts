@@ -891,7 +891,7 @@ function observeRuntimeEvent(event: WorkerThreadEvent): WorkerObservation {
       case "file_change": return { kind, text: item.changes.map((change) => `${change.kind}: ${change.path}`).join("\n") };
       case "mcp_tool_call": return { kind, text: `${item.server} / ${item.tool} (${item.status})` };
       case "web_search": return { kind, text: `Searching: ${item.query}` };
-      case "reasoning": return { kind, text: "Working through the next step" };
+      case "reasoning": return { kind, text: item.text.trim() || "No reasoning summary provided" };
       case "todo_list": return { kind, text: item.items.map((entry) => `${entry.completed ? "[x]" : "[ ]"} ${entry.text}`).join("\n") };
       case "error": return { kind, text: item.message };
     }
