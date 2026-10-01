@@ -30,8 +30,8 @@ export async function loadAdapter(id: string, modulePath?: string): Promise<Runt
 }
 
 export function createRuntimeFactory(adapter: RuntimeAdapter, context: AdapterContext): RuntimeFactory {
-  return (profile) => {
-    const runtime = adapter.create({ ...context, environment: { ...context.environment } }, { ...profile });
+  return (profile, leaseEnvironment) => {
+    const runtime = adapter.create({ ...context, environment: { ...context.environment, ...leaseEnvironment } }, { ...profile });
     if (!runtime || typeof runtime.startThread !== "function" || typeof runtime.close !== "function" ||
         (runtime.resumeThread !== undefined && typeof runtime.resumeThread !== "function")) {
       throw new Error("Adapter create must return a runtime with startThread and close methods");

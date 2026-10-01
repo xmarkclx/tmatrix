@@ -17,8 +17,8 @@ export function createCodexFactory(
   createCodex: CodexCreator = (options) => new AppServerCodex(options),
   logger?: ProtocolLogger
 ): CodexFactory {
-  return () => createCodex({
-    environment,
+  return (_profile, leaseEnvironment) => createCodex({
+    environment: { ...environment, ...leaseEnvironment },
     ...(logger ? { logger } : {})
   });
 }

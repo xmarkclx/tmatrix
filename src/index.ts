@@ -46,6 +46,7 @@ async function main(): Promise<void> {
     // separate worker instances must retain the same routing and task locks.
     namespace: config.poll_origin,
     adapterId: adapter.id,
+    trackRuntime: adapter.id === "codex",
     runtimeHome: adapter.id === "codex" ? (codexEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex")) : homedir(),
     referenceKey: config.api_key
   });

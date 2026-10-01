@@ -263,6 +263,33 @@ describe("AppServerCodex", () => {
     expect(server.requests.some((entry) => ["thread/start", "turn/start"].includes(entry.method))).toBe(false);
   });
 
+  it("rebuilds a rejected resume after safe crash recovery before sending input", async () => {
+    const server = resumeServer({ error: { code: -32600, message: "Saved conversation cannot be resumed" } });
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });
+    const events = await collect((await codex.resumeThread("thread-existing", {
+      ...threadOptions, rebuildOnResumeRejection: true
+    }).runStreamed("Only the retry", { missingConversationInput: async () => "Full durable recovery handoff" })).events);
+    await codex.close();
+    expect(server.requests.filter((entry) => entry.method === "thread/start")).toHaveLength(1);
+    expect(server.requests.filter((entry) => entry.method === "turn/start")).toHaveLength(1);
+    expect(server.requests.find((entry) => entry.method === "turn/start")?.params).toMatchObject({
+      threadId: "thread-replacement", input: [{ type: "text", text: "Full durable recovery handoff", text_elements: [] }]
+    });
+    expect(events).toContainEqual(expect.objectContaining({ type: "local.activity", kind: "conversation.rebuilt" }));
+  });
+
+  it("does not rebuild after an ambiguous resume timeout, even during recovery", async () => {
+    const server = new FakeAppServer((request, server) => {
+      if (request.method !== "thread/resume") server.respond(request.id);
+    });
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), requestTimeoutMs: 20, closeTimeoutMs: 20 });
+    await expect(collect((await codex.resumeThread("thread-existing", {
+      ...threadOptions, rebuildOnResumeRejection: true
+    }).runStreamed("retry")).events)).rejects.toThrow();
+    await codex.close();
+    expect(server.requests.some((entry) => ["thread/start", "turn/start"].includes(entry.method))).toBe(false);
+  });
+
   it("rejects a resume response for another conversation without appending work", async () => {
     const server = resumeServer({ resumedId: "wrong-thread" });
     const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });

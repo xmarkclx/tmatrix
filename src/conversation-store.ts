@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
+import { LEASE_ENV, legacyLockPredatesBoot, processStart, stopLeaseProcesses } from "./conversation-recovery.js";
 import { WorkerError } from "./errors.js";
 import { conversationReferenceSchema, type Ticket, type ConversationReference } from "./types.js";
 
@@ -29,6 +30,8 @@ const recordSchema = z.object({
   replacements: z.record(z.string(), threadId),
   contextHashes: z.record(z.string(), z.record(z.string(), z.string())).default({})
 });
+export type ConversationLease = (() => Promise<void>) & { environment?: Record<string, string>; recovered?: boolean };
+
 type ConversationRecord = z.infer<typeof recordSchema>;
 
 /** Private IDs only: task/comment ancestry points to Codex's own local history. */
@@ -40,9 +43,11 @@ export class ConversationStore {
   private readonly namespace: string;
   private readonly referenceKey: string | undefined;
   private readonly getBootIdentity: () => Promise<BootIdentity | undefined>;
+  private readonly trackRuntime: boolean;
   private readonly writes = new Map<string, Promise<void>>();
 
-  constructor(options: { directory: string; namespace: string; referenceKey?: string; adapterId?: string; runtimeHome?: string; bootIdentity?: () => Promise<BootIdentity | undefined> }) {
+  constructor(options: { directory: string; namespace: string; referenceKey?: string; adapterId?: string; runtimeHome?: string; trackRuntime?: boolean; bootIdentity?: () => Promise<BootIdentity | undefined> }) {
+    this.trackRuntime = options.trackRuntime === true && process.platform === "linux";
     this.getBootIdentity = options.bootIdentity ?? bootIdentity;
     this.lockDirectory = join(options.directory, this.hash(options.namespace));
     // Preserve all existing Codex routes. Other adapters cannot consume their IDs.
@@ -175,13 +180,18 @@ export class ConversationStore {
   }
 
   /** Hold through runtime teardown and result binding to serialize task replies. */
-  async acquire(ticket: Ticket, signal?: AbortSignal): Promise<() => Promise<void>> {
+  async acquire(ticket: Ticket, signal?: AbortSignal): Promise<ConversationLease> {
     signal?.throwIfAborted();
     await this.prepare();
     await mkdir(this.lockDirectory, { recursive: true, mode: 0o700 });
     const path = join(this.lockDirectory, `${this.hash(this.task(ticket))}.json.lock`);
     const identity = await this.getBootIdentity();
-    const owner = JSON.stringify({ pid: process.pid, host: hostname(), token: randomUUID(), identity });
+    const start = this.trackRuntime ? await processStart(process.pid) : undefined;
+    const tracked = this.trackRuntime && identity !== undefined && start !== undefined;
+    const token = randomUUID();
+    const owner = JSON.stringify({ pid: process.pid, host: hostname(), token, identity,
+      ...(tracked ? { tracking: 1, start } : {}) });
+    let recovered = false;
     for (;;) {
       signal?.throwIfAborted();
       try {
@@ -193,11 +203,14 @@ export class ConversationStore {
           signal.throwIfAborted();
         }
         let released = false;
-        return async () => {
+        const release: ConversationLease = async () => {
           if (released) return;
           released = true;
           if (await readlink(path).catch(() => undefined) === owner) await unlink(path);
         };
+        if (tracked) release.environment = { [LEASE_ENV]: token };
+        release.recovered = recovered;
+        return release;
       } catch (error) {
         if (!this.isCode(error, "EEXIST")) throw error;
       }
@@ -209,12 +222,21 @@ export class ConversationStore {
         throw this.busy();
       }
       const previous = this.lockOwner(stale);
-      if (this.fromPreviousBoot(previous, identity)) {
+      if (this.fromPreviousBoot(previous, identity) ||
+          (previous.identity === undefined && await legacyLockPredatesBoot(path))) {
         await this.removeStaleLock(path, stale);
+        recovered = true;
         continue;
       }
-      if (this.ownerAlive(previous)) {
+      if (await this.ownerAlive(previous)) {
         await delay(250, undefined, signal ? { signal } : {});
+        continue;
+      }
+      if (this.canTrack(previous, identity)) {
+        await this.removeStaleLock(path, stale, async () => {
+          if (!await stopLeaseProcesses(String(previous.token), signal, String(previous.start))) throw this.ownerLost();
+        });
+        recovered = true;
         continue;
       }
       throw this.ownerLost();
@@ -231,9 +253,17 @@ export class ConversationStore {
       throw this.busy();
     }
     const previous = this.lockOwner(stale);
-    if (!this.fromPreviousBoot(previous, await this.getBootIdentity())) {
-      if (this.ownerAlive(previous)) throw this.busy();
-      if (!confirmRuntimeStopped) throw this.ownerLost();
+    const identity = await this.getBootIdentity();
+    if (!this.fromPreviousBoot(previous, identity) &&
+        !(previous.identity === undefined && await legacyLockPredatesBoot(path))) {
+      if (await this.ownerAlive(previous)) throw this.busy();
+      if (!confirmRuntimeStopped) {
+        if (!this.canTrack(previous, identity)) throw this.ownerLost();
+        await this.removeStaleLock(path, stale, async () => {
+          if (!await stopLeaseProcesses(String(previous.token), undefined, String(previous.start))) throw this.ownerLost();
+        });
+        return true;
+      }
     }
     await this.removeStaleLock(path, stale);
     return true;
@@ -253,14 +283,26 @@ export class ConversationStore {
       /^[a-f0-9-]{36}$/.test(saved.boot) && saved.boot !== current.boot;
   }
 
-  private ownerAlive(owner: Record<string, unknown>): boolean {
-    try { process.kill(Number(owner.pid), 0); return true; } catch (error) {
+  private canTrack(owner: Record<string, unknown>, current: BootIdentity | undefined): boolean {
+    const saved = this.object(owner.identity);
+    return owner.tracking === 1 && typeof owner.start === "string" && /^\d+$/.test(owner.start) && !!current && saved?.machine === current.machine && saved.boot === current.boot;
+  }
+
+  private async ownerAlive(owner: Record<string, unknown>): Promise<boolean> {
+    try {
+      process.kill(Number(owner.pid), 0);
+      if (typeof owner.start === "string") {
+        const current = await processStart(Number(owner.pid));
+        if (current && current !== owner.start) return false;
+      }
+      return true;
+    } catch (error) {
       if (this.isCode(error, "ESRCH")) return false;
       throw this.busy();
     }
   }
 
-  private async removeStaleLock(path: string, expected: string): Promise<void> {
+  private async removeStaleLock(path: string, expected: string, teardown?: () => Promise<void>): Promise<void> {
     // Serialize recoverers, including the offline command. Without this guard,
     // two stale readers could unlink a newly acquired lease (check/unlink race).
     const guard = `${path}.recovery`;
@@ -277,13 +319,14 @@ export class ConversationStore {
         throw error;
       });
       if (current !== expected) throw this.busy();
+      await teardown?.();
       await unlink(path);
     } finally { await rmdir(guard); }
   }
 
   private ownerLost(): WorkerError {
     return new WorkerError({
-      message: "The previous daemon exited while holding this conversation, but runtime teardown is unverified. Outside this conversation, run tmatrix conversation recover <canonical-task-id> after a verified reboot, or add --confirm-runtime-stopped only after confirming its runtime and descendants stopped.",
+      message: "Automatic conversation recovery could not verify that the previous runtime stopped. This older or inaccessible runtime cannot safely be bypassed by starting another conversation. After confirming it stopped, run tmatrix conversation recover <canonical-task-id> --confirm-runtime-stopped outside this conversation.",
       code: "CONVERSATION_OWNER_LOST", stage: "conversation.lock"
     });
   }

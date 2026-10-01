@@ -29,6 +29,7 @@ function harness(store: ConversationStore, options: {
   beforeTurn?: (id: string) => Promise<void>;
   close?: () => Promise<void>;
 } = {}) {
+  const threadSettings: unknown[] = [];
   const calls: { kind: "start" | "resume"; id: string }[] = [];
   const prompts: unknown[] = [];
   const results: TicketResult[] = [];
@@ -58,13 +59,14 @@ function harness(store: ConversationStore, options: {
     }
   });
   const codex: CodexLike = {
-    startThread: () => { const id = options.threadId ?? "conversation-root"; calls.push({ kind: "start", id }); return thread(id); },
-    resumeThread: (id) => { calls.push({ kind: "resume", id }); return thread(id); },
+    startThread: (settings) => { threadSettings.push(settings); const id = options.threadId ?? "conversation-root"; calls.push({ kind: "start", id }); return thread(id); },
+    resumeThread: (id, settings) => { threadSettings.push(settings); calls.push({ kind: "resume", id }); return thread(id); },
     close: options.close ?? (async () => undefined)
   };
   if (options.cannotResume) delete codex.resumeThread;
-  const runner = new TicketRunner({ api, codexFactory: () => codex, logger: nullLogger(), metrics: new Metrics(), conversationStore: store });
-  return { runner, calls, prompts, results, api };
+  const factory = vi.fn(() => codex);
+  const runner = new TicketRunner({ api, codexFactory: factory, logger: nullLogger(), metrics: new Metrics(), conversationStore: store });
+  return { runner, calls, prompts, results, api, factory, threadSettings };
 }
 
 function ticket(id: string, anchor?: string): Ticket {
@@ -73,6 +75,23 @@ function ticket(id: string, anchor?: string): Ticket {
 }
 
 describe("conversation continuity across worker tickets", () => {
+  it("passes the recovered lease to the runtime and enables a safe resume fallback", async () => {
+    const store = (await stores())();
+    const previous = ticket("previous");
+    await store.remember(previous, "saved-thread");
+    const acquire = store.acquire.bind(store);
+    vi.spyOn(store, "acquire").mockImplementation(async (...args) => Object.assign(await acquire(...args), {
+      environment: { TMATRIX_CONVERSATION_LEASE: "fictional-runtime-lease" }, recovered: true
+    }));
+    const run = harness(store);
+    const observe = vi.fn();
+    await run.runner.run(ticket("retry"), { runId: "recovery", recovered: false, observe });
+    expect(run.factory).toHaveBeenCalledWith(expect.anything(), { TMATRIX_CONVERSATION_LEASE: "fictional-runtime-lease" });
+    expect(run.threadSettings[0]).toMatchObject({ rebuildOnResumeRejection: true });
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({ kind: "conversation.recovered" }));
+    expect(run.calls).toEqual([{ kind: "resume", id: "saved-thread" }]);
+  });
+
   it("resumes a server task route without local comment links and reports its current reference", async () => {
     const store = (await stores())();
     const conversation = store.reference("server-thread");
