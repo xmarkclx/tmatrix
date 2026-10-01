@@ -169,6 +169,46 @@ The engine saves conversation links for future follow-ups. Older replies may
 lack a saved link; activity explains the fresh start, and the new conversation
 link is saved for future replies.
 
+## Recovering a conversation after a crash
+
+New conversation locks record Linux/WSL machine and boot identity. A retry
+automatically removes a lock from a previous boot of the same machine, then
+resumes through the existing conversation mapping. A dead daemon PID alone
+is insufficient: its runtime descendants might still be executing. Locks from
+older versions, a same-boot daemon crash, or platforms without boot identity
+remain blocked with `CONVERSATION_OWNER_LOST`.
+
+Recovery runs outside the blocked AI conversation, without API credentials,
+a poller, or an AI runtime:
+
+```sh
+tmatrix conversation recover <canonical-task-uuid>
+# Only after independently confirming the old runtime AND descendants stopped:
+tmatrix conversation recover <canonical-task-uuid> --confirm-runtime-stopped
+```
+
+Use the UUID in the task URL, not a display label such as `AIWORKE-39`. Include
+your usual `--config-dir` and `--engine-dir` **before** `conversation` when needed.
+Then retry in Tzu Do. The command preserves conversation history and rejects
+live owners, foreign hosts, malformed locks, and ambiguous process probes even
+with confirmation. An older lock has no boot evidence, so it requires the
+confirmation flag even after a reboot. A stop request alone is not confirmation
+that execution ended. If an old PID was reused, recovery stays blocked until
+that process exits; do not kill an unrelated process to recover a lock.
+
+The command uses the configured poll URL's origin and the engine's default
+state directory (`$XDG_STATE_HOME/aiworker/conversations`, otherwise
+`~/.local/state/aiworker/conversations`). For a standalone engine with custom
+`conversation_state_dir`, set `CONVERSATION_STATE_DIR` to that same directory.
+Recovery never restarts a running engine. Install the updated engine as well as
+the terminal binary to use this command.
+
+A private `.json.lock.recovery` directory serializes competing recoverers. If a
+recovery process itself crashes, subsequent recovery fails closed. Only after
+confirming all recovery processes have stopped, remove that empty guard
+directory with `rmdir` and rerun the command; keep the conversation lock itself
+for the command to validate. No timeout or lock age is used as proof of safety.
+
 ## Colors and Windows Terminal / WSL
 
 The console owns its canvas, distinct main pane and filled cards, including

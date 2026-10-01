@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConversationStore } from "../src/conversation-store.js";
 import { makeTicket } from "./helpers.js";
 
@@ -130,6 +130,85 @@ describe("ConversationStore", () => {
     expect(owner.pid).toBe(2147483647);
     await release();
     expect(JSON.parse(await readlink(lock)).token).toBe(owner.token);
+  });
+
+  const currentBoot = { machine: "a".repeat(32), boot: "11111111-1111-4111-8111-111111111111" };
+  const oldBoot = { ...currentBoot, boot: "22222222-2222-4222-8222-222222222222" };
+  async function locked(owner: Record<string, unknown>) {
+    const { directory } = await setup();
+    const store = new ConversationStore({ directory, namespace, bootIdentity: async () => currentBoot });
+    const release = await store.acquire(ticket);
+    const path = join(directory, hash(namespace), `${hash(String(ticket.task_id))}.json.lock`);
+    await release();
+    const encoded = JSON.stringify({ pid: 2147483647, host: hostname(), token: "00000000-0000-4000-8000-000000000000", ...owner });
+    await symlink(encoded, path);
+    return { store, directory, path, encoded };
+  }
+
+  it("automatically recovers after a verified reboot even when the old PID is reused", async () => {
+    const { store, path } = await locked({ pid: process.pid, identity: oldBoot });
+    await store.remember(ticket, "preserved-thread");
+    const release = await store.acquire(ticket);
+    expect(JSON.parse(await readlink(path)).identity).toEqual(currentBoot);
+    expect(await store.resolve(ticket, {})).toBe("preserved-thread");
+    await release();
+  });
+
+  it("requires explicit teardown confirmation for legacy and same-boot dead owners", async () => {
+    for (const identity of [undefined, currentBoot, { ...oldBoot, machine: "b".repeat(32) }]) {
+      const { store, path, encoded } = await locked({ identity });
+      await expect(store.acquire(ticket)).rejects.toMatchObject({ code: "CONVERSATION_OWNER_LOST" });
+      await expect(store.recover(String(ticket.task_id))).rejects.toMatchObject({ code: "CONVERSATION_OWNER_LOST" });
+      expect(await readlink(path)).toBe(encoded);
+      expect(await store.recover(String(ticket.task_id), true)).toBe(true);
+      expect(await store.recover(String(ticket.task_id), true)).toBe(false);
+      const release = await store.acquire(ticket);
+      await release();
+    }
+  });
+
+  it("refuses live, foreign, malformed, and inaccessible owners even with confirmation", async () => {
+    for (const owner of [{ pid: process.pid }, { host: "foreign-host" }, { pid: -1 }, { token: "invalid" }]) {
+      const { store, path, encoded } = await locked(owner);
+      await expect(store.recover(String(ticket.task_id), true)).rejects.toMatchObject({ code: "CONVERSATION_BUSY" });
+      expect(await readlink(path)).toBe(encoded);
+    }
+    const { store, path, encoded } = await locked({});
+    const probe = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
+    try {
+      await expect(store.recover(String(ticket.task_id), true)).rejects.toMatchObject({ code: "CONVERSATION_BUSY" });
+      expect(await readlink(path)).toBe(encoded);
+    } finally { probe.mockRestore(); }
+  });
+
+  it("fails closed without boot evidence and for non-symlink locks", async () => {
+    const { directory, path, encoded } = await locked({ identity: oldBoot });
+    const store = new ConversationStore({ directory, namespace, bootIdentity: async () => undefined });
+    await expect(store.acquire(ticket)).rejects.toMatchObject({ code: "CONVERSATION_OWNER_LOST" });
+    expect(await readlink(path)).toBe(encoded);
+    await unlink(path);
+    await writeFile(path, encoded);
+    await expect(store.recover(String(ticket.task_id), true)).rejects.toMatchObject({ code: "CONVERSATION_BUSY" });
+    expect(await readFile(path, "utf8")).toBe(encoded);
+  });
+
+  it("serializes competing recovery and preserves a replacement owner's lease", async () => {
+    const { store, path } = await locked({ identity: oldBoot });
+    const results = await Promise.allSettled(Array.from({ length: 12 }, () => store.recover(String(ticket.task_id))));
+    expect(results.some((result) => result.status === "fulfilled" && result.value)).toBe(true);
+    const release = await store.acquire(ticket);
+    const replacement = await readlink(path);
+    await expect(store.recover(String(ticket.task_id), true)).rejects.toMatchObject({ code: "CONVERSATION_BUSY" });
+    expect(await readlink(path)).toBe(replacement);
+    await release();
+  });
+
+  it("leaves the lease intact when another recovery is active or interrupted", async () => {
+    const { store, path, encoded } = await locked({ identity: oldBoot });
+    await mkdir(`${path}.recovery`);
+    await expect(store.acquire(ticket)).rejects.toMatchObject({ code: "CONVERSATION_RECOVERY_BUSY" });
+    await expect(store.recover(String(ticket.task_id), true)).rejects.toMatchObject({ code: "CONVERSATION_RECOVERY_BUSY" });
+    expect(await readlink(path)).toBe(encoded);
   });
 
   it("restores exact ancestry from authenticated private handoff metadata without raw logs", async () => {

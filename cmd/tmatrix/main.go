@@ -42,7 +42,7 @@ func run(args []string) error {
 	engineDir := flags.String("engine-dir", "", "directory containing the TMatrix engine dist/index.js")
 	showVersion := flags.Bool("version", false, "print version")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [setup|engine start|engine stop|engine restart|daemon|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nConnect with c. Saving a connection starts task intake automatically. Space pauses/resumes intake; subsequent launches restore the saved preference.")
+		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [setup|engine start|engine stop|engine restart|daemon|conversation recover <task-id> [--confirm-runtime-stopped]|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nConnect with c. Saving a connection starts task intake automatically. Space pauses/resumes intake; subsequent launches restore the saved preference.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
@@ -81,12 +81,17 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		command := flags.Args()
+		if (len(command) == 3 || (len(command) == 4 && command[3] == "--confirm-runtime-stopped")) && command[0] == "conversation" && command[1] == "recover" {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			return app.RecoverConversation(ctx, dir, *engineDir, command[2], len(command) == 4)
+		}
 		live, err := app.New(dir, *engineDir)
 		if err != nil {
 			return err
 		}
 		service = live
-		command := flags.Args()
 		if len(command) > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
