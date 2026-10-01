@@ -16,6 +16,9 @@ func TestRecoverConversationOffline(t *testing.T) {
 		t.Skip("node unavailable")
 	}
 	dir, engine := t.TempDir(), t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	dist := filepath.Join(engine, "dist")
 	if err := os.MkdirAll(dist, 0700); err != nil {
 		t.Fatal(err)
