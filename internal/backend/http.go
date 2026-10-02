@@ -19,6 +19,7 @@ import (
 )
 
 var errActionNotFound = errors.New("worker or engine action is no longer available")
+var errActionConflict = errors.New("worker cannot accept this action in its current state")
 
 type discovery struct {
 	Version int    `json:"version"`
@@ -135,6 +136,31 @@ func (h *HTTP) Shutdown(ctx context.Context) error {
 	return h.request(ctx, http.MethodPost, "/v1/shutdown", struct{}{}, nil)
 }
 
+func (h *HTTP) CheckCodexUpdate(ctx context.Context) error {
+	return h.codexUpdateAction(ctx, "/v1/codex/check-now")
+}
+
+func (h *HTTP) RollbackCodexUpdate(ctx context.Context) error {
+	return h.codexUpdateAction(ctx, "/v1/codex/rollback")
+}
+
+func (h *HTTP) codexUpdateAction(ctx context.Context, path string) error {
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	err := h.request(ctx, http.MethodPost, path, struct{}{}, &result)
+	if errors.Is(err, errActionNotFound) {
+		return errors.New("Codex updates are unavailable in this engine")
+	}
+	if errors.Is(err, errActionConflict) {
+		return errors.New("Codex update action is unavailable in the current state; refresh and retry")
+	}
+	if err == nil && !result.OK {
+		return errors.New("engine did not acknowledge the Codex update request")
+	}
+	return err
+}
+
 func validateID(id string) error {
 	if id == "" || len(id) > 200 || strings.ContainsAny(id, "/\\?#\r\n\x00") || id == "." || id == ".." {
 		return errors.New("invalid worker ID")
@@ -177,7 +203,7 @@ func (h *HTTP) request(ctx context.Context, method, path string, body, output an
 		case 404:
 			return errActionNotFound
 		case 409:
-			return errors.New("worker cannot accept this action in its current state")
+			return errActionConflict
 		case 400, 422:
 			return errors.New("engine rejected the requested values")
 		default:

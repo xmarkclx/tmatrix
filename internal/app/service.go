@@ -83,6 +83,22 @@ func (s *Service) Pin(ctx context.Context, id string, pinned bool) error {
 	return client.Pin(ctx, id, pinned)
 }
 
+func (s *Service) CheckCodexUpdate(ctx context.Context) error {
+	client, err := s.client()
+	if err != nil {
+		return errors.New("engine is disconnected; Codex update check could not be requested")
+	}
+	return client.CheckCodexUpdate(ctx)
+}
+
+func (s *Service) RollbackCodexUpdate(ctx context.Context) error {
+	client, err := s.client()
+	if err != nil {
+		return errors.New("engine is disconnected; Codex rollback could not be requested")
+	}
+	return client.RollbackCodexUpdate(ctx)
+}
+
 func (s *Service) Configure(ctx context.Context, settings backend.Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

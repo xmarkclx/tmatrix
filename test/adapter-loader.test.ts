@@ -80,6 +80,40 @@ describe("runtime adapters", () => {
     expect(context.environment.TMATRIX_CONVERSATION_LEASE).toBeUndefined();
   });
 
+  it("pins executable selection per worker and releases only after confirmed close", async () => {
+    const selected: string[] = [];
+    const confirmed = { value: false };
+    const release = vi.fn();
+    let executable = "/versions/first/bin/codex";
+    const adapter: RuntimeAdapter = { apiVersion: 1, id: "codex", create({ codexExecutablePath }) {
+      selected.push(codexExecutablePath!);
+      return {
+        startThread() { throw new Error("unused"); },
+        async close() { if (!confirmed.value) throw new Error("exit unverified"); }
+      };
+    } };
+    const factory = createRuntimeFactory(adapter, context, () => ({ executablePath: executable, release }));
+    const original = factory(makeTicket());
+    executable = "/versions/second/bin/codex";
+    factory(makeTicket());
+    expect(selected).toEqual(["/versions/first/bin/codex", "/versions/second/bin/codex"]);
+    await expect(original.close!()).rejects.toThrow("exit unverified");
+    expect(release).not.toHaveBeenCalled();
+    confirmed.value = true;
+    await original.close!();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("does not apply Codex leases to custom adapters and releases on construction failure", () => {
+    const release = vi.fn();
+    const acquire = vi.fn(() => ({ executablePath: "/version/codex", release }));
+    const adapter: RuntimeAdapter = { apiVersion: 1, id: "custom", create() { throw new Error("construction"); } };
+    expect(() => createRuntimeFactory(adapter, context, acquire)(makeTicket())).toThrow("construction");
+    expect(acquire).not.toHaveBeenCalled();
+    expect(() => createRuntimeFactory({ ...adapter, id: "codex" }, context, acquire)(makeTicket())).toThrow("construction");
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("runs an installed module through the real ticket runner and closes it", async () => {
     const adapter = await loadAdapter("echo", resolve("examples/echo-adapter.mjs"));
     const factory = createRuntimeFactory(adapter, context);

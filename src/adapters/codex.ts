@@ -5,5 +5,9 @@ import type { RuntimeAdapter } from "../runtime-adapter.js";
 export default {
   apiVersion: 1,
   id: "codex",
-  create: ({ environment, logger }) => new AppServerCodex({ environment, logger })
+  create: ({ environment, logger, codexExecutablePath }) => new AppServerCodex({
+    environment,
+    logger,
+    ...(codexExecutablePath ? { executablePath: codexExecutablePath } : {})
+  })
 } satisfies RuntimeAdapter;

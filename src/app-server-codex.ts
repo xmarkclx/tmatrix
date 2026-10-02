@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Logger } from "pino";
 import type { Input } from "./runtime-adapter.js";
@@ -49,6 +51,8 @@ export type AppServerSpawner = (
 
 export interface AppServerCodexOptions {
   environment: Record<string, string>;
+  /** Immutable installation selected when this worker acquired its lease. */
+  executablePath?: string;
   spawnProcess?: AppServerSpawner;
   closeTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -74,7 +78,9 @@ export class AppServerCodex implements RuntimeLike {
 
   constructor(options: AppServerCodexOptions) {
     this.environment = options.environment;
-    this.spawnProcess = options.spawnProcess ?? spawnBundledAppServer;
+    const executablePath = options.executablePath;
+    this.spawnProcess = options.spawnProcess ?? ((environment, arguments_) =>
+      spawnCodexAppServer(executablePath ?? resolveBundledCodexPath(), environment, arguments_));
     this.closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.logger = options.logger;
@@ -751,19 +757,79 @@ class NotificationQueue implements AsyncIterable<ProtocolRecord> {
   }
 }
 
-function spawnBundledAppServer(
-  environment: Record<string, string>,
-  arguments_: readonly string[]
-): AppServerProcess {
+/** The complete native distribution, including resources and bundled tools. */
+export function resolveBundledCodexInstallation(): {
+  version: string;
+  executablePath: string;
+  directory: string;
+} {
   const require = createRequire(import.meta.url);
-  let codexEntrypoint: string;
+  const packagePath = require.resolve("@openai/codex/package.json");
+  const metadata = JSON.parse(readFileSync(packagePath, "utf8")) as { version?: unknown };
+  if (typeof metadata.version !== "string" || !/^\d+\.\d+\.\d+$/.test(metadata.version)) {
+    throw new Error("The bundled Codex package has no stable version");
+  }
+  const platforms: Record<string, string> = {
+    "linux-x64": "x86_64-unknown-linux-musl",
+    "linux-arm64": "aarch64-unknown-linux-musl",
+    "darwin-x64": "x86_64-apple-darwin",
+    "darwin-arm64": "aarch64-apple-darwin",
+    "win32-x64": "x86_64-pc-windows-msvc",
+    "win32-arm64": "aarch64-pc-windows-msvc"
+  };
+  const platform = `${process.platform}-${process.arch}`;
+  const target = platforms[platform];
+  if (!target) throw new Error("Unsupported bundled Codex platform");
+  let vendorDirectory = join(dirname(packagePath), "vendor");
   try {
-    codexEntrypoint = require.resolve("@openai/codex/bin/codex.js");
+    vendorDirectory = join(dirname(require.resolve(`@openai/codex-${platform}/package.json`)), "vendor");
+  } catch {
+    // Older packages shipped the native distribution inside @openai/codex.
+  }
+  const directory = join(vendorDirectory, target);
+  const binaryName = process.platform === "win32" ? "codex.exe" : "codex";
+  const executablePath = [join(directory, "bin", binaryName), join(directory, "codex", binaryName)]
+    .find((path) => existsSync(path));
+  if (!executablePath) throw new Error("The bundled Codex executable is not installed");
+  return { version: metadata.version, executablePath, directory };
+}
+
+export function resolveBundledCodexPath(): string {
+  try {
+    return resolveBundledCodexInstallation().executablePath;
+  } catch {
+    // Preserve the package launcher's diagnostics on an unfamiliar packaging
+    // layout while automatic updates remain disabled for that installation.
+  }
+  try {
+    return createRequire(import.meta.url).resolve("@openai/codex/bin/codex.js");
   } catch (cause) {
     throw new Error("The pinned @openai/codex CLI is not installed", { cause });
   }
-  return spawn(process.execPath, [codexEntrypoint, ...arguments_], {
-    env: environment,
+}
+
+export function spawnCodexAppServer(
+  executablePath: string,
+  environment: Record<string, string>,
+  arguments_: readonly string[]
+): AppServerProcess {
+  const launcher = /\.[cm]?js$/i.test(executablePath);
+  const distribution = dirname(dirname(executablePath));
+  const toolDirectories = launcher ? [] : ["codex-path", "path"]
+    .map((name) => join(distribution, name)).filter((path) => existsSync(path));
+  const childEnvironment = { ...environment };
+  if (!launcher) {
+    // This native distribution belongs to TMatrix. Parent npm/bun ownership
+    // would otherwise point Codex's update behavior at an unrelated install.
+    for (const name of ["CODEX_MANAGED_PACKAGE_ROOT", "CODEX_MANAGED_BY_NPM", "CODEX_MANAGED_BY_BUN",
+      "CODEX_MANAGED_BY_PNPM", "CODEX_MANAGED_BY_VITE_PLUS"]) delete childEnvironment[name];
+  }
+  if (toolDirectories.length > 0) {
+    childEnvironment.PATH = [...toolDirectories, environment.PATH ?? ""].filter(Boolean).join(delimiter);
+  }
+  return spawn(launcher ? process.execPath : executablePath,
+    launcher ? [executablePath, ...arguments_] : [...arguments_], {
+    env: childEnvironment,
     stdio: ["pipe", "pipe", "pipe"],
     // One process group per ticket allows a hard fallback to target this App
     // Server without signalling the daemon or its other concurrent tickets.

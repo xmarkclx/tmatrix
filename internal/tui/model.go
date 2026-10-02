@@ -32,6 +32,7 @@ const (
 	connectScreen
 	helpScreen
 	serviceScreen
+	codexUpdatesScreen
 )
 
 type tickMsg time.Time

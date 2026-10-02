@@ -61,6 +61,8 @@ export interface RuntimeLike {
 }
 export type RuntimeFactory = (profile: ExecutionProfile, leaseEnvironment?: Record<string, string>) => RuntimeLike;
 export interface AdapterContext {
+  /** Bundled Codex only: immutable executable selected for this worker. */
+  codexExecutablePath?: string;
   /** Sanitized child environment. Never pass the queue's API_KEY to a harness. */
   environment: Record<string, string>;
   logger: Pick<Logger, "warn" | "error">;
