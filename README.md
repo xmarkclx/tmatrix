@@ -44,3 +44,8 @@ tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
 - Best to run on its own secure environment like on a VM.
 - Turn off / pause intake when not being used.
 
+
+## Prompt security alerts
+
+See [security alerts](docs/security-alerts.md) for the independent, alert-only
+classifier, existing adapter authentication, Tzu Do mail endpoint and operational limits.

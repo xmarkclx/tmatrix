@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AdapterUpdateService } from "./adapter-updates.js";
-import type { AdapterContext, AdapterSetup, AdapterSetupContext, RuntimeAdapter, RuntimeFactory } from "./runtime-adapter.js";
+import type { AdapterContext, AdapterReviewer, AdapterSetup, AdapterSetupContext, RuntimeAdapter, RuntimeFactory } from "./runtime-adapter.js";
 
 export const adapterIdPattern = /^[a-z][a-z0-9-]{0,63}$/;
 
@@ -25,6 +25,7 @@ export async function loadAdapter(id: string, modulePath?: string): Promise<Runt
       !("apiVersion" in adapter) || adapter.apiVersion !== 1 ||
       !("id" in adapter) || adapter.id !== id ||
       !("create" in adapter) || typeof adapter.create !== "function" ||
+      ("review" in adapter && adapter.review !== undefined && typeof adapter.review !== "function") ||
       ("setup" in adapter && adapter.setup !== undefined && typeof adapter.setup !== "function")) {
     throw new Error("Runtime adapter must export a matching id, apiVersion 1 and create function");
   }
@@ -35,18 +36,21 @@ export async function loadAdapter(id: string, modulePath?: string): Promise<Runt
 export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetupContext): Promise<{
   runtimeFactory: RuntimeFactory;
   updates?: AdapterUpdateService;
+  review?: AdapterReviewer;
 }> {
   const workerContext = { environment: context.environment, logger: context.logger };
   let prepared: AdapterSetup | undefined;
   if (adapter.setup) {
     try {
       prepared = await adapter.setup({ ...context, environment: { ...context.environment } });
-      if (!prepared || typeof prepared.create !== "function") throw new Error("Invalid adapter setup");
+      if (!prepared || typeof prepared.create !== "function" ||
+          (prepared.review !== undefined && typeof prepared.review !== "function")) throw new Error("Invalid adapter setup");
       const updates = prepared.updates ? new AdapterUpdateService(adapter.id, prepared.updates, context.logger) : undefined;
       const initialized = { ...adapter, create: prepared.create.bind(prepared) };
       return {
         runtimeFactory: createRuntimeFactory(initialized, workerContext),
-        ...(updates ? { updates } : {})
+        ...(updates ? { updates } : {}),
+        ...bindReview(prepared.review?.bind(prepared) ?? adapter.review?.bind(adapter), workerContext)
       };
     } catch {
       // Never expose arbitrary module errors; a failed optional updater must not
@@ -56,7 +60,13 @@ export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetu
         "Adapter update setup unavailable; retaining the default runtime");
     }
   }
-  return { runtimeFactory: createRuntimeFactory(adapter, workerContext) };
+  return { runtimeFactory: createRuntimeFactory(adapter, workerContext), ...bindReview(adapter.review?.bind(adapter), workerContext) };
+}
+
+/** Keep adapter state bound while giving each review its own environment/profile copy. */
+function bindReview(review: RuntimeAdapter["review"], context: AdapterContext): { review?: AdapterReviewer } {
+  return review ? { review: request => review({ ...context, environment: { ...context.environment } },
+    { ...request, profile: { ...request.profile } }) } : {};
 }
 
 export function createRuntimeFactory(adapter: RuntimeAdapter, context: AdapterContext): RuntimeFactory {

@@ -6,6 +6,7 @@ import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Logger } from "pino";
 import type { Input } from "../../runtime-adapter.js";
+import type { AdapterReviewRequest } from "../../runtime-adapter.js";
 import type {
   RuntimeLike,
   RuntimeThreadOptions,
@@ -53,12 +54,22 @@ export interface AppServerCodexOptions {
   environment: Record<string, string>;
   /** Immutable installation selected when this worker acquired its lease. */
   executablePath?: string;
+  /** Review startup must also avoid loading project configuration from the daemon's cwd. */
+  workingDirectory?: string;
   spawnProcess?: AppServerSpawner;
   closeTimeoutMs?: number;
   requestTimeoutMs?: number;
   /** Records raw protocol failures and repaired fragments for local diagnosis. */
   logger?: ProtocolLogger;
+  /** Review processes use restricted startup arguments; workers retain full-access startup. */
+  reviewArguments?: readonly string[];
 }
+
+type ReviewThreadOptions = Omit<RuntimeThreadOptions, "sandboxMode" | "networkAccessEnabled"> & {
+  sandboxMode: "read-only";
+  networkAccessEnabled: false;
+  instructions: string;
+};
 
 /**
  * A small adapter around Codex App Server's stable JSONL protocol. One adapter
@@ -75,15 +86,17 @@ export class AppServerCodex implements RuntimeLike {
   private startupCloseFailure?: Error;
   private threadStarted = false;
   private threadId?: string;
+  private readonly reviewArguments: readonly string[] | undefined;
 
   constructor(options: AppServerCodexOptions) {
     this.environment = options.environment;
     const executablePath = options.executablePath;
     this.spawnProcess = options.spawnProcess ?? ((environment, arguments_) =>
-      spawnCodexAppServer(executablePath ?? resolveBundledCodexPath(), environment, arguments_));
+      spawnCodexAppServer(executablePath ?? resolveBundledCodexPath(), environment, arguments_, options.workingDirectory));
     this.closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.logger = options.logger;
+    this.reviewArguments = options.reviewArguments;
   }
 
   startThread(options: RuntimeThreadOptions): ThreadLike {
@@ -92,6 +105,18 @@ export class AppServerCodex implements RuntimeLike {
 
   resumeThread(threadId: string, options: RuntimeThreadOptions): ThreadLike {
     return this.ownThread(options, threadId);
+  }
+
+  /** Start an ephemeral review with no task directory, saved conversation or worker permissions. */
+  reviewThread(request: AdapterReviewRequest, workingDirectory: string): ThreadLike {
+    if (!this.reviewArguments || this.threadStarted) throw new Error("Review runtime unavailable");
+    this.threadStarted = true;
+    return new AppServerThread(this, {
+      model: request.profile.model, modelReasoningEffort: request.profile.reasoning_effort,
+      serviceTier: request.profile.service_tier, workingDirectory,
+      sandboxMode: "read-only", approvalPolicy: "never", networkAccessEnabled: false,
+      threadName: "TMatrix security review", instructions: request.instructions,
+    });
   }
 
   private ownThread(options: RuntimeThreadOptions, threadId?: string): ThreadLike {
@@ -140,7 +165,7 @@ export class AppServerCodex implements RuntimeLike {
     try {
       child = this.spawnProcess(
         this.environment,
-        UNATTENDED_APP_SERVER_ARGUMENTS
+        this.reviewArguments ?? UNATTENDED_APP_SERVER_ARGUMENTS
       );
     } catch (cause) {
       throw new Error("Unable to start Codex App Server", { cause });
@@ -154,7 +179,7 @@ export class AppServerCodex implements RuntimeLike {
     try {
       await transport.request("initialize", {
         clientInfo: CLIENT_INFO,
-        capabilities: { experimentalApi: true }
+        capabilities: { experimentalApi: !this.reviewArguments }
       }, signal ? { signal } : {});
       transport.notify("initialized");
       return transport;
@@ -175,12 +200,12 @@ export class AppServerCodex implements RuntimeLike {
 
 class AppServerThread implements ThreadLike {
   private readonly codex: AppServerCodex;
-  private readonly options: RuntimeThreadOptions;
+  private readonly options: RuntimeThreadOptions | ReviewThreadOptions;
   private threadId?: string;
   private emittedThreadStarted = false;
   private replacedMissingThread = false;
 
-  constructor(codex: AppServerCodex, options: RuntimeThreadOptions, private readonly resumeId?: string) {
+  constructor(codex: AppServerCodex, options: RuntimeThreadOptions | ReviewThreadOptions, private readonly resumeId?: string) {
     this.codex = codex;
     this.options = options;
   }
@@ -255,7 +280,8 @@ class AppServerThread implements ThreadLike {
         input: appServerInput(input),
         cwd: this.options.workingDirectory,
         approvalPolicy: this.options.approvalPolicy,
-        sandboxPolicy: { type: "dangerFullAccess" },
+        sandboxPolicy: this.options.sandboxMode === "read-only"
+          ? { type: "readOnly", networkAccess: false } : { type: "dangerFullAccess" },
         model: this.options.model,
         serviceTier: this.options.serviceTier,
         effort: this.options.modelReasoningEffort,
@@ -283,11 +309,16 @@ class AppServerThread implements ThreadLike {
         }
 
         if (notification.method === "item/commandExecution/outputDelta") {
+          if ("instructions" in this.options) throw new Error("Review attempted a tool");
           yield { type: "local.activity", kind: "command.output", text: optionalString(params.delta) ?? "" };
           continue;
         }
         if (notification.method === "item/started") {
           const item = asRecord(params.item);
+          if ("instructions" in this.options) {
+            if (item.type !== "reasoning" && item.type !== "agentMessage" && item.type !== "userMessage") throw new Error("Review attempted a tool");
+            continue;
+          }
           const text = item.type === "commandExecution" ? `$ ${optionalString(item.command) ?? ""}`
             : item.type === "mcpToolCall" ? `${optionalString(item.server) ?? "MCP"} / ${optionalString(item.tool) ?? "tool"}`
             : item.type === "reasoning" ? "Working through the next step"
@@ -297,6 +328,10 @@ class AppServerThread implements ThreadLike {
         }
 
         if (notification.method === "item/completed") {
+          if ("instructions" in this.options) {
+            const type = asRecord(params.item).type;
+            if (type !== "reasoning" && type !== "agentMessage" && type !== "userMessage") throw new Error("Review attempted a tool");
+          }
           const item = mapCompletedItem(params.item);
           if (item) yield { type: "item.completed", item };
           continue;
@@ -338,6 +373,11 @@ class AppServerThread implements ThreadLike {
     signal?: AbortSignal
   ): Promise<string> {
     if (this.threadId) return this.threadId;
+    const reviewing = "instructions" in this.options;
+    // Enumerate configured integrations before admitting any untrusted review input.
+    const effective = reviewing ? asRecord(asRecord(await transport.request("config/read", { includeLayers: false },
+      signal ? { signal } : {})).config) : {};
+    const disableEntries = (value: unknown) => Object.fromEntries(Object.keys(asRecord(value)).map(key => [key, { enabled: false }]));
     const configuration = {
       model: this.options.model,
       serviceTier: this.options.serviceTier,
@@ -348,8 +388,10 @@ class AppServerThread implements ThreadLike {
         model_reasoning_effort: this.options.modelReasoningEffort,
         sandbox_workspace_write: {
           network_access: this.options.networkAccessEnabled
-        }
-      }
+        },
+        ...(reviewing ? { mcp_servers: disableEntries(effective.mcp_servers), plugins: disableEntries(effective.plugins) } : {})
+      },
+      ...(reviewing ? { baseInstructions: this.options.instructions, developerInstructions: "", ephemeral: true } : {})
     };
     let response: ProtocolRecord;
     if (this.resumeId) {
@@ -367,12 +409,12 @@ class AppServerThread implements ThreadLike {
             !(this.options.rebuildOnResumeRejection && cause instanceof ResumeRejectedError)) throw cause;
         this.replacedMissingThread = true;
         response = asRecord(await transport.request("thread/start", {
-          ...configuration, serviceName: SERVICE_NAME, ephemeral: false
+          ...configuration, serviceName: SERVICE_NAME, ephemeral: reviewing
         }, signal ? { signal } : {}));
       }
     } else {
       response = asRecord(await transport.request("thread/start", {
-        ...configuration, serviceName: SERVICE_NAME, ephemeral: false
+        ...configuration, serviceName: SERVICE_NAME, ephemeral: reviewing
       }, signal ? { signal } : {}));
     }
     const threadId = stringField(asRecord(response.thread), "id");
@@ -382,7 +424,8 @@ class AppServerThread implements ThreadLike {
     }
     this.threadId = threadId;
     this.codex.registerThread(threadId);
-    await transport.request("thread/name/set", {
+    // Ephemeral review threads have no saved metadata to name.
+    if (!reviewing) await transport.request("thread/name/set", {
       threadId,
       name: this.options.threadName
     }, signal ? { signal } : {});
@@ -811,7 +854,8 @@ export function resolveBundledCodexPath(): string {
 export function spawnCodexAppServer(
   executablePath: string,
   environment: Record<string, string>,
-  arguments_: readonly string[]
+  arguments_: readonly string[],
+  workingDirectory?: string
 ): AppServerProcess {
   const launcher = /\.[cm]?js$/i.test(executablePath);
   const distribution = dirname(dirname(executablePath));
@@ -830,6 +874,7 @@ export function spawnCodexAppServer(
   return spawn(launcher ? process.execPath : executablePath,
     launcher ? [executablePath, ...arguments_] : [...arguments_], {
     env: childEnvironment,
+    ...(workingDirectory ? { cwd: workingDirectory } : {}),
     stdio: ["pipe", "pipe", "pipe"],
     // One process group per ticket allows a hard fallback to target this App
     // Server without signalling the daemon or its other concurrent tickets.

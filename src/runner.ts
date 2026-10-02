@@ -1,3 +1,4 @@
+import type { PromptScreen } from "./security-screening.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
 import { workerTitle } from "./helpers/worker-title.js";
@@ -121,6 +122,7 @@ interface TurnOutcome {
 }
 
 export class TicketRunner {
+  private readonly screenPrompt: PromptScreen | undefined;
   private readonly runtimeFactory: RuntimeFactory;
   private readonly api: TicketApi;
   private readonly logger: Logger;
@@ -130,6 +132,7 @@ export class TicketRunner {
   private readonly conversationStore: ConversationStore | undefined;
 
   constructor(options: {
+    screenPrompt?: PromptScreen;
     runtimeFactory?: RuntimeFactory;
     /** @deprecated Use runtimeFactory. */
     codexFactory?: RuntimeFactory;
@@ -142,6 +145,7 @@ export class TicketRunner {
   }) {
     const factory = options.runtimeFactory ?? options.codexFactory;
     if (!factory) throw new Error("A runtime factory is required");
+    this.screenPrompt = options.screenPrompt;
     this.runtimeFactory = factory;
     this.api = options.api;
     this.logger = options.logger.child({ component: "ticket_runner" });
@@ -206,6 +210,7 @@ export class TicketRunner {
           options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
         }
         const fullPrompt = buildPrompt(ticket, history);
+        await this.screenPrompt?.(ticket, fullPrompt, options.signal);
         const workingDirectory = await resolveWorkingDirectory(
           ticket.project_path,
           this.fallbackWorkingDirectory
@@ -507,6 +512,7 @@ export class TicketRunner {
     localSteeringId?: string,
     missingConversationText?: string
   ): Promise<TurnOutcome> {
+    await this.screenPrompt?.(ticket, text, signal);
     const endpoint = ticket.endpoints.history.replace(/^GET\s+/i, "");
     const prepared = await prepareCodexInput(text, {
       origin: new URL(endpoint).origin,
@@ -521,6 +527,7 @@ export class TicketRunner {
 
     let fallback: Awaited<ReturnType<typeof prepareCodexInput>> | undefined;
     const missingConversationInput = missingConversationText === undefined ? undefined : async () => {
+      await this.screenPrompt?.(ticket, missingConversationText, signal);
       fallback = await prepareCodexInput(missingConversationText, {
         origin: new URL(endpoint).origin, fetch: this.fetch, ...(signal ? { signal } : {})
       });
