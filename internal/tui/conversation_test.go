@@ -37,7 +37,7 @@ func TestConversationIdentitySurvivesInputUpdatesAtEverySize(t *testing.T) {
 func TestMissingConversationDoesNotBorrowAnotherWorkerIdentity(t *testing.T) {
 	m, _ := testModel()
 	m, _ = press(m, "right")
-	frame := ansi.Strip(m.View())
+	frame := ansi.Strip(strings.Join(m.workerContent().lines, "\n"))
 	if !strings.Contains(frame, "Conversation ID unavailable") || strings.Contains(frame, "thread-a") {
 		t.Fatal("worker with no runtime ID appears to have a conversation")
 	}

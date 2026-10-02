@@ -41,7 +41,7 @@ func TestHTTPActionsAndQueuedAcknowledgement(t *testing.T) {
 			if r.Method != http.MethodGet {
 				t.Error("snapshot changed state")
 			}
-			fmt.Fprint(w, `{"version":1,"max_workers":3,"running_workers":1,"workers":[{"id":"worker-1","status":"running","input_revision":7}]}`)
+			fmt.Fprint(w, `{"version":1,"max_workers":3,"running_workers":1,"workers":[{"id":"worker-1","status":"running","input_revision":7,"thread_id":"fictional-thread","run_kind":"resumed"}]}`)
 		case "/v1/settings":
 			var values map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&values); err != nil {
@@ -86,7 +86,7 @@ func TestHTTPActionsAndQueuedAcknowledgement(t *testing.T) {
 	}
 	ctx := context.Background()
 	snapshot, err := client.Snapshot(ctx)
-	if err != nil || snapshot.Workers[0].InputRevision != 7 {
+	if err != nil || snapshot.Workers[0].InputRevision != 7 || snapshot.Workers[0].RunKind != "resumed" || snapshot.Workers[0].ThreadID != "fictional-thread" {
 		t.Fatalf("snapshot failed: %v", err)
 	}
 	max, kind := 5, "codex"

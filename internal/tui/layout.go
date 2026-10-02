@@ -26,16 +26,23 @@ func (b *layoutBlock) append(other layoutBlock) {
 
 func (m Model) compact() bool { return m.height < 28 || m.width < 60 }
 func (m Model) headerHeight() int {
-	if m.compact() {
-		return 6
+	cardGrowth := 0
+	if m.screen == workersScreen {
+		cardGrowth = 1
+		if m.compact() {
+			cardGrowth = m.workerCardHeight() - 3
+		}
 	}
-	return 9
+	if m.compact() {
+		return 6 + cardGrowth
+	}
+	return 9 + cardGrowth
 }
 func (m Model) bodyHeight() int { return max(1, m.height-m.headerHeight()-2) }
 func (m Model) activityHeight() int {
 	reserved := 6 // identity, state, conversation, divider and two action rows
 	if m.compact() {
-		reserved = 5
+		reserved = 4 // state, conversation, divider and actions; title is in cards
 	}
 	return max(1, m.bodyHeight()-2-reserved)
 }

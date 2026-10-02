@@ -3,16 +3,22 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+	"tmatrix/internal/backend"
 )
 
-func (m Model) workerCards() layoutBlock {
-	height := 4
-	if m.compact() {
-		height = 3
+func (m Model) workerCardHeight() int {
+	if m.compact() && m.height < 20 {
+		return 4 // selected conversation remains in the detail panel
 	}
+	return 5 // title, run state, conversation and two border rows
+}
+
+func (m Model) workerCards() layoutBlock {
+	height := m.workerCardHeight()
 	if len(m.snapshot.Workers) == 0 {
 		result := controls([]control{{"[c] Connect with Tzu Do", "c"}}, m.width)
 		for len(result.lines) < height {
@@ -68,8 +74,9 @@ func (m Model) workerCards() layoutBlock {
 		}
 		title := fmt.Sprintf("%d %s %s%s", i+1, marker, pin, single(worker.Title))
 		lines := []string{ellipsis(title, inner)}
-		if !m.compact() {
-			lines = append(lines, ellipsis(single(worker.Status)+" · "+elapsedLabel(worker, m.now), inner))
+		lines = append(lines, ellipsis(workerRuntimeLabel(worker, m.now), inner))
+		if height == 5 {
+			lines = append(lines, ellipsis(conversationLabel(worker), inner))
 		}
 		style := lipgloss.NewStyle().Width(cardWidth-2).Padding(0, 1).Border(lipgloss.RoundedBorder()).BorderForeground(border).Foreground(ink).Background(bg)
 		// Some 16-color terminals brighten dark ink when bold is enabled,
@@ -108,23 +115,21 @@ func (m Model) workerContent() layoutBlock {
 	if runtime == "" {
 		runtime = "codex"
 	}
-	state := single(worker.Status)
-	if state == "" {
-		state = "unknown"
-	}
+	meta := workerRuntimeLabel(*worker, m.now) + " · " + runtime
 	if worker.Pinned {
-		state = "📌 PIN · " + state
+		meta = "📌 PIN · " + meta
 		if m.options.Portable {
-			state = "PIN · " + single(worker.Status)
+			meta = "PIN · " + workerRuntimeLabel(*worker, m.now) + " · " + runtime
 		}
 	}
-	meta := state + " · " + elapsedLabel(*worker, m.now) + " · " + runtime
-	conversation := "Conversation ID unavailable"
-	if id := single(worker.ThreadID); strings.TrimSpace(id) != "" {
-		conversation = "Conversation · " + id
+	b := layoutBlock{}
+	// Compact cards already show the title. Keep wider state/conversation rows
+	// so long IDs and stop receipts remain readable without hiding controls.
+	if !m.compact() {
+		b.lines = append(b.lines, accentStyle.Render(ellipsis(worker.Title, width)))
 	}
-	b := layoutBlock{lines: []string{accentStyle.Render(ellipsis(worker.Title, width)), mutedStyle.Render(ellipsis(meta, width))}}
-	b.lines = append(b.lines, mutedStyle.Render(ellipsis(conversation, width)))
+	b.lines = append(b.lines, mutedStyle.Render(ellipsis(meta, width)))
+	b.lines = append(b.lines, mutedStyle.Render(ellipsis(conversationLabel(*worker), width)))
 	// The viewport dimensions use this same geometry in syncActivity.
 	y := len(b.lines)
 	for _, line := range strings.Split(m.viewport.View(), "\n") {
@@ -174,4 +179,36 @@ func (m Model) workerContent() layoutBlock {
 		}
 	}
 	return b
+}
+
+func workerStateLabel(worker backend.Worker) string {
+	if worker.Status == "running" {
+		switch worker.RunKind {
+		case "initial":
+			return "initial run"
+		case "resumed":
+			return "resumed run"
+		}
+	}
+	// Older engines have no run kind; do not infer it from revisions or ID.
+	if state := single(worker.Status); state != "" {
+		return state
+	}
+	return "unknown"
+}
+
+func workerRuntimeLabel(worker backend.Worker, now time.Time) string {
+	label := workerStateLabel(worker)
+	separator := " · "
+	if label == "initial run" || label == "resumed run" {
+		separator = ": "
+	}
+	return label + separator + elapsedLabel(worker, now)
+}
+
+func conversationLabel(worker backend.Worker) string {
+	if id := single(worker.ThreadID); id != "" {
+		return "Conversation · " + id
+	}
+	return "Conversation ID unavailable"
 }

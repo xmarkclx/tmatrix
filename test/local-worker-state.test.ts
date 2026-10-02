@@ -3,6 +3,19 @@ import { localPromptPreview } from "../src/helpers/local-prompt-preview.js";
 import { LocalWorkerState } from "../src/local-worker-state.js";
 import { makeTicket } from "./helpers.js";
 
+describe("local run identity", () => {
+  it.each(["initial", "resumed"] as const)("retains %s metadata through steering and activity eviction", (run_kind) => {
+    const state = new LocalWorkerState();
+    const ticket = makeTicket({ input_revision: 7 });
+    state.start(ticket);
+    expect(state.snapshot()[0]?.run_kind).toBeUndefined();
+    state.record(ticket.worker_id, { kind: "thread.started", text: "Conversation connected", thread_id: "fictional-thread", run_kind });
+    state.record(ticket.worker_id, { kind: "revision.delivering", text: "Updated input", input_revision: 8 });
+    state.record(ticket.worker_id, { kind: "output", text: "x".repeat(150000) });
+    expect(state.snapshot()[0]).toMatchObject({ thread_id: "fictional-thread", run_kind, input_revision: 8, activity: [] });
+  });
+});
+
 describe("local initial prompt", () => {
   it("stays separate from activity and retains its original version through steering and eviction", () => {
     const state = new LocalWorkerState();
