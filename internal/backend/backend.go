@@ -70,6 +70,7 @@ type Worker struct {
 	Model         string         `json:"model"`
 	WorkerType    string         `json:"worker_type"`
 	ThreadID      string         `json:"thread_id"`
+	RunKind       string         `json:"run_kind,omitempty"`
 	InputRevision int            `json:"input_revision"`
 	StartedAt     string         `json:"started_at"`
 	EndedAt       string         `json:"ended_at,omitempty"`

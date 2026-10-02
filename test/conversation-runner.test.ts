@@ -26,6 +26,7 @@ function harness(store: ConversationStore, options: {
   commentId?: string;
   failTurn?: boolean;
   cannotResume?: boolean;
+  replacementThreadId?: string;
   beforeTurn?: (id: string) => Promise<void>;
   close?: () => Promise<void>;
 } = {}) {
@@ -60,7 +61,7 @@ function harness(store: ConversationStore, options: {
   });
   const codex: CodexLike = {
     startThread: (settings) => { threadSettings.push(settings); const id = options.threadId ?? "conversation-root"; calls.push({ kind: "start", id }); return thread(id); },
-    resumeThread: (id, settings) => { threadSettings.push(settings); calls.push({ kind: "resume", id }); return thread(id); },
+    resumeThread: (id, settings) => { threadSettings.push(settings); calls.push({ kind: "resume", id }); return thread(options.replacementThreadId ?? id); },
     close: options.close ?? (async () => undefined)
   };
   if (options.cannotResume) delete codex.resumeThread;
@@ -75,6 +76,20 @@ function ticket(id: string, anchor?: string): Ticket {
 }
 
 describe("conversation continuity across worker tickets", () => {
+  it.each([
+    { name: "fresh thread at a later input revision", saved: false, cannotResume: false, replacement: false, expected: "initial" },
+    { name: "resumed thread at revision one", saved: true, cannotResume: false, replacement: false, expected: "resumed" },
+    { name: "runtime without resume support", saved: true, cannotResume: true, replacement: false, expected: "initial" },
+    { name: "rebuilt missing thread", saved: true, cannotResume: false, replacement: true, expected: "initial" }
+  ])("observes the connected run kind for $name", async ({ saved, cannotResume, replacement, expected }) => {
+    const store = (await stores())();
+    if (saved) await store.remember(ticket("previous"), "saved-thread");
+    const run = harness(store, { cannotResume, ...(replacement ? { replacementThreadId: "replacement-thread" } : {}) });
+    const observe = vi.fn();
+    await run.runner.run({ ...ticket("current"), input_revision: saved ? 1 : 7 }, { runId: "current", recovered: false, observe });
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({ kind: "thread.started", run_kind: expected }));
+  });
+
   it("passes the recovered lease to the runtime and enables a safe resume fallback", async () => {
     const store = (await stores())();
     const previous = ticket("previous");

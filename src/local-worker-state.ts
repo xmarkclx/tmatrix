@@ -7,6 +7,7 @@ export interface WorkerObservation {
   kind: string;
   text: string;
   thread_id?: string;
+  run_kind?: "initial" | "resumed";
   input_revision?: number;
   steering_id?: string;
 }
@@ -21,6 +22,7 @@ export interface LocalWorkerView {
   pinned: boolean;
   ended_at?: string;
   thread_id?: string;
+  run_kind?: "initial" | "resumed";
   input_revision: number;
   started_at: string;
   initial_prompt?: { text: string; at: string; input_revision: number; truncated: boolean; redacted: boolean };
@@ -67,6 +69,7 @@ export class LocalWorkerState {
       return;
     }
     if (event.thread_id !== undefined) worker.thread_id = event.thread_id;
+    if (event.run_kind !== undefined) worker.run_kind = event.run_kind;
     if (event.input_revision !== undefined) worker.input_revision = event.input_revision;
     if (event.steering_id) {
       const receipt = worker.steering.find((entry) => entry.id === event.steering_id);

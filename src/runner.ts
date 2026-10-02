@@ -244,6 +244,7 @@ export class TicketRunner {
         if (resumeId && !runtime.resumeThread) {
           options.observe?.({ kind: "conversation.unlinked", text: "This runtime cannot resume conversations. Starting a fresh conversation from the task history and saved handoff." });
         }
+        const requestedResumeId = runtime.resumeThread ? resumeId : undefined;
         const thread = resumeId && runtime.resumeThread
           ? runtime.resumeThread(resumeId, threadOptions)
           : runtime.startThread(threadOptions);
@@ -255,7 +256,12 @@ export class TicketRunner {
             await this.conversationStore?.remember(ticket, threadId, resumeId);
             resumeId = threadId;
           }
-          options.observe?.(event);
+          // Compare against the original route, not resumeId (which advances
+          // after connection). A missing conversation may have been rebuilt.
+          options.observe?.(event.kind === "thread.started" ? {
+            ...event,
+            run_kind: requestedResumeId && event.thread_id === requestedResumeId ? "resumed" : "initial"
+          } : event);
         };
 
         // Local console only: never enqueue prompt text in remote progress/logs.

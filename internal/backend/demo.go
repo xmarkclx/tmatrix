@@ -30,7 +30,7 @@ func newDemo(now func() time.Time) *Demo {
 		Version: 1, InstanceID: "demo", MaxWorkers: 4, RunningWorkers: 2, PollIntervalMS: 5000,
 		Poller: Poller{Type: "tzudo", Status: "demo", URL: config.DefaultPollURL, LastPollAt: "2026-09-29T10:04:30Z"},
 		Workers: []Worker{
-			{ID: "demo-01", TicketID: "TMX-12", Title: "⌨️ Build a keyboard-first command palette", Status: "running", Model: "gpt-6-astra", WorkerType: "codex", ThreadID: "demo-conversation-01", InputRevision: 3, StartedAt: "2026-09-29T10:00:00Z", InitialPrompt: &InitialPrompt{
+			{ID: "demo-01", TicketID: "TMX-12", Title: "⌨️ Build a keyboard-first command palette", Status: "running", Model: "gpt-6-astra", WorkerType: "codex", ThreadID: "demo-conversation-01", RunKind: "resumed", InputRevision: 3, StartedAt: "2026-09-29T10:00:00Z", InitialPrompt: &InitialPrompt{
 				Text: "Build a keyboard-first command palette.\nKeep every action reachable without a mouse, preserve focus when switching workers, and verify the shortcuts.\nUse fictional sample data only. [sample prompt]", At: "2026-09-29T10:00:00Z", InputRevision: 2,
 			}, Activity: []Activity{
 				{1, "2026-09-29T10:00:00Z", "status", "Sample worker opened the existing conversation."},
@@ -39,7 +39,7 @@ func newDemo(now func() time.Time) *Demo {
 				{4, "2026-09-29T10:00:14Z", "output", "✅ ok  sample/palette  0.042s  [simulated output]"},
 				{5, "2026-09-29T10:00:17Z", "status", "Task update queued for this conversation; runtime receipt is not yet observed. [sample]"},
 			}},
-			{ID: "demo-02", TicketID: "TMX-18", Title: "🌱 Add friendly empty states", Status: "running", Model: "gpt-6-sol", WorkerType: "codex", ThreadID: "demo-conversation-02", InputRevision: 1, StartedAt: "2026-09-29T10:01:00Z", InitialPrompt: &InitialPrompt{
+			{ID: "demo-02", TicketID: "TMX-18", Title: "🌱 Add friendly empty states", Status: "running", Model: "gpt-6-sol", WorkerType: "codex", ThreadID: "demo-conversation-02", RunKind: "initial", InputRevision: 1, StartedAt: "2026-09-29T10:01:00Z", InitialPrompt: &InitialPrompt{
 				Text: "Add friendly empty states for workers and pollers.\nExplain the next action and include a keyboard shortcut to connect Tzu Do. [sample prompt]", At: "2026-09-29T10:01:00Z", InputRevision: 1,
 			}, Activity: []Activity{
 				{1, "2026-09-29T10:01:00Z", "status", "Sample worker started in a separate conversation."},
