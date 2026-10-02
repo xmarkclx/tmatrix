@@ -118,6 +118,8 @@ func (m Model) renderLayout() (string, []hitTarget) {
 		body = m.workerContent()
 	case serviceScreen:
 		body = m.serviceContent()
+	case adapterUpdatesScreen:
+		body = m.adapterUpdateContent()
 	case settingsScreen, connectScreen:
 		body = m.formContent()
 	default:
@@ -163,7 +165,7 @@ func (m Model) navLayout() layoutBlock {
 	x := 0
 	for i, label := range labels {
 		style := mutedStyle.Padding(0, 1)
-		if m.screen == screens[i] {
+		if m.screen == screens[i] || (m.screen == adapterUpdatesScreen && screens[i] == settingsScreen) {
 			style = selectedStyle.Padding(0, 1).Bold(lipgloss.ColorProfile() != termenv.ANSI)
 		}
 		if !m.compact() {
@@ -235,6 +237,9 @@ func controls(items []control, width int) layoutBlock {
 }
 
 func (m Model) footerLayout() layoutBlock {
+	if m.screen == adapterUpdatesScreen {
+		return controls([]control{{"[Esc] Settings", "esc"}, {"[↑/↓] Scroll", ""}}, m.width)
+	}
 	if m.screen == serviceScreen {
 		if m.busy {
 			return controls([]control{{"Working…", ""}}, m.width)
@@ -276,6 +281,11 @@ func (m Model) screenName() string {
 		return "Pollers"
 	case serviceScreen:
 		return "Background service"
+	case adapterUpdatesScreen:
+		if update := m.snapshot.AdapterUpdate; update != nil && strings.TrimSpace(update.DisplayName) != "" {
+			return single(update.DisplayName) + " updates"
+		}
+		return "Runtime updates"
 	case settingsScreen:
 		return "Settings"
 	case connectScreen:

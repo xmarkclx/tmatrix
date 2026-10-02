@@ -83,6 +83,22 @@ func (s *Service) Pin(ctx context.Context, id string, pinned bool) error {
 	return client.Pin(ctx, id, pinned)
 }
 
+func (s *Service) CheckAdapterUpdate(ctx context.Context) error {
+	client, err := s.client()
+	if err != nil {
+		return errors.New("engine is disconnected; runtime update check could not be requested")
+	}
+	return client.CheckAdapterUpdate(ctx)
+}
+
+func (s *Service) RollbackAdapterUpdate(ctx context.Context) error {
+	client, err := s.client()
+	if err != nil {
+		return errors.New("engine is disconnected; runtime rollback could not be requested")
+	}
+	return client.RollbackAdapterUpdate(ctx)
+}
+
 func (s *Service) Configure(ctx context.Context, settings backend.Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

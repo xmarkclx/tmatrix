@@ -39,12 +39,16 @@ func (m Model) formContent() layoutBlock {
 	}
 	prefix := layoutBlock{}
 	if m.screen == settingsScreen {
+		prefix.append(controls([]control{{"[o] Runtime updates", "o"}}, m.width-4))
 		prefix.append(controls([]control{{"[r] Restart engine", "r"}}, m.width-4))
 		prefix.append(controls([]control{{"[i] Install service", "i"}}, m.width-4))
 		prefix.append(controls([]control{{"[u] Uninstall service", "u"}}, m.width-4))
 	}
 	available := max(1, m.bodyHeight()-2-len(prefix.lines))
 	start := max(0, min(focusLine-1, len(b.lines)-available))
+	if available < 3 {
+		start = min(focusLine, len(b.lines)-available)
+	}
 	b.lines = b.lines[start:min(len(b.lines), start+available)]
 	var targets []hitTarget
 	for _, target := range b.targets {
