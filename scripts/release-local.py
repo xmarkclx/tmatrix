@@ -54,7 +54,7 @@ def release(tag, upload=False, root=ROOT):
         repository = run(["gh", "repo", "view", origin, "--json", "nameWithOwner",
                           "--jq", ".nameWithOwner"], root, env, True)
 
-    # Same checks as CI, on this machine. No staging/engine or service commands.
+    # Full release checks run on this machine. No staging/engine or service commands.
     checks = [
         ["npm", "ci"],
         ["npm", "run", "check"],
@@ -64,6 +64,7 @@ def release(tag, upload=False, root=ROOT):
         ["pwsh", "-NoProfile", "-File", "scripts/test_install.ps1"],
         [sys.executable, "scripts/test_release.py"],
         [sys.executable, "scripts/test_release_local.py"],
+        [sys.executable, "scripts/test_release_workflow.py"],
         ["npm", "audit"],
         ["go", "run", "golang.org/x/vuln/cmd/govulncheck@v1.8.0", "./..."],
         ["goreleaser", "check"],
