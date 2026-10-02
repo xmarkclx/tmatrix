@@ -64,6 +64,7 @@ def release(tag, upload=False, root=ROOT):
         ["pwsh", "-NoProfile", "-File", "scripts/test_install.ps1"],
         [sys.executable, "scripts/test_release.py"],
         [sys.executable, "scripts/test_release_local.py"],
+        [sys.executable, "scripts/test_release_workflow.py"],
         ["npm", "audit"],
         ["go", "run", "golang.org/x/vuln/cmd/govulncheck@v1.8.0", "./..."],
         ["goreleaser", "check"],
