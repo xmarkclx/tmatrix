@@ -167,71 +167,81 @@ async function extractArchive(archive: string, directory: string, signal: AbortS
   let ended = false;
   let zeroBlocks = 0;
   const seen = new Set<string>();
+  let extractionFailure: unknown;
   try {
     await pipeline(createReadStream(archive), createGunzip(), async (source) => {
       for await (const raw of source) {
-        signal.throwIfAborted();
-        let chunk = Buffer.from(raw as Uint8Array);
-        total += chunk.length;
-        if (total > EXTRACT_LIMIT) throw new Error("Codex archive exceeds its extraction limit");
-        while (chunk.length > 0) {
+        try {
           signal.throwIfAborted();
-          if (remaining > 0) {
-            const count = Math.min(remaining, chunk.length);
-            if (file) await writeAll(file, chunk.subarray(0, count));
-            remaining -= count;
-            chunk = chunk.subarray(count);
-            if (remaining === 0 && file) { await file.close(); file = undefined; }
-          } else if (padding > 0) {
-            const count = Math.min(padding, chunk.length);
-            padding -= count;
-            chunk = chunk.subarray(count);
-          } else {
-            const count = Math.min(512 - header.length, chunk.length);
-            header = Buffer.concat([header, chunk.subarray(0, count)]);
-            chunk = chunk.subarray(count);
-            if (header.length < 512) continue;
-            const block = header;
-            header = Buffer.alloc(0);
-            if (block.every((byte) => byte === 0)) { ended = true; zeroBlocks++; continue; }
-            if (ended) throw new Error("Unexpected data after Codex archive end");
-            if (++entries > 4096) throw new Error("Codex archive has too many entries");
-            let checksum = 0;
-            for (let i = 0; i < 512; i++) checksum += i >= 148 && i < 156 ? 32 : block[i]!;
-            if (checksum !== tarNumber(block, 148, 8) || tarText(block, 257, 6) !== "ustar") {
-              throw new Error("Invalid Codex archive header");
-            }
-            const type = block[156];
-            if (type !== 0 && type !== 48 && type !== 53) throw new Error("Unsupported Codex archive entry");
-            const prefix = tarText(block, 345, 155);
-            const path = `${prefix ? `${prefix}/` : ""}${tarText(block, 0, 100)}`.replace(/\/$/, "");
-            const parts = path.split("/");
-            if (parts[0] !== "package" || parts.some((part) =>
-              !part || part === "." || part === ".." || /[\\:<>"|?*\x00-\x1f\x7f]/.test(part) || /[. ]$/.test(part) ||
-              /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) {
-              throw new Error("Unsafe Codex archive path");
-            }
-            if (seen.has(path)) throw new Error("Duplicate Codex archive entry");
-            seen.add(path);
-            const destination = join(directory, ...parts);
-            remaining = tarNumber(block, 124, 12);
-            if (remaining > EXTRACT_LIMIT || total + remaining > EXTRACT_LIMIT) throw new Error("Codex archive exceeds its extraction limit");
-            padding = (512 - remaining % 512) % 512;
-            if (type === 53) {
-              if (remaining !== 0) throw new Error("Invalid Codex archive directory");
-              await mkdir(destination, { recursive: true, mode: 0o700 });
+          let chunk = Buffer.from(raw as Uint8Array);
+          total += chunk.length;
+          if (total > EXTRACT_LIMIT) throw new Error("Codex archive exceeds its extraction limit");
+          while (chunk.length > 0) {
+            signal.throwIfAborted();
+            if (remaining > 0) {
+              const count = Math.min(remaining, chunk.length);
+              if (file) await writeAll(file, chunk.subarray(0, count));
+              remaining -= count;
+              chunk = chunk.subarray(count);
+              if (remaining === 0 && file) { await file.close(); file = undefined; }
+            } else if (padding > 0) {
+              const count = Math.min(padding, chunk.length);
+              padding -= count;
+              chunk = chunk.subarray(count);
             } else {
-              await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-              // Strip special bits and group/world writes, but preserve helper executability.
-              const mode = tarNumber(block, 100, 8) & 0o111 ? 0o755 : 0o644;
-              file = await open(destination, "wx", mode);
-              if (remaining === 0) { await file.close(); file = undefined; }
+              const count = Math.min(512 - header.length, chunk.length);
+              header = Buffer.concat([header, chunk.subarray(0, count)]);
+              chunk = chunk.subarray(count);
+              if (header.length < 512) continue;
+              const block = header;
+              header = Buffer.alloc(0);
+              if (block.every((byte) => byte === 0)) { ended = true; zeroBlocks++; continue; }
+              if (ended) throw new Error("Unexpected data after Codex archive end");
+              if (++entries > 4096) throw new Error("Codex archive has too many entries");
+              let checksum = 0;
+              for (let i = 0; i < 512; i++) checksum += i >= 148 && i < 156 ? 32 : block[i]!;
+              if (checksum !== tarNumber(block, 148, 8) || tarText(block, 257, 6) !== "ustar") {
+                throw new Error("Invalid Codex archive header");
+              }
+              const type = block[156];
+              if (type !== 0 && type !== 48 && type !== 53) throw new Error("Unsupported Codex archive entry");
+              const prefix = tarText(block, 345, 155);
+              const path = `${prefix ? `${prefix}/` : ""}${tarText(block, 0, 100)}`.replace(/\/$/, "");
+              const parts = path.split("/");
+              if (parts[0] !== "package" || parts.some((part) =>
+                !part || part === "." || part === ".." || /[\\:<>"|?*\x00-\x1f\x7f]/.test(part) || /[. ]$/.test(part) ||
+                /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) {
+                throw new Error("Unsafe Codex archive path");
+              }
+              if (seen.has(path)) throw new Error("Duplicate Codex archive entry");
+              seen.add(path);
+              const destination = join(directory, ...parts);
+              remaining = tarNumber(block, 124, 12);
+              if (remaining > EXTRACT_LIMIT || total + remaining > EXTRACT_LIMIT) throw new Error("Codex archive exceeds its extraction limit");
+              padding = (512 - remaining % 512) % 512;
+              if (type === 53) {
+                if (remaining !== 0) throw new Error("Invalid Codex archive directory");
+                await mkdir(destination, { recursive: true, mode: 0o700 });
+              } else {
+                await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+                // Strip special bits and group/world writes, but preserve helper executability.
+                const mode = tarNumber(block, 100, 8) & 0o111 ? 0o755 : 0o644;
+                file = await open(destination, "wx", mode);
+                if (remaining === 0) { await file.close(); file = undefined; }
+              }
             }
           }
+        } catch (error) {
+          // Record the original failure before for-await closes its iterator.
+          // Node 20/22 can otherwise surface the stream's teardown AbortError.
+          extractionFailure = error;
+          throw error;
         }
       }
       if (remaining || padding || header.length || zeroBlocks < 2) throw new Error("Truncated Codex archive");
     }, { signal });
+  } catch (error) {
+    throw extractionFailure ?? error;
   } finally {
     await file?.close();
   }
