@@ -31,6 +31,11 @@ The existing local release script runs the TypeScript/Go tests, installer tests,
 security audits and archive checks. Release staging remains separate from the
 development engine.
 
+GitHub Actions workflows are not needed for this machine-run release process.
+The local release command owns validation, building, archive verification and
+publication; GitHub hosts the source and uploaded releases. All checks must
+succeed locally before any release tag or asset is uploaded.
+
 Local installation supports Linux, macOS and WSL and requires `sh`, `curl`,
 `tar`, `install` and `uname`. It downloads the installer attached to the published
 tag; that installer verifies the platform archive checksum, installs immutable

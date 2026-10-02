@@ -54,7 +54,7 @@ def release(tag, upload=False, root=ROOT):
         repository = run(["gh", "repo", "view", origin, "--json", "nameWithOwner",
                           "--jq", ".nameWithOwner"], root, env, True)
 
-    # Same checks as CI, on this machine. No staging/engine or service commands.
+    # Full release checks run on this machine. No staging/engine or service commands.
     checks = [
         ["npm", "ci"],
         ["npm", "run", "check"],
