@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadAdapter, createRuntimeFactory } from "../src/adapter-loader.js";
-import { AppServerCodex } from "../src/app-server-codex.js";
-import { sanitizedCodexEnvironment } from "../src/codex-env.js";
+import { AppServerCodex } from "../src/adapters/codex/app-server.js";
+import { sanitizedCodexEnvironment } from "../src/adapters/codex/environment.js";
 import { nullLogger } from "../src/logger.js";
 import { RunCancellationError } from "../src/errors.js";
 import { Metrics } from "../src/metrics.js";
@@ -40,6 +40,7 @@ describe("runtime adapters", () => {
     ['export default {apiVersion: 2, id: "custom", create() {}}'],
     ['export default {apiVersion: 1, id: "wrong", create() {}}'],
     ['export default {apiVersion: 1, id: "custom"}'],
+    ['export default {apiVersion: 1, id: "custom", create() {}, setup: true}'],
     ['throw new Error("private-module-source");']
   ])("rejects invalid extensions without leaking module errors", async (source) => {
     await expect(loadAdapter("custom", await moduleFile(source))).rejects.toThrow(/Runtime adapter|Unable to load/);

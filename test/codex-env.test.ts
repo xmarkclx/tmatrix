@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizedCodexEnvironment } from "../src/codex-env.js";
+import { sanitizedCodexEnvironment } from "../src/adapters/codex/environment.js";
 
 describe("sanitizedCodexEnvironment", () => {
   it("keeps Codex auth and tools while removing the task API credential", () => {

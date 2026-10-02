@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { prepareCodexInput } from "../src/prepare-codex-input.js";
+import { prepareCodexInput } from "../src/adapters/codex/prepare-input.js";
 
 const trustedImage =
   "/api/uploads/images/markdown-images/54/33333333-3333-4333-8333-333333333333.png";

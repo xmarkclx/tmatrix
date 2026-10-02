@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Logger } from "pino";
-import type { AppServerCodexOptions } from "../src/app-server-codex.js";
-import { createCodexFactory } from "../src/codex-factory.js";
+import type { AppServerCodexOptions } from "../src/adapters/codex/app-server.js";
+import { createCodexFactory } from "../src/adapters/codex/factory.js";
 import type { CodexLike } from "../src/runner.js";
 import type { ExecutionProfile } from "../src/types.js";
 

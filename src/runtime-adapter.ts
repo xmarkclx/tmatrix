@@ -65,13 +65,64 @@ export interface AdapterContext {
   environment: Record<string, string>;
   logger: Pick<Logger, "warn" | "error">;
 }
+export type RuntimeCreator = (context: AdapterContext, profile: ExecutionProfile) => RuntimeLike & {
+  /** Resolve only after all owned execution has stopped; reject if uncertain. */
+  close(): Promise<void>;
+};
+export interface AdapterUpdateState {
+  status: "idle" | "checking" | "installing" | "verifying" | "updated" | "up_to_date" | "failed" | "disabled";
+  current_version: string;
+  previous_version?: string;
+  latest_version?: string;
+  blocked_version?: string;
+  last_checked_at?: string;
+  next_check_at?: string;
+  /** True only while a rollback target is available; rollback() is also required. */
+  can_rollback?: boolean;
+  /** A safe operator-facing summary, never raw provider output or credentials. */
+  error?: string;
+}
+export interface AdapterUpdates {
+  /** Human-readable runtime name, e.g. "Codex CLI". */
+  displayName: string;
+  snapshot(): AdapterUpdateState;
+  /** Schedule background checks; do not wait for network requests here. */
+  start(): void | Promise<void>;
+  /** Abort update work only. This must never stop an active worker. */
+  close(): Promise<void>;
+  checkNow(): Promise<void>;
+  rollback?(): Promise<void>;
+}
+export interface AdapterUpdateStatus extends AdapterUpdateState {
+  adapter_id: string;
+  display_name: string;
+  can_rollback: boolean;
+}
+export interface AdapterUpdateControl {
+  snapshot(): AdapterUpdateStatus;
+  checkNow(): Promise<void>;
+  rollback?(): Promise<void>;
+}
+export interface AdapterSetupContext extends AdapterContext {
+  /** Private per-instance/per-adapter store outside engine/release directories. */
+  updateDirectory: string;
+}
+export interface AdapterSetup {
+  /** Bound to this engine instance, with a fresh context supplied for each worker. */
+  create: RuntimeCreator;
+  updates?: AdapterUpdates;
+}
 export interface RuntimeAdapter {
   apiVersion: 1;
   /** Stable provider/account-history identity; lowercase letters, digits and hyphens. */
   id: string;
   /** Fresh isolated runtime for each ticket. Defer process startup to runStreamed. */
-  create(context: AdapterContext, profile: ExecutionProfile): RuntimeLike & {
-    /** Resolve only after all owned execution has stopped; reject if uncertain. */
-    close(): Promise<void>;
-  };
+  create: RuntimeCreator;
+  /**
+   * Optional local initialization, once per engine. Own provider update setup,
+   * version selection and pinning here; defer network work to updates.start().
+   * If setup throws, clean up partial resources before returning control.
+   * The engine falls back to create() so update failures do not block workers.
+   */
+  setup?(context: AdapterSetupContext): AdapterSetup | Promise<AdapterSetup>;
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createPromptScreen, SECURITY_POLICY } from '../src/security-screening.js';
-import { sanitizedCodexEnvironment } from '../src/codex-env.js';
+import { sanitizedCodexEnvironment } from '../src/adapters/codex/environment.js';
 import { makeTicket, makeConfig } from './helpers.js';
 import { ApiClient } from '../src/api-client.js';
 import { nullLogger } from '../src/logger.js';

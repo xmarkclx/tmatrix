@@ -19,6 +19,7 @@ import (
 	"tmatrix/internal/backend"
 	"tmatrix/internal/config"
 	"tmatrix/internal/tui"
+	"tmatrix/internal/update"
 )
 
 var version = "dev"
@@ -43,7 +44,7 @@ func run(args []string) error {
 	engineDir := flags.String("engine-dir", "", "directory containing the TMatrix engine dist/index.js")
 	showVersion := flags.Bool("version", false, "print version")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [setup|engine start|engine stop|engine restart|daemon|conversation recover <task-id> [--confirm-runtime-stopped]|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nConnect with c. Saving a connection starts task intake automatically. Space pauses/resumes intake; subsequent launches restore the saved preference.")
+		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [update [--prefix /absolute/path]|setup|engine start|engine stop|engine restart|daemon|conversation recover <task-id> [--confirm-runtime-stopped]|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nConnect with c. Saving a connection starts task intake automatically. Space pauses/resumes intake; subsequent launches restore the saved preference.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
@@ -54,6 +55,26 @@ func run(args []string) error {
 	if *showVersion {
 		fmt.Println(buildVersion())
 		return nil
+	}
+	if command := flags.Args(); len(command) > 0 && command[0] == "update" {
+		if *demo || *configDir != "" || *engineDir != "" {
+			return errors.New("update uses the installed release and its saved settings; omit --demo, --config-dir and --engine-dir")
+		}
+		updateFlags := flag.NewFlagSet("tmatrix update", flag.ContinueOnError)
+		prefix := updateFlags.String("prefix", "", "installation prefix (default: TMATRIX_PREFIX, current release prefix, or ~/.local)")
+		updateFlags.Usage = func() {
+			fmt.Fprintln(updateFlags.Output(), "Usage: tmatrix update [--prefix /absolute/path]\n\nInstall the latest official release using the checksum-verifying installer.\nExisting workers finish before the new engine starts; keep this command open.\nRequires sh, curl, tar, install, Node.js and npm (macOS can install missing runtimes).")
+			updateFlags.PrintDefaults()
+		}
+		if err := updateFlags.Parse(command[1:]); errors.Is(err, flag.ErrHelp) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if updateFlags.NArg() != 0 {
+			return errors.New("unexpected update arguments; see tmatrix update --help")
+		}
+		return update.Run(*prefix, os.Stdin, os.Stdout, os.Stderr)
 	}
 	portable, profile, err := terminalSettings(*terminal, *color, os.Getenv)
 	if err != nil {

@@ -32,6 +32,7 @@ const (
 	connectScreen
 	helpScreen
 	serviceScreen
+	adapterUpdatesScreen
 )
 
 type tickMsg time.Time

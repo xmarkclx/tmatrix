@@ -25,7 +25,7 @@ import {
 import type { Metrics } from "./metrics.js";
 import { ProgressReporter } from "./progress.js";
 import { deliverResult } from "./result-delivery.js";
-import { prepareCodexInput } from "./prepare-codex-input.js";
+import { prepareCodexInput } from "./adapters/codex/prepare-input.js";
 import type {
   ExecutionProfile,
   ReasoningEffort,

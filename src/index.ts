@@ -2,8 +2,8 @@ import { createPromptScreen } from "./security-screening.js";
 import { startLocalControlServer, type LocalControlServer } from "./local-control-server.js";
 import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
-import { loadAdapter, createRuntimeFactory } from "./adapter-loader.js";
-import { sanitizedCodexEnvironment } from "./codex-env.js";
+import { loadAdapter, setupAdapter } from "./adapter-loader.js";
+import { sanitizedCodexEnvironment } from "./adapters/codex/environment.js";
 import { loadConfig, safeConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
 import { errorContext } from "./errors.js";
@@ -13,6 +13,7 @@ import { TicketRunner } from "./runner.js";
 import { Supervisor } from "./supervisor.js";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
 
 async function main(): Promise<void> {
@@ -38,7 +39,11 @@ async function main(): Promise<void> {
 
   const api = new ApiClient({ config, logger, metrics });
   const codexEnvironment = sanitizedCodexEnvironment(process.env);
-  const runtimeFactory = createRuntimeFactory(adapter, { environment: codexEnvironment, logger });
+  const { runtimeFactory, updates: adapterUpdates } = await setupAdapter(adapter, {
+    environment: codexEnvironment,
+    logger,
+    updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.poll_origin, config.instance_id)
+  });
   const conversationStore = new ConversationStore({
     directory: config.conversation_state_dir
       ? resolve(config.conversation_state_dir)
@@ -89,7 +94,10 @@ async function main(): Promise<void> {
     logger.info({ event: "daemon.signal_received", signal }, "Shutdown signal received");
     shutdownPromise = (async () => {
       clearInterval(metricsTimer);
+      // Abort an update immediately, independently of the worker drain.
+      const updateClosed = adapterUpdates?.close();
       await supervisor.shutdown(graceMs);
+      await updateClosed;
       await localControl?.close();
       metrics.log(logger, "shutdown");
       await close();
@@ -100,6 +108,7 @@ async function main(): Promise<void> {
   if (process.env.TMATRIX_CONTROL_FILE) {
     localControl = await startLocalControlServer({
       supervisor,
+      ...(adapterUpdates ? { adapterUpdates } : {}),
       file: process.env.TMATRIX_CONTROL_FILE,
       port: Number(process.env.TMATRIX_CONTROL_PORT ?? "0"),
       onShutdown: () => { void shutdown("tmatrix"); }
@@ -132,6 +141,8 @@ async function main(): Promise<void> {
     log_rotation_enabled: true,
     codex_environment_removed: process.env.API_KEY === undefined ? [] : ["API_KEY"]
   }, "AI worker daemon started");
+
+  adapterUpdates?.start();
 
   if (process.argv.includes("--once")) {
     await supervisor.runOnce();
