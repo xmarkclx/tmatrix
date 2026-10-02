@@ -107,10 +107,26 @@ export interface AdapterSetupContext extends AdapterContext {
   /** Private per-instance/per-adapter store outside engine/release directories. */
   updateDirectory: string;
 }
+export interface AdapterReviewRequest {
+  /** Trusted worker policy, supplied separately from the untrusted input. */
+  instructions: string;
+  input: string;
+  profile: ExecutionProfile;
+  outputSchema: unknown;
+  signal?: AbortSignal;
+}
+/**
+ * A fresh, tool-free review using the adapter's existing provider authentication.
+ * Honor signal cancellation and finish owned-process teardown before settling.
+ * Return the parsed structured result; never reuse an executing conversation.
+ */
+export type AdapterReviewer = (request: AdapterReviewRequest) => Promise<unknown>;
+export type AdapterReview = (context: AdapterContext, request: AdapterReviewRequest) => Promise<unknown>;
 export interface AdapterSetup {
   /** Bound to this engine instance, with a fresh context supplied for each worker. */
   create: RuntimeCreator;
   updates?: AdapterUpdates;
+  review?: AdapterReview;
 }
 export interface RuntimeAdapter {
   apiVersion: 1;
@@ -118,6 +134,8 @@ export interface RuntimeAdapter {
   id: string;
   /** Fresh isolated runtime for each ticket. Defer process startup to runStreamed. */
   create: RuntimeCreator;
+  /** Optional isolated review. Never reuse an executing thread or grant tools/workspace access. */
+  review?: AdapterReview;
   /**
    * Optional local initialization, once per engine. Own provider update setup,
    * version selection and pinning here; defer network work to updates.start().

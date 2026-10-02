@@ -39,7 +39,7 @@ async function main(): Promise<void> {
 
   const api = new ApiClient({ config, logger, metrics });
   const codexEnvironment = sanitizedCodexEnvironment(process.env);
-  const { runtimeFactory, updates: adapterUpdates } = await setupAdapter(adapter, {
+  const { runtimeFactory, updates: adapterUpdates, review } = await setupAdapter(adapter, {
     environment: codexEnvironment,
     logger,
     updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.poll_origin, config.instance_id)
@@ -57,8 +57,7 @@ async function main(): Promise<void> {
     referenceKey: config.api_key
   });
   const screenPrompt = createPromptScreen({
-    apiKey: process.env.TMATRIX_SECURITY_OPENAI_API_KEY,
-    model: process.env.TMATRIX_SECURITY_MODEL || "gpt-5-mini",
+    ...(review ? { review } : {}),
     alert: (alert, signal) => api.alertUserEmergency(alert, signal), logger,
   });
   const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, conversationStore, screenPrompt });

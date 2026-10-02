@@ -48,4 +48,4 @@ tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
 ## Prompt security alerts
 
 See [security alerts](docs/security-alerts.md) for the independent, alert-only
-classifier, required credential, Tzu Do mail endpoint and operational limits.
+classifier, existing adapter authentication, Tzu Do mail endpoint and operational limits.
