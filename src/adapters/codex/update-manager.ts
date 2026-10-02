@@ -1,11 +1,11 @@
-import type { AdapterUpdates, AdapterUpdateState } from "./runtime-adapter.js";
+import type { AdapterUpdates, AdapterUpdateState } from "../../runtime-adapter.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { access, cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
-import { latestStableCodexRelease, installCodexRelease, type CodexRelease } from "./codex-release.js";
-import { CodexProbeCleanupError, verifyCodexInstallation } from "./codex-probe.js";
+import { latestStableCodexRelease, installCodexRelease, type CodexRelease } from "./release.js";
+import { CodexProbeCleanupError, verifyCodexInstallation } from "./probe.js";
 
 export const CODEX_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;

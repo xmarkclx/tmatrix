@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AppServerCodex,
   type AppServerProcess
-} from "../src/app-server-codex.js";
+} from "../src/adapters/codex/app-server.js";
 import type {
   CodexThreadOptions,
   WorkerThreadEvent

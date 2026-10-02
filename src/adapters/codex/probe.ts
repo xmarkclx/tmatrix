@@ -1,4 +1,4 @@
-import { AppServerCodex, spawnCodexAppServer, type AppServerProcess } from "./app-server-codex.js";
+import { AppServerCodex, spawnCodexAppServer, type AppServerProcess } from "./app-server.js";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;

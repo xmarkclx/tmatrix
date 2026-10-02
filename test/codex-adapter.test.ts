@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupAdapter } from "../src/adapter-loader.js";
-import codexAdapter from "../src/adapters/codex.js";
-import type { AppServerCodexOptions } from "../src/app-server-codex.js";
+import codexAdapter from "../src/adapters/codex/index.js";
+import type { AppServerCodexOptions } from "../src/adapters/codex/app-server.js";
 import { nullLogger } from "../src/logger.js";
 import { makeTicket } from "./helpers.js";
 
@@ -10,8 +10,8 @@ const mocks = vi.hoisted(() => ({
   runtime: vi.fn(),
   bundled: vi.fn()
 }));
-vi.mock("../src/codex-update-manager.js", () => ({ CodexUpdateManager: mocks.manager }));
-vi.mock("../src/app-server-codex.js", () => ({
+vi.mock("../src/adapters/codex/update-manager.js", () => ({ CodexUpdateManager: mocks.manager }));
+vi.mock("../src/adapters/codex/app-server.js", () => ({
   AppServerCodex: mocks.runtime,
   resolveBundledCodexInstallation: mocks.bundled
 }));

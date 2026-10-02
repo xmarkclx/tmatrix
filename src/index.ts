@@ -2,7 +2,7 @@ import { startLocalControlServer, type LocalControlServer } from "./local-contro
 import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
 import { loadAdapter, setupAdapter } from "./adapter-loader.js";
-import { sanitizedCodexEnvironment } from "./codex-env.js";
+import { sanitizedCodexEnvironment } from "./adapters/codex/environment.js";
 import { loadConfig, safeConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
 import { errorContext } from "./errors.js";

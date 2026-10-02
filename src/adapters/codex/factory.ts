@@ -1,9 +1,9 @@
 import {
   AppServerCodex,
   type AppServerCodexOptions
-} from "./app-server-codex.js";
+} from "./app-server.js";
 import type { Logger } from "pino";
-import type { CodexFactory, CodexLike } from "./runner.js";
+import type { CodexFactory, CodexLike } from "../../runner.js";
 
 type CodexCreator = (options: AppServerCodexOptions) => CodexLike;
 type ProtocolLogger = Pick<Logger, "error" | "warn">;

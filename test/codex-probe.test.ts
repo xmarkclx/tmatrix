@@ -8,8 +8,8 @@ import {
   resolveBundledCodexPath,
   spawnCodexAppServer,
   type AppServerCodexOptions
-} from "../src/app-server-codex.js";
-import { CodexProbeCleanupError, verifyCodexInstallation } from "../src/codex-probe.js";
+} from "../src/adapters/codex/app-server.js";
+import { CodexProbeCleanupError, verifyCodexInstallation } from "../src/adapters/codex/probe.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {

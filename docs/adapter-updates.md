@@ -13,6 +13,30 @@ operator workflow and recovery instructions. Adding another provider does not
 require adding its installer or executable selection to the engine, terminal or
 shared runtime factory.
 
+## Source organization
+
+Each bundled adapter has a directory under `src/adapters/<adapter-id>/`. Its
+`index.ts` exports the adapter, and its provider-specific runtime and helpers
+live alongside it. The Codex implementation is organized as:
+
+```text
+src/adapters/codex/
+  index.ts           Adapter creation, setup and worker version pins
+  app-server.ts      Codex App Server process and protocol client
+  environment.ts     Child environment sanitization
+  factory.ts         Codex runtime factory helper
+  prepare-input.ts   Codex input preparation
+  probe.ts           Candidate execution, initialization and model checks
+  release.ts         Stable release discovery, download and installation
+  update-manager.ts  Scheduling, activation, retention and rollback
+```
+
+Future bundled providers should keep their implementation in their own adapter
+directory. The shared contract (`src/runtime-adapter.ts`), loader
+(`src/adapter-loader.ts`) and update lifecycle wrapper (`src/adapter-updates.ts`)
+remain outside those directories. External adapters still load through their
+configured absolute module path.
+
 ## The optional contract
 
 `src/runtime-adapter.ts` defines the interfaces:

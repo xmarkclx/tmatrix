@@ -6,7 +6,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   codexPlatform, installCodexRelease, isStableCodexVersion, latestStableCodexRelease, type CodexRelease
-} from "../src/codex-release.js";
+} from "../src/adapters/codex/release.js";
 
 const target = codexPlatform();
 const version = "1.2.3";

@@ -1,6 +1,6 @@
-import { AppServerCodex, resolveBundledCodexInstallation } from "../app-server-codex.js";
-import { CodexUpdateManager, type CodexExecutableLease } from "../codex-update-manager.js";
-import type { AdapterContext, RuntimeAdapter, RuntimeCreator } from "../runtime-adapter.js";
+import { AppServerCodex, resolveBundledCodexInstallation } from "./app-server.js";
+import { CodexUpdateManager, type CodexExecutableLease } from "./update-manager.js";
+import type { AdapterContext, RuntimeAdapter, RuntimeCreator } from "../../runtime-adapter.js";
 
 function createCodex(context: AdapterContext, lease?: CodexExecutableLease): ReturnType<RuntimeCreator> {
   try {

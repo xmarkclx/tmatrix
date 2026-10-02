@@ -4,8 +4,8 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexUpdateManager } from "../src/codex-update-manager.js";
-import type { CodexRelease } from "../src/codex-release.js";
+import { CodexUpdateManager } from "../src/adapters/codex/update-manager.js";
+import type { CodexRelease } from "../src/adapters/codex/release.js";
 import { deferred } from "./helpers.js";
 
 const faults = vi.hoisted(() => ({ rejectManifestRename: false }));

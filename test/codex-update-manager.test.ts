@@ -2,9 +2,9 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CODEX_CHECK_INTERVAL_MS, CodexUpdateManager } from "../src/codex-update-manager.js";
-import type { CodexRelease } from "../src/codex-release.js";
-import { CodexProbeCleanupError } from "../src/codex-probe.js";
+import { CODEX_CHECK_INTERVAL_MS, CodexUpdateManager } from "../src/adapters/codex/update-manager.js";
+import type { CodexRelease } from "../src/adapters/codex/release.js";
+import { CodexProbeCleanupError } from "../src/adapters/codex/probe.js";
 import { deferred } from "./helpers.js";
 
 const directories: string[] = [];

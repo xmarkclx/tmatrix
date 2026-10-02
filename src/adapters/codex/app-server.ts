@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Logger } from "pino";
-import type { Input } from "./runtime-adapter.js";
+import type { Input } from "../../runtime-adapter.js";
 import type {
   RuntimeLike,
   RuntimeThreadOptions,
@@ -13,7 +13,7 @@ import type {
   ThreadLike,
   WorkerThreadEvent,
   WorkerThreadItem
-} from "./runtime-adapter.js";
+} from "../../runtime-adapter.js";
 
 const CLIENT_INFO = Object.freeze({
   name: "tzu_do_ai_worker",

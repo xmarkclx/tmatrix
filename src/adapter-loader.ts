@@ -15,7 +15,7 @@ export async function loadAdapter(id: string, modulePath?: string): Promise<Runt
   let adapter: unknown;
   try {
     adapter = (id === "codex"
-      ? await import("./adapters/codex.js")
+      ? await import("./adapters/codex/index.js")
       : await import(pathToFileURL(modulePath!).href)).default;
   } catch {
     // Import errors can contain arbitrary module source or credentials.
