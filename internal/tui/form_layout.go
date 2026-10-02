@@ -5,7 +5,7 @@ import "strings"
 func (m Model) formContent() layoutBlock {
 	labels := []string{"Max workers", "Poll interval (milliseconds)", "Worker type", "Poller type"}
 	title := "Execution settings"
-	intro := "Capacity controls new intake. Existing workers continue."
+	intro := "Max workers limits how many tasks run at once. Lowering it won't stop tasks already running."
 	if m.screen == connectScreen {
 		labels = []string{"Tzu Do server or full poll URL", "Worker API key"}
 		title = "Connect with Tzu Do"
