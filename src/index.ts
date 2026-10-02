@@ -1,7 +1,7 @@
 import { startLocalControlServer, type LocalControlServer } from "./local-control-server.js";
 import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
-import { loadAdapter, createRuntimeFactory } from "./adapter-loader.js";
+import { loadAdapter, setupAdapter } from "./adapter-loader.js";
 import { sanitizedCodexEnvironment } from "./codex-env.js";
 import { loadConfig, safeConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
@@ -11,10 +11,8 @@ import { Metrics } from "./metrics.js";
 import { TicketRunner } from "./runner.js";
 import { Supervisor } from "./supervisor.js";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
-import { createHash } from "node:crypto";
-import { CodexUpdateManager } from "./codex-update-manager.js";
-import { resolveBundledCodexInstallation } from "./app-server-codex.js";
+import { resolve } from "node:path";
+import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
 
 async function main(): Promise<void> {
@@ -40,24 +38,11 @@ async function main(): Promise<void> {
 
   const api = new ApiClient({ config, logger, metrics });
   const codexEnvironment = sanitizedCodexEnvironment(process.env);
-  let codexUpdates: CodexUpdateManager | undefined;
-  if (adapter.id === "codex") {
-    try {
-      codexUpdates = new CodexUpdateManager({
-        directory: process.env.TMATRIX_CONTROL_FILE
-          ? resolve(dirname(process.env.TMATRIX_CONTROL_FILE), "codex")
-          : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "tmatrix", "codex",
-            createHash("sha256").update(`${config.poll_origin}\n${config.instance_id}`).digest("hex")),
-        bundled: resolveBundledCodexInstallation(),
-        environment: codexEnvironment
-      });
-      await codexUpdates.initialize();
-    } catch {
-      logger.warn({ event: "codex.updates_unavailable" }, "Codex updates unavailable; retaining the bundled CLI");
-    }
-  }
-  const runtimeFactory = createRuntimeFactory(adapter, { environment: codexEnvironment, logger },
-    codexUpdates ? () => codexUpdates!.acquire() : undefined);
+  const { runtimeFactory, updates: adapterUpdates } = await setupAdapter(adapter, {
+    environment: codexEnvironment,
+    logger,
+    updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.poll_origin, config.instance_id)
+  });
   const conversationStore = new ConversationStore({
     directory: config.conversation_state_dir
       ? resolve(config.conversation_state_dir)
@@ -104,7 +89,7 @@ async function main(): Promise<void> {
     shutdownPromise = (async () => {
       clearInterval(metricsTimer);
       // Abort an update immediately, independently of the worker drain.
-      const updateClosed = codexUpdates?.close();
+      const updateClosed = adapterUpdates?.close();
       await supervisor.shutdown(graceMs);
       await updateClosed;
       await localControl?.close();
@@ -117,7 +102,7 @@ async function main(): Promise<void> {
   if (process.env.TMATRIX_CONTROL_FILE) {
     localControl = await startLocalControlServer({
       supervisor,
-      ...(codexUpdates ? { codexUpdates } : {}),
+      ...(adapterUpdates ? { adapterUpdates } : {}),
       file: process.env.TMATRIX_CONTROL_FILE,
       port: Number(process.env.TMATRIX_CONTROL_PORT ?? "0"),
       onShutdown: () => { void shutdown("tmatrix"); }
@@ -151,7 +136,7 @@ async function main(): Promise<void> {
     codex_environment_removed: process.env.API_KEY === undefined ? [] : ["API_KEY"]
   }, "AI worker daemon started");
 
-  codexUpdates?.start();
+  adapterUpdates?.start();
 
   if (process.argv.includes("--once")) {
     await supervisor.runOnce();

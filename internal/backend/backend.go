@@ -18,14 +18,17 @@ type Backend interface {
 	Connect(context.Context, Connection) error
 }
 
-// CodexUpdater is optional so custom backends and older engines remain usable.
+// AdapterUpdater is optional so custom backends and older engines remain usable.
 // These methods acknowledge a background operation, not update completion.
-type CodexUpdater interface {
-	CheckCodexUpdate(context.Context) error
-	RollbackCodexUpdate(context.Context) error
+type AdapterUpdater interface {
+	CheckAdapterUpdate(context.Context) error
+	RollbackAdapterUpdate(context.Context) error
 }
 
-type CodexUpdate struct {
+type AdapterUpdate struct {
+	AdapterID       string `json:"adapter_id"`
+	DisplayName     string `json:"display_name"`
+	CanRollback     bool   `json:"can_rollback"`
 	Status          string `json:"status"`
 	CurrentVersion  string `json:"current_version"`
 	PreviousVersion string `json:"previous_version,omitempty"`
@@ -37,17 +40,17 @@ type CodexUpdate struct {
 }
 
 type Snapshot struct {
-	CodexUpdate    *CodexUpdate `json:"codex_update,omitempty"`
-	RuntimeAdapter string       `json:"runtime_adapter"`
-	RestartPending bool         `json:"restart_pending,omitempty"`
-	Version        int          `json:"version"`
-	InstanceID     string       `json:"instance_id"`
-	MaxWorkers     int          `json:"max_workers"`
-	RunningWorkers int          `json:"running_workers"`
-	PollIntervalMS int          `json:"poll_interval_ms"`
-	IntakePaused   bool         `json:"intake_paused"`
-	Poller         Poller       `json:"poller"`
-	Workers        []Worker     `json:"workers"`
+	AdapterUpdate  *AdapterUpdate `json:"adapter_update,omitempty"`
+	RuntimeAdapter string         `json:"runtime_adapter"`
+	RestartPending bool           `json:"restart_pending,omitempty"`
+	Version        int            `json:"version"`
+	InstanceID     string         `json:"instance_id"`
+	MaxWorkers     int            `json:"max_workers"`
+	RunningWorkers int            `json:"running_workers"`
+	PollIntervalMS int            `json:"poll_interval_ms"`
+	IntakePaused   bool           `json:"intake_paused"`
+	Poller         Poller         `json:"poller"`
+	Workers        []Worker       `json:"workers"`
 }
 
 type Poller struct {

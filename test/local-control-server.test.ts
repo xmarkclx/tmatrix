@@ -13,12 +13,12 @@ import { deferred, makeConfig, makeTicket } from "./helpers.js";
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
 
-async function connect(supervisor: Supervisor, codexUpdates?: import("../src/codex-update-manager.js").CodexUpdateControl) {
+async function connect(supervisor: Supervisor, adapterUpdates?: import("../src/runtime-adapter.js").AdapterUpdateControl) {
   const dir = await mkdtemp(join(tmpdir(), "tmatrix-control-test-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "control.json");
   const onShutdown = vi.fn();
-  const bridge = await startLocalControlServer({ supervisor, file, onShutdown, ...(codexUpdates ? { codexUpdates } : {}) });
+  const bridge = await startLocalControlServer({ supervisor, file, onShutdown, ...(adapterUpdates ? { adapterUpdates } : {}) });
   cleanup.push(() => bridge.close());
   const discovery = JSON.parse(await readFile(file, "utf8"));
   return { file, bridge, onShutdown, discovery, request: (path: string, body?: unknown) => fetch(discovery.url + path, {
@@ -63,18 +63,18 @@ describe("local console bridge", () => {
     const { supervisor } = pausedSupervisor();
     const pending = deferred<void>();
     const updates = {
-      snapshot: vi.fn(() => ({ status: "idle" as const, current_version: "0.1.0", previous_version: "0.0.9" })),
+      snapshot: vi.fn(() => ({ status: "idle" as const, adapter_id: "echo", display_name: "Echo CLI", can_rollback: true, current_version: "0.1.0", previous_version: "0.0.9" })),
       checkNow: vi.fn(() => pending.promise), rollback: vi.fn(async () => {})
     };
     const client = await connect(supervisor, updates);
-    expect((await (await client.request("/v1/snapshot")).json()).codex_update).toMatchObject({ current_version: "0.1.0" });
-    expect((await client.request("/v1/codex/check-now", { anything: true })).status).toBe(400);
-    expect((await fetch(client.discovery.url + "/v1/codex/check-now", {
+    expect((await (await client.request("/v1/snapshot")).json()).adapter_update).toMatchObject({ adapter_id: "echo", display_name: "Echo CLI", can_rollback: true, current_version: "0.1.0" });
+    expect((await client.request("/v1/adapter/check-now", { anything: true })).status).toBe(400);
+    expect((await fetch(client.discovery.url + "/v1/adapter/check-now", {
       method: "POST", headers: { "content-type": "application/json" }, body: "{}"
     })).status).toBe(401);
-    expect((await client.request("/v1/codex/check-now", {})).status).toBe(202);
+    expect((await client.request("/v1/adapter/check-now", {})).status).toBe(202);
     expect(updates.checkNow).toHaveBeenCalledOnce();
-    expect((await client.request("/v1/codex/rollback", {})).status).toBe(202);
+    expect((await client.request("/v1/adapter/rollback", {})).status).toBe(202);
     expect(updates.rollback).toHaveBeenCalledOnce();
     expect(supervisor.localSnapshot().intake_paused).toBe(true);
     pending.resolve();
@@ -83,14 +83,26 @@ describe("local console bridge", () => {
   it("rejects unsupported updates and rollback during an in-progress check", async () => {
     const { supervisor } = pausedSupervisor();
     const legacy = await connect(supervisor);
-    expect((await legacy.request("/v1/codex/check-now", {})).status).toBe(409);
+    expect((await legacy.request("/v1/adapter/check-now", {})).status).toBe(409);
     const updates = {
-      snapshot: () => ({ status: "checking" as const, current_version: "0.2.0", previous_version: "0.1.0" }),
+      snapshot: () => ({ status: "checking" as const, adapter_id: "echo", display_name: "Echo CLI", can_rollback: true, current_version: "0.2.0", previous_version: "0.1.0" }),
       checkNow: vi.fn(async () => {}), rollback: vi.fn(async () => {})
     };
     const client = await connect(supervisor, updates);
-    expect((await client.request("/v1/codex/rollback", {})).status).toBe(409);
+    expect((await client.request("/v1/adapter/rollback", {})).status).toBe(409);
     expect(updates.rollback).not.toHaveBeenCalled();
+  });
+
+  it("allows check-only adapters and rejects rollback without the capability", async () => {
+    const { supervisor } = pausedSupervisor();
+    const updates = {
+      snapshot: () => ({ status: "idle" as const, adapter_id: "echo", display_name: "Echo CLI", can_rollback: false, current_version: "1.0.0" }),
+      checkNow: vi.fn(async () => {})
+    };
+    const client = await connect(supervisor, updates);
+    expect((await client.request("/v1/adapter/check-now", {})).status).toBe(202);
+    expect(updates.checkNow).toHaveBeenCalledOnce();
+    expect((await client.request("/v1/adapter/rollback", {})).status).toBe(409);
   });
 
   it("refuses existing discovery files instead of replacing a running daemon", async () => {

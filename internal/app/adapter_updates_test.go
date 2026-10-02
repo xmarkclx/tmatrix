@@ -14,7 +14,7 @@ import (
 	"tmatrix/internal/config"
 )
 
-func TestCodexUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *testing.T) {
+func TestAdapterUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *testing.T) {
 	s, err := New(filepath.Join(t.TempDir(), "private"), "")
 	if err != nil {
 		t.Fatal(err)
@@ -25,7 +25,7 @@ func TestCodexUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *test
 	before, _ := config.Load(s.Dir)
 	paths := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/codex/") {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/adapter/") {
 			t.Errorf("update changed worker or service lifecycle: %s", r.URL.Path)
 		}
 		paths <- r.URL.Path
@@ -37,23 +37,23 @@ func TestCodexUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *test
 	if err := os.WriteFile(config.DiscoveryPath(s.Dir), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []func(context.Context) error{s.CheckCodexUpdate, s.RollbackCodexUpdate} {
+	for _, action := range []func(context.Context) error{s.CheckAdapterUpdate, s.RollbackAdapterUpdate} {
 		if err := action(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if <-paths != "/v1/codex/check-now" || <-paths != "/v1/codex/rollback" {
-		t.Fatal("application misrouted Codex update")
+	if <-paths != "/v1/adapter/check-now" || <-paths != "/v1/adapter/rollback" {
+		t.Fatal("application misrouted runtime update")
 	}
 	after, _ := config.Load(s.Dir)
 	key, err := config.LoadAPIKey(s.Dir)
 	if err != nil || before != after || key != "fictional-original-key" {
-		t.Fatal("Codex update changed saved settings or credentials")
+		t.Fatal("runtime update changed saved settings or credentials")
 	}
 	if err := os.Remove(config.DiscoveryPath(s.Dir)); err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []func(context.Context) error{s.CheckCodexUpdate, s.RollbackCodexUpdate} {
+	for _, action := range []func(context.Context) error{s.CheckAdapterUpdate, s.RollbackAdapterUpdate} {
 		if err := action(context.Background()); err == nil || !strings.Contains(err.Error(), "disconnected") {
 			t.Fatal("disconnected update did not explain unavailable engine")
 		}

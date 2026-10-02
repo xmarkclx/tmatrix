@@ -1,14 +1,15 @@
 # Bundled Codex CLI updates
 
 TMatrix updates its bundled Codex CLI independently of TMatrix releases. The
-engine starts a background check at startup and repeats it every 24 hours while
+Codex adapter starts a background check at startup and repeats it every 24 hours while
 running. Worker intake does not wait for registry requests, installation or
-verification. This applies to the bundled `codex` adapter; custom adapters keep
-their own runtime lifecycle.
+verification. The bundled `codex` adapter owns this policy through the optional
+[adapter setup and update contract](adapter-updates.md); other adapters can
+provide their own updater through the same shared controls.
 
 ## Check or roll back
 
-Open **Settings**, then press **o** for **Codex updates**. The page shows the
+Open **Settings**, then press **o** for **Runtime updates**. For Codex, the page shows the
 current and previous versions, the latest stable version found, check times and
 the update status. Its actions are also clickable:
 
@@ -61,8 +62,8 @@ the bundled CLI so workers can continue.
 
 ## Worker isolation and retention
 
-Each new worker acquires its executable path and a durable version pin before its
-runtime can start. Activation never changes that path for an existing worker.
+The Codex adapter acquires an executable path and durable version pin for each
+new worker before its runtime can start. Activation never changes that path for an existing worker.
 No update action restarts the engine, pauses intake or interrupts active workers.
 
 The current and previous installations are retained. Older versions are eligible

@@ -83,20 +83,20 @@ func (s *Service) Pin(ctx context.Context, id string, pinned bool) error {
 	return client.Pin(ctx, id, pinned)
 }
 
-func (s *Service) CheckCodexUpdate(ctx context.Context) error {
+func (s *Service) CheckAdapterUpdate(ctx context.Context) error {
 	client, err := s.client()
 	if err != nil {
-		return errors.New("engine is disconnected; Codex update check could not be requested")
+		return errors.New("engine is disconnected; runtime update check could not be requested")
 	}
-	return client.CheckCodexUpdate(ctx)
+	return client.CheckAdapterUpdate(ctx)
 }
 
-func (s *Service) RollbackCodexUpdate(ctx context.Context) error {
+func (s *Service) RollbackAdapterUpdate(ctx context.Context) error {
 	client, err := s.client()
 	if err != nil {
-		return errors.New("engine is disconnected; Codex rollback could not be requested")
+		return errors.New("engine is disconnected; runtime rollback could not be requested")
 	}
-	return client.RollbackCodexUpdate(ctx)
+	return client.RollbackAdapterUpdate(ctx)
 }
 
 func (s *Service) Configure(ctx context.Context, settings backend.Settings) error {

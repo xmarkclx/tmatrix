@@ -136,27 +136,27 @@ func (h *HTTP) Shutdown(ctx context.Context) error {
 	return h.request(ctx, http.MethodPost, "/v1/shutdown", struct{}{}, nil)
 }
 
-func (h *HTTP) CheckCodexUpdate(ctx context.Context) error {
-	return h.codexUpdateAction(ctx, "/v1/codex/check-now")
+func (h *HTTP) CheckAdapterUpdate(ctx context.Context) error {
+	return h.adapterUpdateAction(ctx, "/v1/adapter/check-now")
 }
 
-func (h *HTTP) RollbackCodexUpdate(ctx context.Context) error {
-	return h.codexUpdateAction(ctx, "/v1/codex/rollback")
+func (h *HTTP) RollbackAdapterUpdate(ctx context.Context) error {
+	return h.adapterUpdateAction(ctx, "/v1/adapter/rollback")
 }
 
-func (h *HTTP) codexUpdateAction(ctx context.Context, path string) error {
+func (h *HTTP) adapterUpdateAction(ctx context.Context, path string) error {
 	var result struct {
 		OK bool `json:"ok"`
 	}
 	err := h.request(ctx, http.MethodPost, path, struct{}{}, &result)
 	if errors.Is(err, errActionNotFound) {
-		return errors.New("Codex updates are unavailable in this engine")
+		return errors.New("runtime updates are unavailable in this engine")
 	}
 	if errors.Is(err, errActionConflict) {
-		return errors.New("Codex update action is unavailable in the current state; refresh and retry")
+		return errors.New("runtime update action is unavailable in the current state; refresh and retry")
 	}
 	if err == nil && !result.OK {
-		return errors.New("engine did not acknowledge the Codex update request")
+		return errors.New("engine did not acknowledge the runtime update request")
 	}
 	return err
 }

@@ -9,19 +9,19 @@ import (
 	"tmatrix/internal/backend"
 )
 
-func (m Model) openCodexUpdates() (tea.Model, tea.Cmd) {
-	m.screen = codexUpdatesScreen
+func (m Model) openAdapterUpdates() (tea.Model, tea.Cmd) {
+	m.screen = adapterUpdatesScreen
 	m.pageOffset = 0
 	m.notice, m.failure = "", ""
 	return m, nil
 }
 
-func (m Model) codexUpdateAvailable() bool {
-	_, capable := m.backend.(backend.CodexUpdater)
-	if !capable || m.options.Demo || m.snapshot.CodexUpdate == nil {
+func (m Model) adapterUpdateAvailable() bool {
+	_, capable := m.backend.(backend.AdapterUpdater)
+	if !capable || m.options.Demo || m.snapshot.AdapterUpdate == nil {
 		return false
 	}
-	switch m.snapshot.CodexUpdate.Status {
+	switch m.snapshot.AdapterUpdate.Status {
 	case "idle", "checking", "installing", "verifying", "updated", "up_to_date", "failed":
 		return true
 	default:
@@ -29,14 +29,14 @@ func (m Model) codexUpdateAvailable() bool {
 	}
 }
 
-func (m Model) codexUpdateRunning() bool {
-	if update := m.snapshot.CodexUpdate; update != nil {
+func (m Model) adapterUpdateRunning() bool {
+	if update := m.snapshot.AdapterUpdate; update != nil {
 		return update.Status == "checking" || update.Status == "installing" || update.Status == "verifying"
 	}
 	return false
 }
 
-func (m Model) handleCodexUpdateKey(key string) (tea.Model, tea.Cmd) {
+func (m Model) handleAdapterUpdateKey(key string) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
@@ -50,41 +50,41 @@ func (m Model) handleCodexUpdateKey(key string) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	case "c", "b":
-		if !m.codexUpdateAvailable() {
-			m.failure = "Codex updates are unavailable for this connection."
+		if !m.adapterUpdateAvailable() {
+			m.failure = "Runtime updates are unavailable for this connection."
 			return m, nil
 		}
-		if m.codexUpdateRunning() {
-			m.notice = "Codex update already in progress. Workers continue."
+		if m.adapterUpdateRunning() {
+			m.notice = "Runtime update already in progress. Workers continue."
 			return m, nil
 		}
-		updater := m.backend.(backend.CodexUpdater)
-		if key == "b" && m.snapshot.CodexUpdate.PreviousVersion == "" {
-			m.failure = "No previous Codex version is available for rollback."
+		updater := m.backend.(backend.AdapterUpdater)
+		if key == "b" && !m.snapshot.AdapterUpdate.CanRollback {
+			m.failure = "Rollback is unavailable for this runtime."
 			return m, nil
 		}
 		m.busy, m.failure = true, ""
-		m.notice = "Requesting Codex update check…"
+		m.notice = "Requesting runtime update check…"
 		if key == "b" {
-			m.notice = "Requesting Codex rollback…"
+			m.notice = "Requesting runtime rollback…"
 		}
-		return m, m.operation("codex-update", "", func(ctx context.Context) (string, error) {
+		return m, m.operation("adapter-update", "", func(ctx context.Context) (string, error) {
 			if key == "b" {
-				return "Rollback requested; watch status for completion. Active workers keep their version.", updater.RollbackCodexUpdate(ctx)
+				return "Rollback requested; watch status for completion. Active workers keep their version.", updater.RollbackAdapterUpdate(ctx)
 			}
-			return "Check requested; watch status for completion. Workers continue.", updater.CheckCodexUpdate(ctx)
+			return "Check requested; watch status for completion. Workers continue.", updater.CheckAdapterUpdate(ctx)
 		})
 	}
-	maximum := max(0, len(m.codexUpdateDetails())-m.codexUpdateDetailHeight())
+	maximum := max(0, len(m.adapterUpdateDetails())-m.adapterUpdateDetailHeight())
 	switch key {
 	case "down", "j":
 		m.pageOffset++
 	case "up", "k":
 		m.pageOffset--
 	case "pgdown":
-		m.pageOffset += m.codexUpdateDetailHeight()
+		m.pageOffset += m.adapterUpdateDetailHeight()
 	case "pgup":
-		m.pageOffset -= m.codexUpdateDetailHeight()
+		m.pageOffset -= m.adapterUpdateDetailHeight()
 	case "home":
 		m.pageOffset = 0
 	case "end":
@@ -94,30 +94,30 @@ func (m Model) handleCodexUpdateKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) codexUpdateDetailHeight() int { return max(1, m.bodyHeight()-5) }
+func (m Model) adapterUpdateDetailHeight() int { return max(1, m.bodyHeight()-5) }
 
-func (m Model) codexUpdateContent() layoutBlock {
+func (m Model) adapterUpdateContent() layoutBlock {
 	b := layoutBlock{}
 	version, status := "Unavailable", "Unavailable"
-	if update := m.snapshot.CodexUpdate; update != nil {
+	if update := m.snapshot.AdapterUpdate; update != nil {
 		version = single(update.CurrentVersion)
-		status = codexUpdateStatus(update.Status)
+		status = adapterUpdateStatus(update.Status)
 		if update.Status == "up_to_date" && update.BlockedVersion != "" && update.LatestVersion == update.BlockedVersion {
 			status = "Rollback retained"
 		}
 	}
 	b.lines = append(b.lines, accentStyle.Render("Current: "+version), bodyStyle.Render("Status: "+status))
-	if m.codexUpdateAvailable() && !m.codexUpdateRunning() && !m.busy {
+	if m.adapterUpdateAvailable() && !m.adapterUpdateRunning() && !m.busy {
 		items := []control{{"[c] Check now", "c"}}
-		if m.snapshot.CodexUpdate.PreviousVersion != "" {
+		if m.snapshot.AdapterUpdate.CanRollback {
 			items = append(items, control{"[b] Roll back", "b"})
 		}
 		b.append(controls(items, m.width-4))
 	} else {
 		b.lines = append(b.lines, mutedStyle.Render("Workers continue with their version."))
 	}
-	details := m.codexUpdateDetails()
-	available := m.codexUpdateDetailHeight()
+	details := m.adapterUpdateDetails()
+	available := m.adapterUpdateDetailHeight()
 	offset := min(m.pageOffset, max(0, len(details)-available))
 	b.append(layoutBlock{
 		lines:   details[offset:min(len(details), offset+available)],
@@ -126,46 +126,46 @@ func (m Model) codexUpdateContent() layoutBlock {
 	return b
 }
 
-func (m Model) codexUpdateDetails() []string {
+func (m Model) adapterUpdateDetails() []string {
 	var lines []string
 	add := func(text string) {
 		lines = append(lines, strings.Split(textBlock(text, m.width-4), "\n")...)
 	}
-	update := m.snapshot.CodexUpdate
+	update := m.snapshot.AdapterUpdate
 	if update == nil {
-		add("Update status unavailable. Connect to an engine that supports bundled Codex updates.")
+		add("Update status unavailable. The connected engine and its runtime adapter must support updates.")
 		return lines
 	}
 	if update.Error != "" {
 		add("Last result: " + single(update.Error))
 	}
 	if update.Status == "disabled" {
-		add("Automatic Codex updates are disabled for this runtime.")
+		add("Automatic updates are disabled for this runtime.")
 		return lines
 	}
 	if update.PreviousVersion != "" {
 		add("Previous: " + single(update.PreviousVersion))
 	}
 	if update.LatestVersion != "" {
-		add("Latest stable: " + single(update.LatestVersion))
+		add("Latest: " + single(update.LatestVersion))
 	}
 	if update.BlockedVersion != "" {
-		add("Skipped after rollback: " + single(update.BlockedVersion) + ". Checks continue for newer stable releases.")
+		add("Skipped after rollback: " + single(update.BlockedVersion) + ". Checks continue for newer releases.")
 	}
 	lastCheck := "Not yet checked"
 	if update.LastCheckedAt != "" {
-		lastCheck = codexUpdateTime(update.LastCheckedAt)
+		lastCheck = adapterUpdateTime(update.LastCheckedAt)
 	}
 	add("Last check: " + lastCheck)
-	add("Next check: " + codexUpdateTime(update.NextCheckAt))
-	add("Stable releases checked at startup and every 24 hours. Updates are verified before new workers use them. Active workers keep their original version.")
-	if update.PreviousVersion != "" {
-		add("Roll back verifies the previous version before activating it for new workers.")
+	add("Next check: " + adapterUpdateTime(update.NextCheckAt))
+	add("The runtime adapter manages update checks, installation and verification. Active workers keep their original version.")
+	if update.CanRollback {
+		add("The runtime adapter verifies rollback before activating it for new workers.")
 	}
 	return lines
 }
 
-func codexUpdateTime(value string) string {
+func adapterUpdateTime(value string) string {
 	if value == "" {
 		return "Not scheduled"
 	}
@@ -176,12 +176,12 @@ func codexUpdateTime(value string) string {
 	return parsed.Local().Format("Jan 02 15:04 MST")
 }
 
-func codexUpdateStatus(status string) string {
+func adapterUpdateStatus(status string) string {
 	switch status {
 	case "idle":
 		return "Ready"
 	case "checking":
-		return "Checking stable releases…"
+		return "Checking releases…"
 	case "installing":
 		return "Installing candidate…"
 	case "verifying":

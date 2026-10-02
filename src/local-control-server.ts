@@ -4,7 +4,7 @@ import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
-import type { CodexUpdateControl } from "./codex-update-manager.js";
+import type { AdapterUpdateControl } from "./runtime-adapter.js";
 import type { Supervisor } from "./supervisor.js";
 
 const settingsSchema = z.object({
@@ -27,7 +27,7 @@ export async function startLocalControlServer(options: {
   file: string;
   port?: number;
   onShutdown: () => void;
-  codexUpdates?: CodexUpdateControl;
+  adapterUpdates?: AdapterUpdateControl;
 }): Promise<LocalControlServer> {
   if (!isAbsolute(options.file)) throw new Error("TMATRIX_CONTROL_FILE must be an absolute path");
   const port = options.port ?? 0;
@@ -57,7 +57,7 @@ export async function startLocalControlServer(options: {
       return;
     }
     if (request.method === "GET" && request.url === "/v1/snapshot") {
-      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.codexUpdates ? { codex_update: options.codexUpdates.snapshot() } : {}) });
+      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}) });
       return;
     }
     if (request.method !== "POST") {
@@ -73,19 +73,19 @@ export async function startLocalControlServer(options: {
       respond(response, 400, { error: "Expected a JSON object of at most 16 KiB" });
       return;
     }
-    if (request.url === "/v1/codex/check-now" || request.url === "/v1/codex/rollback") {
+    if (request.url === "/v1/adapter/check-now" || request.url === "/v1/adapter/rollback") {
       if (!z.object({}).strict().safeParse(body).success) { respond(response, 400, { error: "Expected an empty object" }); return; }
-      if (!options.codexUpdates || options.codexUpdates.snapshot().status === "disabled") {
-        respond(response, 409, { error: "Codex updates are unavailable for this engine" }); return;
+      if (!options.adapterUpdates || options.adapterUpdates.snapshot().status === "disabled") {
+        respond(response, 409, { error: "Runtime updates are unavailable for this engine" }); return;
       }
-      if (request.url === "/v1/codex/rollback" && ["checking", "installing", "verifying"].includes(options.codexUpdates.snapshot().status)) {
-        respond(response, 409, { error: "Codex update already in progress; retry rollback after it finishes" }); return;
+      if (request.url === "/v1/adapter/rollback" && ["checking", "installing", "verifying"].includes(options.adapterUpdates.snapshot().status)) {
+        respond(response, 409, { error: "Runtime update already in progress; retry rollback after it finishes" }); return;
       }
-      if (request.url === "/v1/codex/rollback" && !options.codexUpdates.snapshot().previous_version) {
-        respond(response, 409, { error: "No previous Codex version is available" }); return;
+      if (request.url === "/v1/adapter/rollback" && (!options.adapterUpdates.rollback || !options.adapterUpdates.snapshot().can_rollback)) {
+        respond(response, 409, { error: "No runtime rollback is available" }); return;
       }
-      if (request.url === "/v1/codex/check-now") void options.codexUpdates.checkNow().catch(() => undefined);
-      else void options.codexUpdates.rollback().catch(() => undefined);
+      if (request.url === "/v1/adapter/check-now") void options.adapterUpdates.checkNow().catch(() => undefined);
+      else void options.adapterUpdates.rollback!().catch(() => undefined);
       respond(response, 202, { ok: true });
       return;
     }
@@ -97,7 +97,7 @@ export async function startLocalControlServer(options: {
         ...(parsed.data.intake_paused !== undefined ? { intake_paused: parsed.data.intake_paused } : {}),
         ...(parsed.data.poll_interval_ms !== undefined ? { poll_interval_ms: parsed.data.poll_interval_ms } : {})
       });
-      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.codexUpdates ? { codex_update: options.codexUpdates.snapshot() } : {}) });
+      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}) });
       return;
     }
     if (request.url === "/v1/shutdown") {

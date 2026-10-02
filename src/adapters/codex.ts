@@ -1,13 +1,50 @@
-import { AppServerCodex } from "../app-server-codex.js";
-import type { RuntimeAdapter } from "../runtime-adapter.js";
+import { AppServerCodex, resolveBundledCodexInstallation } from "../app-server-codex.js";
+import { CodexUpdateManager, type CodexExecutableLease } from "../codex-update-manager.js";
+import type { AdapterContext, RuntimeAdapter, RuntimeCreator } from "../runtime-adapter.js";
 
-/** Bundled by the same engine build as the loader; no separate install needed. */
+function createCodex(context: AdapterContext, lease?: CodexExecutableLease): ReturnType<RuntimeCreator> {
+  try {
+    const runtime = new AppServerCodex({
+      environment: context.environment,
+      logger: context.logger,
+      ...(lease ? { executablePath: lease.executablePath } : {})
+    });
+    if (lease) {
+      const close = runtime.close.bind(runtime);
+      runtime.close = async () => {
+        await close();
+        // Only confirmed teardown releases the version. Cancellation is not a receipt.
+        lease.release();
+      };
+    }
+    return runtime;
+  } catch (error) {
+    // Construction cannot start execution; a failed constructor has no runtime to retain.
+    lease?.release();
+    throw error;
+  }
+}
+
+/** The provider owns update policy, verification and per-worker version selection. */
 export default {
   apiVersion: 1,
   id: "codex",
-  create: ({ environment, logger, codexExecutablePath }) => new AppServerCodex({
-    environment,
-    logger,
-    ...(codexExecutablePath ? { executablePath: codexExecutablePath } : {})
-  })
+  create: (context) => createCodex(context),
+  async setup(context) {
+    const updates = new CodexUpdateManager({
+      directory: context.updateDirectory,
+      bundled: resolveBundledCodexInstallation(),
+      environment: context.environment
+    });
+    try {
+      await updates.initialize();
+      return {
+        updates,
+        create: (workerContext) => createCodex(workerContext, updates.acquire())
+      };
+    } catch (error) {
+      await updates.close();
+      throw error;
+    }
+  }
 } satisfies RuntimeAdapter;

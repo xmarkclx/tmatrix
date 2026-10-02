@@ -61,7 +61,7 @@ func (m Model) activateTarget(target hitTarget) (tea.Model, tea.Cmd) {
 			}
 			if m.screen == settingsScreen && target.key == "o" {
 				m.form[m.field].Blur()
-				return m.openCodexUpdates()
+				return m.openAdapterUpdates()
 			}
 			if m.screen == settingsScreen && (target.key == "i" || target.key == "u" || target.key == "r") {
 				m.form[m.field].Blur()
@@ -117,7 +117,7 @@ func (m Model) scrollMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.scrollActivity(msg)
 		return m, nil
 	}
-	if m.screen == helpScreen || m.screen == pollersScreen || m.screen == codexUpdatesScreen {
+	if m.screen == helpScreen || m.screen == pollersScreen || m.screen == adapterUpdatesScreen {
 		key := "down"
 		if msg.Button == tea.MouseButtonWheelUp {
 			key = "up"

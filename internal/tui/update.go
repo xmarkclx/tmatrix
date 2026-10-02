@@ -91,7 +91,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.failure = ""
 		m.notice = msg.text
 		switch msg.kind {
-		case "pin", "codex-update":
+		case "pin", "adapter-update":
 			return m, m.refresh()
 		case "steer":
 			delete(m.drafts, msg.workerID)
@@ -174,8 +174,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.screen == serviceScreen {
 		return m.handleServiceKey(name)
 	}
-	if m.screen == codexUpdatesScreen {
-		return m.handleCodexUpdateKey(name)
+	if m.screen == adapterUpdatesScreen {
+		return m.handleAdapterUpdateKey(name)
 	}
 	if m.confirmation != "" {
 		switch name {
@@ -288,7 +288,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if !m.form[m.field].Focused() {
 			if m.screen == settingsScreen && name == "o" {
-				return m.openCodexUpdates()
+				return m.openAdapterUpdates()
 			}
 			if m.screen == settingsScreen && (name == "i" || name == "u" || name == "r") {
 				return m.handleServiceKey(name)

@@ -1,3 +1,4 @@
+import type { AdapterUpdates, AdapterUpdateState } from "./runtime-adapter.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { access, cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm } from "node:fs/promises";
@@ -19,22 +20,8 @@ const manifestSchema = z.object({
 }).strict();
 type Installation = z.infer<typeof installationSchema>;
 type Manifest = z.infer<typeof manifestSchema>;
-export interface CodexUpdateStatus {
-  status: "idle" | "checking" | "installing" | "verifying" | "updated" | "up_to_date" | "failed" | "disabled";
-  current_version: string;
-  previous_version?: string;
-  latest_version?: string;
-  blocked_version?: string;
-  last_checked_at?: string;
-  next_check_at?: string;
-  error?: string;
-}
+export type CodexUpdateStatus = AdapterUpdateState;
 export interface CodexExecutableLease { executablePath: string; release(): void }
-export interface CodexUpdateControl {
-  snapshot(): CodexUpdateStatus;
-  checkNow(): Promise<void>;
-  rollback(): Promise<void>;
-}
 interface Options {
   directory: string;
   bundled: { version: string; executablePath: string; directory: string };
@@ -45,7 +32,8 @@ interface Options {
 }
 
 /** Owns only CLI files. Authentication, task leases and conversation routes stay outside this store. */
-export class CodexUpdateManager implements CodexUpdateControl {
+export class CodexUpdateManager implements AdapterUpdates {
+  readonly displayName = "Codex CLI";
   private manifest?: Manifest;
   private state: CodexUpdateStatus;
   private owned = false;
@@ -88,7 +76,7 @@ export class CodexUpdateManager implements CodexUpdateControl {
     void this.checkNow();
   }
 
-  snapshot(): CodexUpdateStatus { return { ...this.state }; }
+  snapshot(): CodexUpdateStatus { return { ...this.state, can_rollback: !!this.manifest?.previous }; }
 
   /** Pin before the runtime can spawn. Pin removal requires confirmed runtime.close(). */
   acquire(): CodexExecutableLease {
