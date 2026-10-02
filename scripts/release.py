@@ -62,18 +62,33 @@ def prepare(tag, branch, root, env):
     remote = run(["git", "rev-parse", f"refs/remotes/origin/{branch}"], root, env, True)
     if head != remote:
         raise RuntimeError("Local commits are ahead of origin; push/merge them before releasing.")
+    tags = run(["git", "tag", "--list", "v*"], root, env, True).splitlines()
+    head_tags = run(["git", "tag", "--points-at", "HEAD"], root, env, True).splitlines()
+    if tag is None:
+        # Reuse a retained local tag after failed checks rather than create a
+        # second tag at HEAD. The remote/tag guards below still apply.
+        pending = [value for value in head_tags if VERSION.fullmatch(value)]
+        if len(pending) == 1:
+            tag = pending[0]
+        else:
+            versions = [tuple(map(int, match.groups())) for value in tags
+                        if (match := VERSION.fullmatch(value))]
+            if versions:
+                major, minor, patch = max(versions)
+                tag = f"v{major}.{minor}.{patch + 1}"
+            else:
+                tag = "v0.1.0"
+        print(f"Selected release version: {tag}", flush=True)
     remote_tag = run(["git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}"],
                      root, env, True)
     if remote_tag:
         raise RuntimeError("That tag already exists on origin. Existing releases are never replaced. "
                            "Use --install-only for a published release; see docs/releasing.md for recovery.")
-    tags = run(["git", "tag", "--list", "v*"], root, env, True).splitlines()
     requested = tuple(map(int, VERSION.fullmatch(tag).groups()))
     versions = [tuple(map(int, match.groups())) for value in tags
                 if (match := VERSION.fullmatch(value)) and value != tag]
     if versions and requested <= max(versions):
         raise RuntimeError("Choose a version newer than the existing stable version tags.")
-    head_tags = run(["git", "tag", "--points-at", "HEAD"], root, env, True).splitlines()
     if any(value.startswith("v") and value != tag for value in head_tags):
         raise RuntimeError("HEAD already has a release tag; release a new commit instead.")
     if tag in tags:
@@ -83,6 +98,7 @@ def prepare(tag, branch, root, env):
             raise RuntimeError("The existing local tag points to another commit; it will not be moved.")
     else:
         run(["git", "tag", tag, head], root, env)
+    return tag
 
 
 def install(repo, tag, prefix, root, env):
@@ -98,9 +114,9 @@ def install(repo, tag, prefix, root, env):
 
 
 def release(tag=None, install_only=False, skip_install=False, prefix=None, root=ROOT):
-    if install_only and (tag or skip_install):
+    if install_only and (tag is not None or skip_install):
         raise RuntimeError("--install-only takes no tag and cannot use --skip-install.")
-    if not install_only and (not tag or not VERSION.fullmatch(tag)):
+    if tag is not None and not VERSION.fullmatch(tag):
         raise RuntimeError("Supply a stable version tag, for example v0.1.7.")
     if prefix and (skip_install or not Path(prefix).is_absolute()):
         raise RuntimeError("--prefix requires installation and an absolute path.")
@@ -118,7 +134,7 @@ def release(tag=None, install_only=False, skip_install=False, prefix=None, root=
         if not VERSION.fullmatch(tag):
             raise RuntimeError("Latest release must have a stable version tag.")
     else:
-        prepare(tag, info["defaultBranchRef"]["name"], root, env)
+        tag = prepare(tag, info["defaultBranchRef"]["name"], root, env)
         try:
             run([sys.executable, "scripts/release-local.py", tag, "--upload"], root, env)
         except subprocess.CalledProcessError as error:
@@ -143,9 +159,9 @@ def release(tag=None, install_only=False, skip_install=False, prefix=None, root=
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog=
-        "Example: python3 scripts/release.py v0.1.7. "
+        "Example: python3 scripts/release.py (selects the next patch version). "
         "Install latest only: python3 scripts/release.py --install-only.")
-    parser.add_argument("tag", nargs="?", help="new stable version, e.g. v0.1.7")
+    parser.add_argument("tag", nargs="?", help="optional stable version override; defaults to the next patch version")
     parser.add_argument("--install-only", action="store_true", help="install latest without pulling, tagging or publishing")
     parser.add_argument("--skip-install", action="store_true", help="publish without changing the local installation")
     parser.add_argument("--prefix", help="absolute install prefix (default: TMATRIX_PREFIX or ~/.local)")

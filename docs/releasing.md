@@ -4,11 +4,20 @@ After merging the changes, run from a clean, full-history checkout on the
 origin default branch (currently `main`):
 
 ```sh
-python3 scripts/release.py v0.1.7
+python3 scripts/release.py
 ```
 
-Choose a new stable `vMAJOR.MINOR.PATCH` greater than all existing stable tags.
-The command fetches tags, pulls with `--ff-only`, checks that the local commit
+The command fetches tags and selects the next patch version after the highest
+stable `vMAJOR.MINOR.PATCH` tag, comparing versions numerically. For example,
+`v0.1.6` becomes `v0.1.7`; prerelease and malformed tags are ignored. Without any
+stable tags it starts at `v0.1.0`. It reports the selected version. To choose a
+minor or major release instead, supply an explicit version:
+
+```sh
+python3 scripts/release.py v0.2.0
+```
+
+The command pulls with `--ff-only`, checks that the local commit
 equals origin, and creates a local tag. It calls `release-local.py --upload`
 to run the existing checks, build all six platform archives, verify their
 manifest-based contents, push the tag explicitly, and upload a draft. Only after
@@ -47,7 +56,7 @@ both installer and archive to that tag. An installed TMatrix also supports
 To publish without installing on the release machine:
 
 ```sh
-python3 scripts/release.py v0.1.7 --skip-install
+python3 scripts/release.py --skip-install
 ```
 
 ## Failure recovery
@@ -56,7 +65,9 @@ python3 scripts/release.py v0.1.7 --skip-install
   branch, checkout or prerequisite issue before retrying.
 - Failed checks/builds retain the local tag for inspection. If it still points
   to the clean current origin commit and nothing reached origin, rerun the same
-  command. If source fixes need a new commit, inspect and delete only the
+  command; automatic selection reuses that unpublished tag at HEAD. A commit
+  already tagged on origin cannot be released again. If source fixes need a new
+  commit, inspect and delete only the
   unpublished local tag before retrying; published tags must never be moved.
 - A failed upload may have pushed the tag or created a draft. The wrapper refuses
   tags already on origin rather than overwrite or assume the draft is complete.

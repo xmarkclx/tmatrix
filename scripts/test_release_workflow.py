@@ -42,9 +42,17 @@ class WorkflowTests(unittest.TestCase):
              patch.object(workflow.sys, "platform", "linux"), \
              patch.dict(os.environ, {"GH_REPO": "unrelated/repo", "TMATRIX_PREFIX": ""}), \
              patch.object(workflow, "run", side_effect=self.fake_run), \
-             patch.object(workflow, "prepare") as prepare, patch("builtins.print"):
+             patch.object(workflow, "prepare", return_value=kwargs.get("tag") or "v1.2.3") as prepare, patch("builtins.print"):
             workflow.release(root=self.root, **kwargs)
         return prepare
+
+    def test_default_command_uses_automatically_prepared_version_through_install(self):
+        prepare = self.release()
+        self.assertIsNone(prepare.call_args.args[0])
+        self.assertIn([workflow.sys.executable, "scripts/release-local.py", "v1.2.3", "--upload"], self.calls)
+        self.assertIn(["gh", "release", "edit", "v1.2.3", "--repo", "fixture/tmatrix", "--draft=false", "--latest"], self.calls)
+        self.assertEqual(next(args for args in self.calls if args[0] == "sh")[2:],
+                         ["--repo", "fixture/tmatrix", "--version", "v1.2.3"])
 
     def test_publish_then_install_exact_tag_from_origin(self):
         prefix = str(self.root / "install with spaces and 'quotes'")
@@ -97,7 +105,7 @@ class WorkflowTests(unittest.TestCase):
                     self.assertFalse(any(args[0] == "sh" for args in self.calls))
 
     def test_invalid_options_rejected_before_any_commands(self):
-        cases = [{}, {"tag": "v1.02.3"}, {"tag": "main"}, {"tag": "v1.2.3", "prefix": "relative"},
+        cases = [{"tag": ""}, {"tag": "v1.02.3"}, {"tag": "main"}, {"tag": "v1.2.3", "prefix": "relative"},
                  {"install_only": True, "tag": "v1.2.3"}, {"install_only": True, "skip_install": True},
                  {"tag": "v1.2.3", "skip_install": True, "prefix": "/absolute"}]
         for case in cases:
@@ -175,7 +183,33 @@ class GitPreparationTests(unittest.TestCase):
 
     def prepare(self, tag="v1.2.3"):
         with patch("builtins.print"):
-            workflow.prepare(tag, "main", self.root, self.env)
+            return workflow.prepare(tag, "main", self.root, self.env)
+
+    def test_automatic_version_fetches_remote_tags_and_compares_numerically(self):
+        # These tags exist only on origin until prepare fetches them. Ignore
+        # prereleases and invalid/zero-padded stable tags when incrementing.
+        for tag in ("v1.9.9", "v1.10.2", "v2.0.0-rc.1", "v03.0.0"):
+            self.git("--git-dir", str(self.origin), "tag", tag, "main~1", cwd=self.directory)
+        self.assertEqual(self.prepare(None), "v1.10.3")
+        self.assertEqual(self.git("rev-parse", "v1.10.3"), self.git("rev-parse", "HEAD"))
+        self.assertEqual(self.git("ls-remote", "--tags", "origin", "refs/tags/v1.10.3"), "")
+
+    def test_automatic_retry_reuses_unpublished_local_tag(self):
+        self.assertEqual(self.prepare(None), "v1.2.3")
+        self.assertEqual(self.prepare(None), "v1.2.3")
+        self.assertEqual(self.git("tag", "--points-at", "HEAD"), "v1.2.3")
+
+    def test_automatic_version_starts_at_v0_1_0_without_stable_tags(self):
+        self.git("push", "origin", ":refs/tags/v1.2.2")
+        self.git("tag", "-d", "v1.2.2")
+        self.assertEqual(self.prepare(None), "v0.1.0")
+
+    def test_automatic_version_refuses_to_rerelease_published_head(self):
+        self.git("tag", "v1.2.3")
+        self.git("push", "origin", "v1.2.3")
+        with self.assertRaisesRegex(RuntimeError, "already exists on origin"):
+            self.prepare(None)
+        self.assertEqual(self.git("tag", "--points-at", "HEAD"), "v1.2.3")
 
     def test_pulls_fast_forward_then_creates_local_tag_only(self):
         other = self.directory / "other"
