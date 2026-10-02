@@ -5,7 +5,7 @@ import "strings"
 func (m Model) formContent() layoutBlock {
 	labels := []string{"Max workers", "Poll interval (milliseconds)", "Worker type", "Poller type"}
 	title := "Execution settings"
-	intro := "Capacity controls new intake. Existing workers continue."
+	intro := "Max workers limits how many tasks run at once. Lowering it won't stop tasks already running."
 	if m.screen == connectScreen {
 		labels = []string{"Tzu Do server or full poll URL", "Worker API key"}
 		title = "Connect with Tzu Do"
@@ -15,7 +15,7 @@ func (m Model) formContent() layoutBlock {
 		}
 	}
 	b := layoutBlock{lines: []string{accentStyle.Render(" " + title)}}
-	b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" "+intro+"\n Tab/click selects; Enter edits/finishes. Esc exits editing.", m.width-4)), "\n")...)
+	b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" "+intro, m.width-4)), "\n")...)
 	b.lines = append(b.lines, "")
 	focusLine := 0
 	for i, input := range m.form {
