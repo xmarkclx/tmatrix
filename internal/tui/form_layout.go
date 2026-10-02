@@ -15,7 +15,7 @@ func (m Model) formContent() layoutBlock {
 		}
 	}
 	b := layoutBlock{lines: []string{accentStyle.Render(" " + title)}}
-	b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" "+intro+"\n Tab/click selects; Enter edits/finishes. Esc exits editing.", m.width-4)), "\n")...)
+	b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" "+intro, m.width-4)), "\n")...)
 	b.lines = append(b.lines, "")
 	focusLine := 0
 	for i, input := range m.form {
