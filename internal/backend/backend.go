@@ -91,15 +91,17 @@ type InitialPrompt struct {
 }
 
 type Activity struct {
-	Sequence int64  `json:"sequence"`
-	At       string `json:"at"`
-	Kind     string `json:"kind"`
-	Text     string `json:"text"`
+	Sequence   int64  `json:"sequence"`
+	At         string `json:"at"`
+	Kind       string `json:"kind"`
+	Text       string `json:"text"`
+	SteeringID string `json:"steering_id,omitempty"`
 }
 
 type Steering struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
 }
 
 type Settings struct {

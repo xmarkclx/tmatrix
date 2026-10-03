@@ -55,6 +55,35 @@ func TestActivityFailuresOverrideMessageAndToolCategories(t *testing.T) {
 	}
 }
 
+func TestSteeringCardShowsMessageAndStatusOnce(t *testing.T) {
+	for _, width := range []int{40, 80, 140} {
+		m, _ := testModel()
+		m.width = width
+		m.snapshot.Workers[0].Activity = []backend.Activity{{
+			Sequence: 42, Kind: "steering.runtime_received", SteeringID: "local-1",
+			Text: "Check keyboard navigation\nThen check wrapping\n\nRuntime accepted the message.",
+		}}
+		m.snapshot.Workers[0].Steering = []backend.Steering{{ID: "local-1", Status: "runtime_received", Message: "Check keyboard navigation\nThen check wrapping"}}
+		frame := ansi.Strip(m.activity())
+		if strings.Count(frame, "STEERING") != 1 || strings.Count(frame, "Check keyboard navigation") != 1 || !strings.Contains(frame, "Then check wrapping") {
+			t.Fatalf("steering message missing or duplicated at width %d:\n%s", width, frame)
+		}
+		if strings.Contains(frame, "Waiting for a visible response") {
+			t.Fatalf("duplicate receipt footer at width %d:\n%s", width, frame)
+		}
+		for _, line := range strings.Split(frame, "\n") {
+			if ansi.StringWidth(line) > width-4 {
+				t.Fatalf("steering card exceeds width %d: %q", width, line)
+			}
+		}
+		// The receipt still supplies the message when activity has been evicted.
+		m.snapshot.Workers[0].Activity = nil
+		if fallback := ansi.Strip(m.activity()); !strings.Contains(fallback, "STEERING") || !strings.Contains(fallback, "Check keyboard navigation") {
+			t.Fatalf("evicted steering card lost message: %s", fallback)
+		}
+	}
+}
+
 func TestCompactWorkerStateRemainsVisible(t *testing.T) {
 	for _, size := range [][2]int{{40, 16}, {60, 24}} {
 		for _, status := range []string{"running", "stopping", "failed", "stopped", "completed", "stop_unverified"} {

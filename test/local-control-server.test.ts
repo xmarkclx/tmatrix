@@ -165,6 +165,8 @@ describe("local console bridge", () => {
     expect((await client.request(`/v1/workers/${ticket.worker_id}/steer`, { message: "Focus on tests", request_id: "local-one" })).status).toBe(202);
     expect((await client.request(`/v1/workers/${ticket.worker_id}/steer`, { message: "Different message", request_id: "local-one" })).status).toBe(409);
     expect(supervisor.localSnapshot().workers[0]?.steering).toHaveLength(1);
+    expect(supervisor.localSnapshot().workers[0]?.steering[0]).toMatchObject({ id: "local-one", message: "Focus on tests", status: "queued" });
+    expect(supervisor.localSnapshot().workers[0]?.activity.find(event => event.steering_id === "local-one")?.text).toContain("Focus on tests");
     expect((await client.request(`/v1/workers/${ticket.worker_id}/stop`, {})).status).toBe(202);
     expect(supervisor.localSnapshot().workers[0]?.status).toBe("stopping");
     expect((await client.request(`/v1/workers/${ticket.worker_id}/steer`, { message: "Too late" })).status).toBe(409);

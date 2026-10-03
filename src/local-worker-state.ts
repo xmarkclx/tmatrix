@@ -26,8 +26,8 @@ export interface LocalWorkerView {
   input_revision: number;
   started_at: string;
   initial_prompt?: { text: string; at: string; input_revision: number; truncated: boolean; redacted: boolean };
-  activity: { sequence: number; at: string; kind: string; text: string }[];
-  steering: { id: string; status: "queued" | "runtime_received" | "response_observed" | "failed" }[];
+  activity: { sequence: number; at: string; kind: string; text: string; steering_id?: string }[];
+  steering: { id: string; message: string; status: "queued" | "runtime_received" | "response_observed" | "failed" }[];
 }
 
 /** Opt-in, bounded memory for the local console. Never sent to the task API. */
@@ -75,18 +75,32 @@ export class LocalWorkerState {
       const receipt = worker.steering.find((entry) => entry.id === event.steering_id);
       if (receipt && event.kind === "steering.runtime_received") receipt.status = "runtime_received";
       if (receipt && event.kind === "steering.response_observed") receipt.status = "response_observed";
+      if (receipt && event.kind === "steering.failed") receipt.status = "failed";
+      if (receipt) {
+        const text = cleanText(`${receipt.message}\n\n${event.text}`);
+        const card = worker.activity.find((entry) => entry.steering_id === event.steering_id);
+        if (card) {
+          card.text = text;
+          card.kind = event.kind;
+        } else {
+          worker.activity.push({ sequence: ++this.sequence, at: new Date().toISOString(), kind: event.kind, text, steering_id: receipt.id });
+        }
+        trimLocalActivity(worker.activity, 128 * 1024);
+        return;
+      }
     }
     worker.activity.push({ sequence: ++this.sequence, at: new Date().toISOString(), kind: event.kind, text: cleanText(event.text) });
     // Bytes, rather than fixed line/entry counts, determine how much fits.
     trimLocalActivity(worker.activity, 128 * 1024);
   }
 
-  queue(workerId: string, id: string): void {
+  queue(workerId: string, id: string, message = ""): void {
     const worker = this.workers.get(workerId);
     if (!worker) return;
-    worker.steering.push({ id, status: "queued" });
+    const preview = localPromptPreview(message);
+    worker.steering.push({ id, message: preview.text + (preview.truncated ? "\n[Message preview truncated]" : ""), status: "queued" });
     if (worker.steering.length > 100) worker.steering.shift();
-    this.record(workerId, { kind: "steering.queued", text: "Local message queued for the next turn in this conversation" });
+    this.record(workerId, { kind: "steering.queued", text: "Message queued for delivery to this conversation. Waiting for runtime receipt.", steering_id: id });
   }
 
   status(workerId: string, status: LocalWorkerView["status"]): void {
@@ -99,7 +113,12 @@ export class LocalWorkerState {
     if (this.removeIfEligible(worker)) return;
     if (!["running", "stopping"].includes(status)) {
       for (const receipt of worker.steering) {
-        if (receipt.status === "queued" || receipt.status === "runtime_received") receipt.status = "failed";
+        if (receipt.status === "queued" || receipt.status === "runtime_received") {
+          const text = receipt.status === "runtime_received"
+            ? "Runtime received the message, but the worker ended without a confirmed visible response."
+            : "Worker ended before runtime receipt was confirmed.";
+          this.record(workerId, { kind: "steering.failed", text, steering_id: receipt.id });
+        }
       }
     }
     this.record(workerId, { kind: `worker.${status}`, text: status === "stopped" ? "Runtime teardown confirmed" : `Worker ${status.replaceAll("_", " ")}` });

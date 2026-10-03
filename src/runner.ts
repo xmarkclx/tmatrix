@@ -1,4 +1,5 @@
 import type { PromptScreen } from "./security-screening.js";
+import { LiveSteering } from "./helpers/live-steering.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
 import { workerTitle } from "./helpers/worker-title.js";
@@ -82,15 +83,29 @@ export class SteeringMailbox {
   private latest?: SteeringEvent;
   private readonly local: { id: string; message: string }[] = [];
   private localClosed = false;
+  private readonly localListeners = new Set<() => void>();
 
   enqueueLocal(id: string, message: string): boolean {
     if (this.localClosed || this.local.length >= 16) return false;
     this.local.push({ id, message });
+    // Let the supervisor record the queued receipt before delivery can start.
+    queueMicrotask(() => { for (const listener of this.localListeners) listener(); });
     return true;
   }
 
   takeLocal(): { id: string; message: string } | undefined {
     return this.local.shift();
+  }
+
+  returnLocal(message: { id: string; message: string }): void {
+    this.local.unshift(message);
+  }
+
+  hasLocal(): boolean { return this.local.length > 0; }
+
+  subscribeLocal(listener: () => void): () => void {
+    this.localListeners.add(listener);
+    return () => { this.localListeners.delete(listener); };
   }
 
   closeLocal(): void {
@@ -281,7 +296,8 @@ export class TicketRunner {
             options.signal,
             observeRuntime,
             localSteeringId,
-            missingConversationText
+            missingConversationText,
+            steering
           );
           missingConversationText = undefined;
           threadId = turn.threadId ?? threadId;
@@ -301,7 +317,7 @@ export class TicketRunner {
               break;
             }
             localSteeringId = local.id;
-            turnInput = `The user sent this local TMatrix message. Continue the same conversation and preserve the current task revision (${processedInputRevision}). Return the required structured handoff.\n\n${local.message}`;
+            turnInput = localSteeringPrompt(local.message);
             continue;
           }
 
@@ -516,7 +532,8 @@ export class TicketRunner {
     signal?: AbortSignal,
     observe?: (event: WorkerObservation) => void | Promise<void>,
     localSteeringId?: string,
-    missingConversationText?: string
+    missingConversationText?: string,
+    steering?: SteeringMailbox
   ): Promise<TurnOutcome> {
     await this.screenPrompt?.(ticket, text, signal);
     const endpoint = ticket.endpoints.history.replace(/^GET\s+/i, "");
@@ -549,7 +566,9 @@ export class TicketRunner {
         signal,
         observe,
         localSteeringId,
-        missingConversationInput
+        missingConversationInput,
+        steering,
+        ticket
       );
     } finally {
       await prepared.cleanup();
@@ -566,56 +585,79 @@ export class TicketRunner {
     signal?: AbortSignal,
     observe?: (event: WorkerObservation) => void | Promise<void>,
     localSteeringId?: string,
-    missingConversationInput?: () => Promise<Input>
+    missingConversationInput?: () => Promise<Input>,
+    steering?: SteeringMailbox,
+    ticket?: Ticket
   ): Promise<TurnOutcome> {
     let finalResponse: string | undefined;
     let threadId: string | undefined;
     let usage: UsageSummary | undefined;
     let turnCompleted = false;
-    const streamed = await thread.runStreamed(input, {
-      outputSchema: HANDOFF_OUTPUT_SCHEMA,
-      ...(missingConversationInput ? { missingConversationInput } : {}),
-      ...(signal ? { signal } : {})
-    });
-
-    for await (const event of streamed.events) {
-      log.debug({
-        event: "codex.event_received",
-        stage: "codex.stream",
-        codex_event_type: event.type,
-        ...("item" in event ? { item_type: event.item.type, item_id: event.item.id } : {})
-      }, "Runtime stream event received");
-
-      await observe?.(observeRuntimeEvent(event));
-      if (event.type === "turn.started" && localSteeringId) {
-        await observe?.({ kind: "steering.runtime_received", text: "Runtime started a turn containing the local message", steering_id: localSteeringId });
-      }
-      if (event.type === "thread.started") {
-        threadId = event.thread_id;
-        reporter.enqueue(event.type, { thread_id: threadId });
-      } else if (event.type === "turn.started") {
-        reporter.enqueue(event.type, {});
-      } else if (event.type === "item.completed") {
-        const summary = summarizeCompletedItem(event.item);
-        reporter.enqueue(`item.${event.item.type}.completed`, summary);
-        if (event.item.type === "agent_message") finalResponse = event.item.text;
-      } else if (event.type === "turn.completed") {
-        usage = usageSummary(event.usage);
-        turnCompleted = true;
-        reporter.enqueue(event.type, { usage });
-      } else if (event.type === "turn.failed") {
-        throw new WorkerError({
-          message: event.error.message,
-          code: "CODEX_TURN_FAILED",
-          stage: "codex.turn"
+    const live = thread.steer && steering && ticket ? new LiveSteering({
+      mailbox: steering,
+      observe: async (event) => { await observe?.(event); },
+      deliver: async (message) => {
+        const text = localSteeringPrompt(message);
+        await this.screenPrompt?.(ticket, text, signal);
+        const prepared = await prepareCodexInput(text, {
+          origin: new URL(ticket.endpoints.history.replace(/^GET\s+/i, "")).origin,
+          fetch: this.fetch, ...(signal ? { signal } : {})
         });
-      } else if (event.type === "error") {
-        throw new WorkerError({
-          message: event.message,
-          code: "CODEX_STREAM_ERROR",
-          stage: "codex.stream"
-        });
+        try { return await thread.steer!(prepared.input, signal ? { signal } : {}); }
+        finally { await prepared.cleanup(); }
       }
+    }) : undefined;
+    try {
+      const streamed = await thread.runStreamed(input, {
+        outputSchema: HANDOFF_OUTPUT_SCHEMA,
+        ...(missingConversationInput ? { missingConversationInput } : {}),
+        ...(signal ? { signal } : {})
+      });
+
+      for await (const event of streamed.events) {
+        log.debug({
+          event: "codex.event_received",
+          stage: "codex.stream",
+          codex_event_type: event.type,
+          ...("item" in event ? { item_type: event.item.type, item_id: event.item.id } : {})
+        }, "Runtime stream event received");
+
+        await observe?.(observeRuntimeEvent(event));
+        if (event.type === "turn.started") live?.start();
+        if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "error") live?.end();
+        if (event.type === "item.completed" && event.item.type === "agent_message") await live?.responseObserved();
+        if (event.type === "turn.started" && localSteeringId) {
+          await observe?.({ kind: "steering.runtime_received", text: "Runtime started a turn containing the local message", steering_id: localSteeringId });
+        }
+        if (event.type === "thread.started") {
+          threadId = event.thread_id;
+          reporter.enqueue(event.type, { thread_id: threadId });
+        } else if (event.type === "turn.started") {
+          reporter.enqueue(event.type, {});
+        } else if (event.type === "item.completed") {
+          const summary = summarizeCompletedItem(event.item);
+          reporter.enqueue(`item.${event.item.type}.completed`, summary);
+          if (event.item.type === "agent_message") finalResponse = event.item.text;
+        } else if (event.type === "turn.completed") {
+          usage = usageSummary(event.usage);
+          turnCompleted = true;
+          reporter.enqueue(event.type, { usage });
+        } else if (event.type === "turn.failed") {
+          throw new WorkerError({
+            message: event.error.message,
+            code: "CODEX_TURN_FAILED",
+            stage: "codex.turn"
+          });
+        } else if (event.type === "error") {
+          throw new WorkerError({
+            message: event.message,
+            code: "CODEX_STREAM_ERROR",
+            stage: "codex.stream"
+          });
+        }
+      }
+    } finally {
+      await live?.close();
     }
 
     if (!turnCompleted) {
@@ -902,4 +944,8 @@ function observeRuntimeEvent(event: WorkerThreadEvent): WorkerObservation {
     }
   }
   return { kind: event.type, text: event.type.replaceAll(".", " ") };
+}
+
+function localSteeringPrompt(message: string): string {
+  return `The user sent this local TMatrix message. Continue the same conversation and preserve the current task revision. Return the required structured handoff.\n\n${message}`;
 }

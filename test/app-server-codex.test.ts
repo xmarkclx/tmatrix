@@ -189,6 +189,57 @@ async function collect(
 }
 
 describe("AppServerCodex", () => {
+  it("targets live steering to the active turn and stops accepting after its completion notification", async () => {
+    const ready = deferred();
+    const server = new FakeAppServer((request, server) => {
+      if (request.method === "thread/start") server.respond(request.id, { thread: { id: "thread-live" } });
+      else if (request.method === "turn/start") { server.respond(request.id, { turn: { id: "turn-live" } }); ready.resolve(undefined); }
+      else if (request.method === "turn/steer") server.respond(request.id, { turnId: "turn-live" });
+      else server.respond(request.id);
+    });
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });
+    const thread = codex.startThread(threadOptions);
+    expect(await thread.steer!("Before start")).toBe(false);
+    const streamed = await thread.runStreamed("Initial task");
+    expect((await streamed.events.next()).value).toMatchObject({ type: "thread.started" });
+    expect((await streamed.events.next()).value).toEqual({ type: "turn.started" });
+    await ready.promise;
+    expect(await thread.steer!("Check focus")).toBe(true);
+    expect(server.requests.find(request => request.method === "turn/steer")?.params).toEqual({
+      threadId: "thread-live", expectedTurnId: "turn-live", input: [{ type: "text", text: "Check focus", text_elements: [] }]
+    });
+    server.notify("turn/completed", { threadId: "another-thread", turn: { id: "turn-live", status: "completed" } });
+    expect(await thread.steer!("Still active")).toBe(true);
+    server.notify("turn/completed", { threadId: "thread-live", turn: { id: "turn-live", status: "completed" } });
+    // No generator advance is necessary to clear the runtime's active target.
+    expect(await thread.steer!("Too late")).toBe(false);
+    expect(await collect(streamed.events)).toContainEqual(expect.objectContaining({ type: "turn.completed" }));
+    expect(server.requests.filter(request => request.method === "turn/steer")).toHaveLength(2);
+    await codex.close();
+  });
+
+  it.each([
+    { code: -32601, message: "Method not found", retry: true },
+    { code: -32600, message: "no active turn to steer", retry: true },
+    { code: -32600, message: "turn id mismatch", retry: true },
+    { code: -32000, message: "private protocol detail", retry: false }
+  ])("only retries explicit live-steering rejection $code/$message", async ({ code, message, retry }) => {
+    const server = new FakeAppServer((request, server) => {
+      if (request.method === "thread/start") server.respond(request.id, { thread: { id: "thread-live" } });
+      else if (request.method === "turn/start") server.respond(request.id, { turn: { id: "turn-live" } });
+      else if (request.method === "turn/steer") server.stdout.write(`${JSON.stringify({ id: request.id, error: { code, message } })}\n`);
+      else server.respond(request.id);
+    });
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });
+    const thread = codex.startThread(threadOptions);
+    const events = (await thread.runStreamed("Task")).events;
+    await events.next();
+    await events.next();
+    if (retry) expect(await thread.steer!("Check focus")).toBe(false);
+    else await expect(thread.steer!("Check focus")).rejects.toThrow("turn/steer failed");
+    await events.return(undefined);
+    await codex.close();
+  });
   function resumeServer(options: { error?: { code: number; message: string }; resumedId?: string } = {}): FakeAppServer {
     let activeThread = "thread-existing";
     return new FakeAppServer((request, server) => {

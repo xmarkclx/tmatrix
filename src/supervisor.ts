@@ -162,7 +162,7 @@ export class Supervisor {
     this.localSteeringIds.set(id, { workerId, message });
     // Keep recent operation IDs for retries without retaining unbounded text.
     if (this.localSteeringIds.size > 1000) this.localSteeringIds.delete(this.localSteeringIds.keys().next().value!);
-    this.localState?.queue(workerId, id);
+    this.localState?.queue(workerId, id, message);
   }
 
   pinLocalWorker(workerId: string, options: { pinned: boolean }): boolean {

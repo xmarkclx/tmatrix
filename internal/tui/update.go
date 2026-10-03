@@ -408,9 +408,9 @@ func steeringLabel(status string) string {
 	case "responded", "response_observed":
 		return "Message response observed."
 	case "queued":
-		return "Message queued for this conversation's next turn; not yet received by runtime."
+		return "Message queued for delivery to this conversation; waiting for runtime receipt."
 	case "failed":
-		return "Message delivery failed; no runtime receipt is confirmed."
+		return "Message could not be completed. Check activity for any runtime receipt."
 	default:
 		return "Message status unavailable; no delivery confirmation."
 	}
