@@ -1,5 +1,5 @@
 import type { PromptScreen } from "./security-screening.js";
-import { LiveSteering } from "./helpers/live-steering.js";
+import { LiveSteering, NotSentError } from "./helpers/live-steering.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
 import { workerTitle } from "./helpers/worker-title.js";
@@ -598,11 +598,17 @@ export class TicketRunner {
       observe: async (event) => { await observe?.(event); },
       deliver: async (message) => {
         const text = localSteeringPrompt(message);
-        await this.screenPrompt?.(ticket, text, signal);
-        const prepared = await prepareCodexInput(text, {
+        const preparationOptions = {
           origin: new URL(ticket.endpoints.history.replace(/^GET\s+/i, "")).origin,
           fetch: this.fetch, ...(signal ? { signal } : {})
-        });
+        };
+        let prepared: Awaited<ReturnType<typeof prepareCodexInput>>;
+        try {
+          await this.screenPrompt?.(ticket, text, signal);
+          prepared = await prepareCodexInput(text, preparationOptions);
+        } catch (cause) {
+          throw new NotSentError("Local message was not sent", { cause });
+        }
         try { return await thread.steer!(prepared.input, signal ? { signal } : {}); }
         finally { await prepared.cleanup(); }
       }

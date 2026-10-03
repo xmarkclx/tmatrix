@@ -8,6 +8,9 @@ interface LocalMailbox {
   subscribeLocal(listener: () => void): () => void;
 }
 
+/** A failure before any runtime send was attempted. */
+export class NotSentError extends Error {}
+
 /** Serial delivery alongside the event stream, including quiet tools/sleeps.
  * Only an explicit rejection may go back to the queue; ambiguous failures must
  * never replay input that the runtime might already have received. */
@@ -64,8 +67,11 @@ export class LiveSteering {
         }
         this.received.add(local.id);
         await this.options.observe({ kind: "steering.runtime_received", text: "Runtime accepted the local message in the active turn. Waiting for a visible response.", steering_id: local.id });
-      } catch {
-        await this.options.observe({ kind: "steering.failed", text: "Could not confirm message delivery. It will not be resent automatically because the runtime may have received it.", steering_id: local.id });
+      } catch (cause) {
+        const text = cause instanceof NotSentError
+          ? "Message was not sent because screening or input preparation failed."
+          : "Could not confirm message delivery. It will not be resent automatically because the runtime may have received it.";
+        await this.options.observe({ kind: "steering.failed", text, steering_id: local.id });
       }
     }
   }
