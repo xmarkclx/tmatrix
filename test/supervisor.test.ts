@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import pino from "pino";
 import { RunCancellationError, WorkerError } from "../src/errors.js";
+import { LocalWorkerState } from "../src/local-worker-state.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
 import type { RunOutcome, SteeringMailbox, TicketRunner } from "../src/runner.js";
@@ -464,7 +466,28 @@ describe("Supervisor", () => {
     await supervisor.drain();
   });
 
-  it("polls at zero slots and routes steering to the targeted active worker", async () => {
+  it.each([
+    {
+      name: "multiline update",
+      content: "Use the edited reply.\nKeep the requested format.",
+      expected: "Use the edited reply.\nKeep the requested format."
+    },
+    {
+      name: "credentials and terminal controls",
+      content: "\x1b[2JKeep this instruction.\x1b]52;c;clipboard\x07\nAPI_KEY=fictional-key\nBearer fictional-bearer\n\x00Next line.",
+      expected: "Keep this instruction.\nAPI_KEY=[REDACTED]\nBearer [REDACTED]\nNext line.\n\n[Credentials redacted]"
+    },
+    {
+      name: "line limit",
+      content: Array(201).fill("Instruction line.").join("\n"),
+      expected: Array(200).fill("Instruction line.").join("\n") + "\n\n[Update preview truncated]"
+    },
+    {
+      name: "byte limit with credentials",
+      content: "API_KEY=fictional-key\n" + "a".repeat(20000),
+      expected: "API_KEY=[REDACTED]\n" + "a".repeat(16362) + "\n\n[Credentials redacted]\n\n[Update preview truncated]"
+    }
+  ])("shows the $name while routing steering at zero slots", async ({ content, expected }) => {
     const pending = deferred<RunOutcome>();
     let steering: SteeringMailbox | undefined;
     const run = vi.fn((
@@ -494,36 +517,57 @@ describe("Supervisor", () => {
             steering_events: [{
               worker_id: "w-1001",
               input_revision: 2,
-              content: "Use the edited reply."
+              content
             }],
             cancellation_requests: []
           };
       })
     };
+    const localState = new LocalWorkerState();
+    const logLines: string[] = [];
+    const logger = pino({ level: "debug" }, { write: (line) => { logLines.push(line); } });
     const supervisor = new Supervisor({
       config: makeConfig({ max_workers: 1 }),
       poller,
       runner: { run } as unknown as TicketRunner,
-      logger: nullLogger(),
+      logger,
+      localState,
       metrics: new Metrics()
     });
 
-    await supervisor.runOnce();
-    const second = await supervisor.runOnce();
+    try {
+      await supervisor.runOnce();
+      const second = await supervisor.runOnce();
 
-    expect(poller.poll).toHaveBeenCalledTimes(3);
-    expect(poller.poll.mock.calls[0]![0]).toMatchObject({ available_slots: 0 });
-    expect(poller.poll.mock.calls[1]![0]).toMatchObject({ available_slots: 1 });
-    expect(poller.poll.mock.calls[2]![0]).toMatchObject({ available_slots: 0 });
-    expect(second.steeringEvents).toBe(1);
-    expect(steering?.takeLatestAfter(1)).toMatchObject({
-      worker_id: "w-1001",
-      input_revision: 2,
-      content: "Use the edited reply."
-    });
+      expect(poller.poll).toHaveBeenCalledTimes(3);
+      expect(poller.poll.mock.calls[0]![0]).toMatchObject({ available_slots: 0 });
+      expect(poller.poll.mock.calls[1]![0]).toMatchObject({ available_slots: 1 });
+      expect(poller.poll.mock.calls[2]![0]).toMatchObject({ available_slots: 0 });
+      expect(second.steeringEvents).toBe(1);
+      const worker = localState.snapshot()[0]!;
+      expect(worker.input_revision).toBe(1);
+      expect(worker.activity.filter((event) => event.kind === "revision.queued").map((event) => event.text))
+        .toEqual([`Task update received and queued (revision 2)\n\n${expected}`]);
 
-    pending.resolve({ status: "completed" });
-    await supervisor.drain();
+      expect((await supervisor.runOnce()).steeringEvents).toBe(0);
+      expect(localState.snapshot()[0]?.activity).toEqual(worker.activity);
+      expect(steering?.takeLatestAfter(1)).toEqual({
+        worker_id: "w-1001",
+        input_revision: 2,
+        content
+      });
+      const logs = logLines.join("");
+      expect(logs).toContain('"event":"steering.queued"');
+      expect(logs).toContain('"event":"steering.duplicate_ignored"');
+      expect(logs).not.toContain('"content"');
+      expect(logs).not.toContain("fictional-key");
+      expect(logs).not.toContain("Use the edited reply.");
+      expect(logs).not.toContain("Keep this instruction.");
+      expect(logs).not.toContain("Instruction line.");
+    } finally {
+      pending.resolve({ status: "completed" });
+      await supervisor.drain();
+    }
   });
 
   it("suppresses a same-poll cancelled claim and acknowledges it once", async () => {

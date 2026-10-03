@@ -84,6 +84,25 @@ func TestSteeringCardShowsMessageAndStatusOnce(t *testing.T) {
 	}
 }
 
+func TestQueuedTaskUpdateShowsRevisionAndMultilineContent(t *testing.T) {
+	for _, width := range []int{40, 80} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			m, _ := testModel()
+			m.width = width
+			m.snapshot.Workers[0].Activity = []backend.Activity{{
+				Kind: "revision.queued",
+				Text: "Task update received and queued (revision 2)\n\nUse the edited reply.\nKeep the requested format.",
+			}}
+			rendered := ansi.Strip(m.activity())
+			for _, text := range []string{"REVISION QUEUED", "revision 2", "Use the edited reply.", "Keep the requested format."} {
+				if !strings.Contains(rendered, text) {
+					t.Fatalf("queued task update hides %q:\n%s", text, rendered)
+				}
+			}
+		})
+	}
+}
+
 func TestCompactWorkerStateRemainsVisible(t *testing.T) {
 	for _, size := range [][2]int{{40, 16}, {60, 24}} {
 		for _, status := range []string{"running", "stopping", "failed", "stopped", "completed", "stop_unverified"} {
