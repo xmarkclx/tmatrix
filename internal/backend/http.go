@@ -20,6 +20,9 @@ import (
 
 var errActionNotFound = errors.New("worker or engine action is no longer available")
 var errActionConflict = errors.New("worker cannot accept this action in its current state")
+var errActionValues = errors.New("engine rejected the requested values")
+
+var ErrUpgradeBusy = errors.New("upgrade deferred while workers are active; retry after they finish")
 
 type discovery struct {
 	Version int    `json:"version"`
@@ -136,6 +139,25 @@ func (h *HTTP) Shutdown(ctx context.Context) error {
 	return h.request(ctx, http.MethodPost, "/v1/shutdown", struct{}{}, nil)
 }
 
+// ShutdownIfIdle atomically refuses to stop intake when a worker is active.
+// Older engines must be stopped explicitly while idle before upgrading.
+func (h *HTTP) ShutdownIfIdle(ctx context.Context) error {
+	var result struct {
+		Status string `json:"status"`
+	}
+	err := h.request(ctx, http.MethodPost, "/v1/shutdown", map[string]bool{"only_if_idle": true}, &result)
+	if errors.Is(err, errActionConflict) {
+		return ErrUpgradeBusy
+	}
+	if errors.Is(err, errActionValues) || errors.Is(err, errActionNotFound) {
+		return errors.New("engine does not support idle-only upgrades; when workers finish, run tmatrix engine stop, wait for it to exit, then retry")
+	}
+	if err == nil && result.Status != "shutting_down" {
+		return errors.New("engine did not acknowledge idle shutdown")
+	}
+	return err
+}
+
 func (h *HTTP) CheckAdapterUpdate(ctx context.Context) error {
 	return h.adapterUpdateAction(ctx, "/v1/adapter/check-now")
 }
@@ -205,7 +227,7 @@ func (h *HTTP) request(ctx context.Context, method, path string, body, output an
 		case 409:
 			return errActionConflict
 		case 400, 422:
-			return errors.New("engine rejected the requested values")
+			return errActionValues
 		default:
 			return fmt.Errorf("local engine request failed (HTTP %d)", response.StatusCode)
 		}

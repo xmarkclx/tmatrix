@@ -1,17 +1,24 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 	"tmatrix/internal/config"
 )
 
 // SetupService defers first-time service startup until credentials are saved.
-// Release directories remain immutable while the previous engine drains.
+// A busy engine keeps its current installation and continues processing work.
 func (s *Service) SetupService() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := PrepareUpgrade(ctx, s.Dir); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(s.Dir, "install-service-on-connect"), []byte("1\n"), 0600); err != nil {
 		return err
 	}

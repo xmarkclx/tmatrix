@@ -101,9 +101,16 @@ export async function startLocalControlServer(options: {
       return;
     }
     if (request.url === "/v1/shutdown") {
-      if (!z.object({}).strict().safeParse(body).success) { respond(response, 400, { error: "Expected an empty object" }); return; }
+      const parsed = z.object({ only_if_idle: z.literal(true).optional() }).strict().safeParse(body);
+      if (!parsed.success) { respond(response, 400, { error: "Expected an empty object or only_if_idle: true" }); return; }
+      if (parsed.data.only_if_idle && options.supervisor.runningCount > 0) {
+        respond(response, 409, { error: "Upgrade deferred while workers are active" });
+        return;
+      }
       respond(response, 202, { status: "shutting_down" });
-      setImmediate(options.onShutdown);
+      // Stop admission in the same event-loop turn as the idle check. An
+      // in-flight poll cannot start a worker between this check and shutdown.
+      options.onShutdown();
       return;
     }
     const match = /^\/v1\/workers\/([^/]+)\/(steer|stop|pin)$/.exec(request.url ?? "");
