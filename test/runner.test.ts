@@ -516,6 +516,30 @@ describe("TicketRunner", () => {
     });
   });
 
+  it("requires a fresh handoff after a capacity retry starts another turn", async () => {
+    const api = apiMock();
+    const runner = new TicketRunner({
+      codexFactory: () => codexMock([[
+        { type: "thread.started", thread_id: "thread-capacity" },
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "stale", type: "agent_message",
+          text: handoffText("AI_DONE", "Unfinished attempt.", "Stale response.") } },
+        { type: "local.activity", kind: "model.capacity.retry", text: "Retry 1 of 5 in 5s." },
+        { type: "turn.started" },
+        { type: "turn.completed", usage }
+      ]], {}),
+      api, logger: nullLogger(), metrics: new Metrics()
+    });
+
+    const outcome = await runner.run(makeTicket(), { runId: "capacity-retry", recovered: false });
+
+    expect(outcome).toEqual({ status: "failed", threadId: "thread-capacity" });
+    expect(api.reportResult).toHaveBeenCalledOnce();
+    expect(api.reportResult.mock.calls[0]?.[1]).toMatchObject({
+      status: "failed", error: { code: "CODEX_OUTPUT_MISSING" }
+    });
+  });
+
   it("reports a failed result when Codex emits turn.failed", async () => {
     const api = apiMock();
     const codex = codexMock([
