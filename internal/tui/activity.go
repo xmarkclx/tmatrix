@@ -59,25 +59,15 @@ func (m Model) renderActivity() (string, []activitySpan) {
 		appendCard("waiting", 0, mutedStyle.Render("Waiting for activity from this worker…"))
 	}
 	duplicates := map[string]int{}
+	steeringCards := map[string]bool{}
 	for _, event := range worker.Activity {
+		if event.SteeringID != "" {
+			steeringCards[event.SteeringID] = true
+		}
 		kind := single(event.Kind)
 		if kind == "" {
 			kind = "activity"
 		}
-		label, bg, ink := activityStyle(kind)
-		timestamp := "--:--:--"
-		if parsed, err := time.Parse(time.RFC3339Nano, event.At); err == nil {
-			timestamp = parsed.Local().Format("15:04:05")
-		}
-		inner := width - 4
-		heading := ellipsis(label, max(1, inner-10))
-		heading += strings.Repeat(" ", max(1, inner-lipgloss.Width(heading)-8)) + timestamp
-		// Render one plain-text block so every wrapped/padded cell inherits the
-		// message surface; nested ANSI resets must not punch through its background.
-		body := textBlock(event.Text, inner)
-		style := lipgloss.NewStyle().Width(width-2).Padding(0, 1).
-			Border(lipgloss.RoundedBorder()).BorderForeground(ink).
-			Background(bg).Foreground(ink)
 		key := fmt.Sprintf("event:%d", event.Sequence)
 		if event.Sequence <= 0 {
 			// Older/mock adapters without sequence IDs still get stable text identity.
@@ -86,10 +76,34 @@ func (m Model) renderActivity() (string, []activitySpan) {
 			duplicates[key]++
 			key += fmt.Sprintf(":%d", duplicates[key])
 		}
-		appendCard(key, event.Sequence, paintSurface(style.Render(heading+"\n"+body), lipgloss.NewStyle().Foreground(ink).Background(bg)))
+		appendCard(key, event.Sequence, renderActivityCard(kind, event.Text, event.At, width))
 	}
 	for _, steer := range worker.Steering {
-		appendCard("steering:"+steer.ID, 0, mutedStyle.Render(textBlock("↳ "+steeringLabel(steer.Status), width)))
+		if steeringCards[steer.ID] {
+			continue
+		}
+		if steer.Message != "" {
+			appendCard("steering:"+steer.ID, 0, renderActivityCard("steering", steer.Message+"\n\n"+steeringLabel(steer.Status), "", width))
+		} else {
+			appendCard("steering:"+steer.ID, 0, mutedStyle.Render(textBlock("↳ "+steeringLabel(steer.Status), width)))
+		}
 	}
 	return strings.Join(cards, "\n"), spans
+}
+
+func renderActivityCard(kind, text, at string, width int) string {
+	label, bg, ink := activityStyle(kind)
+	timestamp := "--:--:--"
+	if parsed, err := time.Parse(time.RFC3339Nano, at); err == nil {
+		timestamp = parsed.Local().Format("15:04:05")
+	}
+	inner := width - 4
+	heading := ellipsis(label, max(1, inner-10))
+	heading += strings.Repeat(" ", max(1, inner-lipgloss.Width(heading)-8)) + timestamp
+	// One plain-text block lets every wrapped cell inherit the message surface.
+	body := textBlock(text, inner)
+	style := lipgloss.NewStyle().Width(width-2).Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).BorderForeground(ink).
+		Background(bg).Foreground(ink)
+	return paintSurface(style.Render(heading+"\n"+body), lipgloss.NewStyle().Foreground(ink).Background(bg))
 }

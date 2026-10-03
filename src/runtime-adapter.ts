@@ -35,6 +35,9 @@ export type WorkerThreadEvent =
   | { type: "local.activity"; kind: string; text: string };
 export interface StreamedTurnLike { events: AsyncGenerator<WorkerThreadEvent> }
 export interface ThreadLike {
+  /** True confirms runtime receipt. False means explicitly unaccepted; retry next turn.
+   * Throw on ambiguous delivery so callers never resend possibly accepted input. */
+  steer?(input: Input, options?: { signal?: AbortSignal }): Promise<boolean>;
   runStreamed(input: Input, options?: {
     outputSchema?: unknown;
     signal?: AbortSignal;

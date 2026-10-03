@@ -579,14 +579,25 @@ describe("TicketRunner", () => {
   it("returns cancelled and skips result reporting only after Codex teardown", async () => {
     const api = apiMock();
     const turnStarted = deferred<void>();
+    const steeringStarted = deferred<void>();
+    const mailbox = new SteeringMailbox();
+    mailbox.enqueueLocal("cancel-message", "Check focus");
     const closeStarted = deferred<void>();
     const finishClose = deferred<void>();
     const codex: CodexLike = {
       startThread() {
         return {
+          async steer(_input, options) {
+            const receipt = new Promise<boolean>((_resolve, reject) => {
+              options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+            });
+            steeringStarted.resolve();
+            return receipt;
+          },
           async runStreamed(_prompt, options) {
             return {
               events: (async function* (): AsyncGenerator<WorkerThreadEvent> {
+                yield { type: "turn.started" };
                 turnStarted.resolve();
                 await new Promise<void>((_resolve, reject) => {
                   options?.signal?.addEventListener(
@@ -615,9 +626,11 @@ describe("TicketRunner", () => {
     const run = runner.run(makeTicket(), {
       runId: "run-user-cancelled",
       recovered: false,
+      steering: mailbox,
       signal: controller.signal
     });
     await turnStarted.promise;
+    await steeringStarted.promise;
 
     controller.abort(new RunCancellationError({
       kind: "user",
@@ -815,6 +828,89 @@ describe("TicketRunner", () => {
 });
 
 describe("TMatrix local steering", () => {
+  it("delivers ordered messages during a quiet active turn before that turn completes", async () => {
+    const mailbox = new SteeringMailbox();
+    const ready = deferred();
+    const finish = deferred();
+    const firstReceived = deferred();
+    const secondReceived = deferred();
+    const api = apiMock();
+    const observations: import("../src/local-worker-state.js").WorkerObservation[] = [];
+    const screened: string[] = [];
+    const runStreamed = vi.fn(async () => ({ events: (async function* (): AsyncGenerator<WorkerThreadEvent> {
+      yield { type: "thread.started", thread_id: "existing-thread" };
+      yield { type: "turn.started" };
+      ready.resolve(undefined);
+      await finish.promise;
+      yield { type: "item.completed", item: { id: "final", type: "agent_message", text: handoffText("AI_DONE", "Completed", "Ready") } };
+      yield { type: "turn.completed", usage };
+    })() }));
+    const steer = vi.fn(async () => true);
+    const runner = new TicketRunner({
+      runtimeFactory: () => ({ startThread: () => ({ runStreamed, steer }) }),
+      screenPrompt: async (_ticket, text) => { screened.push(text); },
+      api, logger: nullLogger(), metrics: new Metrics()
+    });
+    const running = runner.run(makeTicket({ input_revision: 4 }), {
+      runId: "live-test", recovered: false, steering: mailbox,
+      observe: (event) => {
+        observations.push(event);
+        if (event.kind === "steering.runtime_received" && event.steering_id === "one") firstReceived.resolve(undefined);
+        if (event.kind === "steering.runtime_received" && event.steering_id === "two") secondReceived.resolve(undefined);
+      }
+    });
+    await ready.promise;
+    mailbox.enqueueLocal("one", "LOCAL_GUIDANCE_ONE: Check focus");
+    await firstReceived.promise;
+    mailbox.enqueueLocal("two", "LOCAL_GUIDANCE_TWO: Check wrapping");
+    await secondReceived.promise;
+    expect(api.reportResult).not.toHaveBeenCalled();
+    expect(steer).toHaveBeenCalledTimes(2);
+    const sent = steer.mock.calls.map(call => JSON.stringify(call));
+    expect(sent[0]).toContain("LOCAL_GUIDANCE_ONE");
+    expect(sent[1]).toContain("LOCAL_GUIDANCE_TWO");
+    expect(screened.filter(text => text.includes("LOCAL_GUIDANCE"))).toHaveLength(2);
+    finish.resolve(undefined);
+    await expect(running).resolves.toMatchObject({ status: "completed", threadId: "existing-thread" });
+    expect(runStreamed).toHaveBeenCalledTimes(1);
+    expect(observations.filter(event => event.kind === "steering.response_observed").map(event => event.steering_id)).toEqual(["one", "two"]);
+    expect(api.reportResult.mock.calls[0]?.[1].input_revision).toBe(4);
+    expect(JSON.stringify([api.reportProgress.mock.calls, api.reportResult.mock.calls])).not.toContain("LOCAL_GUIDANCE");
+    expect(mailbox.enqueueLocal("late", "Too late")).toBe(false);
+  });
+
+  it.each(["rejected", "ambiguous", "completion-race", "late-accept"])("handles %s live delivery without losing or duplicating the message", async (mode) => {
+    const mailbox = new SteeringMailbox();
+    mailbox.enqueueLocal("one", "Check focus");
+    const attempted = deferred();
+    const completed = deferred();
+    const api = apiMock();
+    const observations: import("../src/local-worker-state.js").WorkerObservation[] = [];
+    let turn = 0;
+    const runStreamed = vi.fn(async () => ({ events: (async function* (): AsyncGenerator<WorkerThreadEvent> {
+      yield { type: "turn.started" };
+      if (++turn === 1) await attempted.promise;
+      yield { type: "item.completed", item: { id: "final", type: "agent_message", text: handoffText("AI_DONE", "Completed", "Ready") } };
+      yield { type: "turn.completed", usage };
+      completed.resolve(undefined);
+    })() }));
+    const steer = vi.fn(async () => {
+      attempted.resolve(undefined);
+      if (mode === "completion-race") { await completed.promise; return false; }
+      if (mode === "late-accept") { await completed.promise; return true; }
+      if (mode === "ambiguous") throw new Error("Fixture transport failure");
+      return false;
+    });
+    const runner = new TicketRunner({ runtimeFactory: () => ({ startThread: () => ({ runStreamed, steer }) }), api, logger: nullLogger(), metrics: new Metrics() });
+    await runner.run(makeTicket({ input_revision: 4 }), { runId: "fallback-test", recovered: false, steering: mailbox, observe: event => observations.push(event) });
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(runStreamed).toHaveBeenCalledTimes(mode === "ambiguous" || mode === "late-accept" ? 1 : 2);
+    expect(observations.filter(event => event.steering_id === "one").map(event => event.kind)).toEqual(mode === "ambiguous"
+      ? ["steering.failed"]
+      : mode === "late-accept" ? ["steering.runtime_received"]
+      : ["steering.deferred", "steering.runtime_received", "steering.response_observed"]);
+    expect(api.reportResult.mock.calls[0]?.[1].input_revision).toBe(4);
+  });
   it("keeps queued messages on the same thread without inventing task revisions", async () => {
     const mailbox = new SteeringMailbox();
     expect(mailbox.enqueueLocal("local-1", "Check keyboard navigation")).toBe(true);
