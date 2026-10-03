@@ -1,5 +1,6 @@
 import type { LocalWorkerState } from "./local-worker-state.js";
 import { localPollError } from "./helpers/local-poll-error.js";
+import { localPromptPreview } from "./helpers/local-prompt-preview.js";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import type { CancellationApi } from "./api-client.js";
@@ -942,7 +943,15 @@ export class Supervisor {
     if (worker.controller.signal.aborted) return false;
 
     const queued = worker.steering.enqueue(steering);
-    if (queued) this.localState?.record(worker.workerId, { kind: "revision.queued", text: "Task update received and queued" });
+    if (queued && this.localState) {
+      const preview = localPromptPreview(steering.content);
+      this.localState.record(worker.workerId, {
+        kind: "revision.queued",
+        text: `Task update received and queued (revision ${steering.input_revision})\n\n${preview.text}` +
+          (preview.redacted ? "\n\n[Credentials redacted]" : "") +
+          (preview.truncated ? "\n\n[Update preview truncated]" : "")
+      });
+    }
     if (queued) this.metrics.increment("steering_queued");
     this.logger.debug({
       event: queued ? "steering.queued" : "steering.duplicate_ignored",
