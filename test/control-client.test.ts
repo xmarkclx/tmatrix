@@ -49,6 +49,41 @@ afterEach(() => {
 });
 
 describe("ControlClient", () => {
+  it("suspends push and reconnects on the next authorized poll without reviving stale sockets", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeControlSocket[] = [];
+    const createSocket = vi.fn(() => {
+      const socket = new FakeControlSocket();
+      sockets.push(socket);
+      return socket.asSocket();
+    });
+    const onCancellation = vi.fn();
+    const client = new ControlClient({
+      config: makeConfig(), logger: nullLogger(), metrics: new Metrics(),
+      onCancellation, createSocket
+    });
+    const url = "wss://tasks.example.test/api/v1/ai/events?instance_id=test-instance&swarm_id=test-swarm";
+    client.updateUrl(url);
+    sockets[0]!.open();
+    client.suspend();
+    sockets[0]!.message(Buffer.from(JSON.stringify(makeCancellation())));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(createSocket).toHaveBeenCalledOnce();
+    expect(onCancellation).not.toHaveBeenCalled();
+
+    client.updateUrl(url);
+    expect(createSocket).toHaveBeenCalledTimes(2);
+    sockets[1]!.open();
+    sockets[1]!.message(Buffer.from(JSON.stringify(makeCancellation())));
+    expect(onCancellation).toHaveBeenCalledExactlyOnceWith(makeCancellation());
+
+    await client.close();
+    client.suspend();
+    client.updateUrl(url);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(createSocket).toHaveBeenCalledTimes(2);
+  });
+
   it("authenticates by header and routes versioned cancellation messages", async () => {
     const socket = new FakeControlSocket();
     const createSocket = vi.fn((

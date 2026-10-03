@@ -26,6 +26,7 @@ interface Poller {
 
 interface ControlChannel {
   updateUrl(url: string): void;
+  suspend(): void;
   close(): Promise<void>;
 }
 
@@ -70,7 +71,7 @@ export class Supervisor {
   private readonly cancellations = new Map<string, CancellationState>();
   private readonly cancelledWorkers = new Map<string, CancellationRequest>();
   private readonly acknowledgedCancellationOrder: string[] = [];
-  private readonly cancellationAckController = new AbortController();
+  private cancellationAckController = new AbortController();
   private readonly localState: LocalWorkerState | undefined;
   private readonly localStops = new Set<string>();
   private readonly localSteeringIds = new Map<string, { workerId: string; message: string }>();
@@ -268,6 +269,15 @@ export class Supervisor {
     try {
       response = await this.poller.poll(request, this.pollController.signal);
       delete this.pendingPoll;
+      // A fresh authenticated response establishes ownership again. Old runs
+      // remain aborted and occupy their slots until their teardown settles.
+      if (this.pollAuthorizationRevoked && !this.stopped) {
+        this.pollAuthorizationRevoked = false;
+        this.cancellationAckController = new AbortController();
+        this.metrics.increment("poll_authorization_restored");
+        this.logger.info({ event: "poll.authorization_restored", poll_id: pollId },
+          "Poll authorization restored; resuming owned work automatically");
+      }
       this.pollStatus = "connected";
       this.lastPollError = undefined;
       this.lastPollAt = new Date().toISOString();
@@ -276,6 +286,9 @@ export class Supervisor {
       this.lastPollError = localPollError(cause, this.config.api_key);
       const status = pollAuthorizationStatus(cause);
       if (status !== undefined) {
+        // Authorization rejection is definitive, unlike an ambiguous timeout.
+        // Reconcile fresh ownership instead of replaying a pre-rejection poll.
+        delete this.pendingPoll;
         this.revokeAllWorkersForPollAuthorization(pollId, status);
       }
       throw cause;
@@ -430,7 +443,7 @@ export class Supervisor {
 
   /** Limits new claims per request while allowing earlier claims to keep running. */
   private availableSlots(): number {
-    if (this.intakePaused) return 0;
+    if (this.intakePaused || this.pollAuthorizationRevoked) return 0;
     return Math.min(
       Math.max(0, this.maxWorkers - this.running.size),
       this.config.max_tickets_per_poll ?? this.maxWorkers
@@ -724,6 +737,9 @@ export class Supervisor {
   private async stopAndAcknowledgeCancellation(
     request: CancellationRequest
   ): Promise<void> {
+    // Bind this operation to its authorization period, even if access returns
+    // while its runtime is still stopping. Poll replay can retry the ACK.
+    const acknowledgementSignal = this.cancellationAckController.signal;
     const worker = this.running.get(request.worker_id);
     if (worker && worker.ticketId !== request.ticket_id) {
       throw new WorkerError({
@@ -764,7 +780,7 @@ export class Supervisor {
       }
     }
 
-    if (this.pollAuthorizationRevoked) {
+    if (this.pollAuthorizationRevoked || acknowledgementSignal.aborted) {
       throw new WorkerError({
         message: "Cancellation acknowledgement skipped because poll authorization was revoked",
         code: "CANCELLATION_ACK_AUTH_REVOKED",
@@ -787,7 +803,7 @@ export class Supervisor {
     }
     await this.cancellationApi.acknowledgeCancellation(
       request,
-      this.cancellationAckController.signal
+      acknowledgementSignal
     );
     this.metrics.increment("cancellations_acknowledged");
     this.logger.info({
@@ -829,7 +845,7 @@ export class Supervisor {
     }
   }
 
-  /** A rejected poll key invalidates every claim previously owned by it. */
+  /** Stops owned runs until a successful poll establishes authorization again. */
   private revokeAllWorkersForPollAuthorization(
     pollId: string,
     status: 401 | 403
@@ -841,13 +857,7 @@ export class Supervisor {
         new Error("Poll API authorization was revoked")
       );
       if (this.control) {
-        void this.control.close().catch((cause) => {
-          this.logger.warn({
-            event: "control.close_failed",
-            reason: "poll_authorization_rejected",
-            ...errorContext(cause)
-          }, "AI control WebSocket did not close after authorization rejection");
-        });
+        this.control.suspend();
       }
       this.logger.error({
         event: "poll.authorization_revoked",
