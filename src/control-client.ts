@@ -97,7 +97,16 @@ export class ControlClient {
     this.connect(this.generation);
   }
 
-  /** Closes the push channel only after the supervisor has drained its runs. */
+  /** Disconnects until a successful poll advertises an authorized URL again. */
+  suspend(): void {
+    if (this.stopped) return;
+    this.generation += 1;
+    this.desiredUrl = undefined;
+    this.clearTimers();
+    this.closeCurrentSocket();
+  }
+
+  /** Permanently closes the push channel after the supervisor drains its runs. */
   async close(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;

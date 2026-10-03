@@ -130,6 +130,7 @@ describe("Supervisor", () => {
     };
     const control = {
       updateUrl: vi.fn(),
+      suspend: vi.fn(),
       close: vi.fn(async () => undefined)
     };
     const supervisor = new Supervisor({
@@ -730,11 +731,8 @@ describe("Supervisor", () => {
           }
           if (call === 3) throw pollAuthError(status);
           return {
-            new_tickets: [makeTicket({
-              ticket_id: "T-after-revoke",
-              worker_id: "w-after-revoke"
-            })],
-            owned_in_progress: [],
+            new_tickets: [],
+            owned_in_progress: [makeTicket()],
             steering_events: [],
             cancellation_requests: []
           };
@@ -771,8 +769,10 @@ describe("Supervisor", () => {
       ).toBe(1);
 
       const afterRevocation = await supervisor.runOnce();
-      expect(afterRevocation.newWorkers).toBe(0);
-      expect(run).toHaveBeenCalledOnce();
+      expect(afterRevocation.recoveredWorkers).toBe(1);
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(poller.poll.mock.calls[3]?.[0].available_slots).toBe(0);
+      expect(poller.poll.mock.calls[3]?.[0].poll_id).not.toBe(poller.poll.mock.calls[2]?.[0].poll_id);
       await supervisor.shutdown();
     }
   );
@@ -805,6 +805,7 @@ describe("Supervisor", () => {
     const acknowledgeCancellation = vi.fn(async () => undefined);
     const control = {
       updateUrl: vi.fn(),
+      suspend: vi.fn(),
       close: vi.fn(async () => undefined)
     };
     const supervisor = new Supervisor({
@@ -822,7 +823,8 @@ describe("Supervisor", () => {
     await expect(supervisor.runOnce()).rejects.toMatchObject({
       details: { status: 401 }
     });
-    expect(control.close).toHaveBeenCalledOnce();
+    expect(control.suspend).toHaveBeenCalledOnce();
+    expect(control.close).not.toHaveBeenCalled();
     pending.resolve({ status: "cancelled" });
     await supervisor.drain();
     await supervisor.shutdown();

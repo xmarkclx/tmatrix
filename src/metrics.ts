@@ -5,6 +5,7 @@ export type CounterName =
   | "poll_succeeded"
   | "poll_failed"
   | "poll_authorization_rejected"
+  | "poll_authorization_restored"
   | "poll_empty"
   | "http_retries"
   | "tickets_received"
@@ -40,6 +41,7 @@ const COUNTERS: CounterName[] = [
   "poll_succeeded",
   "poll_failed",
   "poll_authorization_rejected",
+  "poll_authorization_restored",
   "poll_empty",
   "http_retries",
   "tickets_received",
