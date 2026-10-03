@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { Logger } from "pino";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AppServerCodex,
   type AppServerProcess
@@ -11,6 +11,27 @@ import type {
   WorkerThreadEvent
 } from "../src/runner.js";
 import { deferred } from "./helpers.js";
+
+vi.mock("node:timers/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:timers/promises")>();
+  return {
+    ...original,
+    setTimeout: <T>(delayMs: number, value: T, options: { signal?: AbortSignal } = {}) => new Promise<T>((resolve, reject) => {
+      const signal = options.signal;
+      const abort = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", abort);
+        resolve(value);
+      }, delayMs);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    })
+  };
+});
 
 type RequestMessage = {
   method: string;
@@ -903,4 +924,249 @@ it("streams local command activity before a running turn completes", async () =>
   expect((await events.next()).value).toMatchObject({ type: "turn.completed" });
   await events.next();
   await codex.close();
+});
+
+describe("model capacity retries", () => {
+  const capacityMessage = "Selected model is at capacity. Please try a different model.";
+
+  function runtime(onTurn: (server: FakeAppServer, turnId: string, attempt: number) => void) {
+    let attempt = 0;
+    const server = new FakeAppServer((request, fake) => {
+      if (request.method === "initialize" || request.method === "thread/name/set" || request.method === "thread/unsubscribe") {
+        fake.respond(request.id);
+      } else if (request.method === "thread/start") {
+        fake.respond(request.id, { thread: { id: "thread-capacity" } });
+      } else if (request.method === "turn/start") {
+        const turnId = `turn-${++attempt}`;
+        fake.respond(request.id, { turn: { id: turnId } });
+        queueMicrotask(() => onTurn(fake, turnId, attempt));
+      } else if (request.method === "turn/steer") {
+        fake.respond(request.id, { turnId: request.params.expectedTurnId });
+      } else if (request.method === "turn/interrupt") {
+        fake.respond(request.id);
+        fake.notify("turn/completed", {
+          threadId: "thread-capacity", turn: { id: request.params.turnId, status: "interrupted", error: null }
+        });
+      }
+    });
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });
+    return { server, codex, thread: codex.startThread(threadOptions) };
+  }
+
+  function complete(server: FakeAppServer, turnId: string, status: "completed" | "failed", message?: string) {
+    server.notify("turn/completed", {
+      threadId: "thread-capacity", turn: { id: turnId, status, error: message ? { message } : null }
+    });
+  }
+
+  function capacityError(server: FakeAppServer, turnId: string, willRetry = false) {
+    server.notify("error", { threadId: "thread-capacity", turnId, error: { message: capacityMessage }, willRetry });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  it("waits 5, 10, 20, 40 and 80 seconds, then emits one failure after six attempts", async () => {
+    const startTimes: number[] = [];
+    const { server, codex, thread } = runtime((fake, turnId) => {
+      startTimes.push(Date.now());
+      capacityError(fake, turnId);
+      complete(fake, turnId, "failed", capacityMessage);
+    });
+    const run = collect((await thread.runStreamed("Complete task once")).events);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(startTimes).toEqual([0]);
+    for (const delay of [5_000, 10_000, 20_000, 40_000, 80_000]) {
+      const before = startTimes.length;
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(startTimes).toHaveLength(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(startTimes).toHaveLength(before + 1);
+    }
+    const events = await run;
+    expect(startTimes).toEqual([0, 5_000, 15_000, 35_000, 75_000, 155_000]);
+    expect(events.filter(event => event.type === "turn.failed" || event.type === "error")).toEqual([
+      { type: "turn.failed", error: { message: capacityMessage } }
+    ]);
+    expect(events.filter(event => event.type === "thread.started")).toEqual([
+      { type: "thread.started", thread_id: "thread-capacity" }
+    ]);
+    expect(events.filter(event => event.type === "local.activity")).toEqual([
+      { type: "local.activity", kind: "model.capacity.retry", text: "Model is at capacity. Retry 1 of 5 in 5s." },
+      { type: "local.activity", kind: "model.capacity.retry", text: "Model is at capacity. Retry 2 of 5 in 10s." },
+      { type: "local.activity", kind: "model.capacity.retry", text: "Model is at capacity. Retry 3 of 5 in 20s." },
+      { type: "local.activity", kind: "model.capacity.retry", text: "Model is at capacity. Retry 4 of 5 in 40s." },
+      { type: "local.activity", kind: "model.capacity.retry", text: "Model is at capacity. Retry 5 of 5 in 80s." }
+    ]);
+    expect(server.requests.filter(request => request.method === "thread/start")).toHaveLength(1);
+    expect(server.requests.filter(request => request.method === "turn/start").map(request => request.params.threadId))
+      .toEqual(Array(6).fill("thread-capacity"));
+    await codex.close();
+  });
+
+  it("continues the existing conversation after partial work and stops retrying on success", async () => {
+    const { server, codex, thread } = runtime((fake, turnId, attempt) => {
+      if (attempt === 1) {
+        fake.notify("item/completed", {
+          threadId: "thread-capacity", turnId,
+          item: { id: "cmd-first", type: "commandExecution", command: "touch completed.txt", aggregatedOutput: "", exitCode: 0, status: "completed" }
+        });
+      }
+      complete(fake, turnId, attempt < 3 ? "failed" : "completed", attempt < 3 ? capacityMessage : undefined);
+    });
+    const run = collect((await thread.runStreamed("Complete task once", { outputSchema: { type: "object" } })).events);
+    await vi.advanceTimersByTimeAsync(15_000);
+    const events = await run;
+    await vi.advanceTimersByTimeAsync(160_000);
+    const turns = server.requests.filter(request => request.method === "turn/start");
+    expect(turns).toHaveLength(3);
+    expect(turns.map(request => request.params.input)).toEqual([
+      [{ type: "text", text: "Complete task once", text_elements: [] }],
+      [{ type: "text", text: "Continue the previous request from where it stopped. Preserve completed work and do not repeat completed actions.", text_elements: [] }],
+      [{ type: "text", text: "Continue the previous request from where it stopped. Preserve completed work and do not repeat completed actions.", text_elements: [] }]
+    ]);
+    expect(turns.map(request => request.params.outputSchema)).toEqual([{ type: "object" }, { type: "object" }, { type: "object" }]);
+    expect(events.filter(event => event.type === "item.completed")).toHaveLength(1);
+    expect(events.filter(event => event.type === "turn.completed")).toHaveLength(1);
+    expect(events.filter(event => event.type === "turn.failed" || event.type === "error")).toEqual([]);
+    await codex.close();
+  });
+
+  it("waits for the matching terminal receipt and preserves active steering before backoff", async () => {
+    const { server, codex, thread } = runtime((fake, turnId, attempt) => {
+      if (attempt === 1) capacityError(fake, turnId);
+      else complete(fake, turnId, "completed");
+    });
+    const events: WorkerThreadEvent[] = [];
+    const run = (async () => {
+      for await (const event of (await thread.runStreamed("Task")).events) events.push(event);
+    })();
+    await vi.advanceTimersByTimeAsync(4_000);
+    complete(server, "turn-stale", "failed", capacityMessage);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+    expect(events.map(event => event.type)).toEqual(["thread.started", "turn.started"]);
+    expect(await thread.steer!("Fresh instruction")).toBe(true);
+    complete(server, "turn-1", "failed");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await thread.steer!("Another instruction")).toBe(false);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await run;
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(2);
+    expect(events.filter(event => event.type === "turn.failed" || event.type === "error")).toEqual([]);
+    await codex.close();
+  });
+
+  it.each(["Model is unavailable", "Rate limit exceeded", "HTTP 429", "Network timeout", "Account capacity exceeded"])
+  ("does not retry unrelated errors: %s", async (message) => {
+    const { server, codex, thread } = runtime((fake, turnId) => {
+      fake.notify("error", { threadId: "thread-capacity", turnId, error: { message }, willRetry: false });
+    });
+    const events = await collect((await thread.runStreamed("Task")).events);
+    await vi.advanceTimersByTimeAsync(160_000);
+    expect(events.filter(event => event.type === "error")).toEqual([{ type: "error", message }]);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+    await codex.close();
+  });
+
+  it("uses a distinct terminal failure instead of retrying a retained capacity notification", async () => {
+    const { server, codex, thread } = runtime((fake, turnId) => {
+      capacityError(fake, turnId);
+      complete(fake, turnId, "failed", "Authentication expired");
+    });
+    const events = await collect((await thread.runStreamed("Task")).events);
+    await vi.advanceTimersByTimeAsync(160_000);
+    expect(events.filter(event => event.type === "turn.failed")).toEqual([
+      { type: "turn.failed", error: { message: "Authentication expired" } }
+    ]);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+    await codex.close();
+  });
+
+  it("leaves server-managed capacity retries within their original turn", async () => {
+    const { server, codex, thread } = runtime((fake, turnId) => {
+      capacityError(fake, turnId, true);
+      complete(fake, turnId, "completed");
+    });
+    const events = await collect((await thread.runStreamed("Task")).events);
+    await vi.advanceTimersByTimeAsync(160_000);
+    expect(events.map(event => event.type)).toEqual(["thread.started", "turn.started", "turn.completed"]);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+    await codex.close();
+  });
+
+  it("cancels a backoff wait without starting another turn", async () => {
+    const { server, codex, thread } = runtime((fake, turnId) => complete(fake, turnId, "failed", capacityMessage));
+    const controller = new AbortController();
+    const run = collect((await thread.runStreamed("Task", { signal: controller.signal })).events);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const rejected = expect(run).rejects.toThrow("stop");
+    controller.abort(new Error("stop"));
+    await rejected;
+    await vi.advanceTimersByTimeAsync(160_000);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+    expect(server.requests.filter(request => request.method === "turn/interrupt")).toEqual([]);
+    await codex.close();
+  });
+
+  it("interrupts an active retry and never starts a later retry", async () => {
+    const { server, codex, thread } = runtime((fake, turnId, attempt) => {
+      capacityError(fake, turnId);
+      if (attempt === 1) complete(fake, turnId, "failed", capacityMessage);
+    });
+    const controller = new AbortController();
+    const run = collect((await thread.runStreamed("Task", { signal: controller.signal })).events);
+    await vi.advanceTimersByTimeAsync(5_000);
+    controller.abort(new Error("stop"));
+    const events = await run;
+    await vi.advanceTimersByTimeAsync(160_000);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(2);
+    expect(server.requests.filter(request => request.method === "turn/interrupt").map(request => request.params))
+      .toEqual([{ threadId: "thread-capacity", turnId: "turn-2" }]);
+    expect(events.filter(event => event.type === "turn.failed")).toEqual([
+      { type: "turn.failed", error: { message: "Codex turn was interrupted" } }
+    ]);
+    await codex.close();
+  });
+
+  it("closes without retrying when a capacity notification has no terminal receipt", async () => {
+    const { server, codex, thread } = runtime((fake, turnId) => capacityError(fake, turnId));
+    const run = collect((await thread.runStreamed("Task")).events);
+    const rejected = expect(run).rejects.toThrow("Codex capacity failure was not followed by turn completion");
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(server.stdin.writableEnded).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    await codex.close();
+    expect(server.stdin.writableEnded).toBe(true);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+  });
+
+  it.each(["queued", "later"])("keeps a confirmed turn open with a paused consumer and %s receipt", async (receipt) => {
+    const { server, codex, thread } = runtime((fake, turnId) => {
+      capacityError(fake, turnId);
+      fake.notify("item/completed", { threadId: "thread-capacity", turnId, item: { id: "progress", type: "agentMessage", text: "Progress" } });
+      if (receipt === "queued") {
+        complete(fake, turnId, "completed");
+        complete(fake, "turn-stale", "failed", capacityMessage);
+      }
+    });
+    const { events } = await thread.runStreamed("Task");
+    expect((await events.next()).value).toMatchObject({ type: "thread.started" });
+    expect((await events.next()).value).toMatchObject({ type: "turn.started" });
+    expect((await events.next()).value).toEqual({ type: "item.completed", item: { id: "progress", type: "agent_message", text: "Progress" } });
+    if (receipt === "later") complete(server, "turn-1", "completed");
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(server.stdin.writableEnded).toBe(false);
+    expect((await events.next()).value).toMatchObject({ type: "turn.completed" });
+    expect((await events.next()).done).toBe(true);
+    expect(server.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+    await codex.close();
+  });
 });

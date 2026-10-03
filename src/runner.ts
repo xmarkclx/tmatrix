@@ -639,6 +639,7 @@ export class TicketRunner {
           threadId = event.thread_id;
           reporter.enqueue(event.type, { thread_id: threadId });
         } else if (event.type === "turn.started") {
+          finalResponse = undefined;
           reporter.enqueue(event.type, {});
         } else if (event.type === "item.completed") {
           const summary = summarizeCompletedItem(event.item);

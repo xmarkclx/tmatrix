@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { setTimeout as wait } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { Input } from "../../runtime-adapter.js";
 import type { AdapterReviewRequest } from "../../runtime-adapter.js";
@@ -27,6 +28,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const INTERRUPT_GRACE_MS = 5_000;
 const BACKGROUND_CLEAN_TIMEOUT_MS = 2_000;
 const MAX_REPAIRED_PROTOCOL_RECORD_LENGTH = 8 * 1024 * 1024;
+const CAPACITY_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 40_000, 80_000];
+const CAPACITY_COMPLETION_TIMEOUT_MS = 30_000;
+const CAPACITY_RETRY_INPUT = "Continue the previous request from where it stopped. Preserve completed work and do not repeat completed actions.";
 // App Server is supervised without a human approval channel. Keep its process
 // default aligned with the explicit thread/turn policy below.
 const UNATTENDED_APP_SERVER_ARGUMENTS = Object.freeze([
@@ -36,6 +40,8 @@ const UNATTENDED_APP_SERVER_ARGUMENTS = Object.freeze([
 
 type ProtocolRecord = Record<string, unknown>;
 type ProtocolLogger = Pick<Logger, "error" | "warn">;
+type TurnOptions = NonNullable<Parameters<ThreadLike["runStreamed"]>[1]>;
+type AttemptResult = { kind: "finished" } | { kind: "capacity"; message: string };
 type PendingRequest = {
   method: string;
   threadId?: string;
@@ -236,11 +242,31 @@ class AppServerThread implements ThreadLike {
     }
   }
 
-  private async *run(input: Input, turnOptions: {
-    outputSchema?: unknown;
-    signal?: AbortSignal;
-    missingConversationInput?: () => Promise<Input>;
-  }): AsyncGenerator<WorkerThreadEvent> {
+  private async *run(input: Input, turnOptions: TurnOptions): AsyncGenerator<WorkerThreadEvent> {
+    let result = yield* this.runAttempt(input, turnOptions);
+    for (const [index, delayMs] of CAPACITY_RETRY_DELAYS_MS.entries()) {
+      if (result.kind === "finished") return;
+      throwIfAborted(turnOptions.signal);
+      yield {
+        type: "local.activity", kind: "model.capacity.retry",
+        text: `Model is at capacity. Retry ${index + 1} of ${CAPACITY_RETRY_DELAYS_MS.length} in ${delayMs / 1_000}s.`
+      };
+      try {
+        await wait(delayMs, undefined, { signal: turnOptions.signal });
+      } catch (cause) {
+        throwIfAborted(turnOptions.signal);
+        throw cause;
+      }
+      throwIfAborted(turnOptions.signal);
+      result = yield* this.runAttempt(CAPACITY_RETRY_INPUT, turnOptions);
+    }
+    if (result.kind === "capacity") {
+      throwIfAborted(turnOptions.signal);
+      yield { type: "turn.failed", error: { message: result.message } };
+    }
+  }
+
+  private async *runAttempt(input: Input, turnOptions: TurnOptions): AsyncGenerator<WorkerThreadEvent, AttemptResult> {
     throwIfAborted(turnOptions.signal);
     const transport = await this.codex.transport(turnOptions.signal);
     const threadId = await this.ensureThread(transport, turnOptions.signal);
@@ -261,19 +287,22 @@ class AppServerThread implements ThreadLike {
     }
 
     const notifications = new NotificationQueue();
-    let completedTurnId: string | undefined;
+    const completedTurnIds = new Set<string>();
+    let turnId: string | undefined;
+    let pendingCapacity: { message: string; timer: NodeJS.Timeout | undefined } | undefined;
     const unsubscribe = transport.subscribe(
       (notification) => {
         const params = asRecord(notification.params);
         if (notification.method === "turn/completed" && params.threadId === threadId) {
-          completedTurnId = optionalString(asRecord(params.turn).id);
+          const completedTurnId = optionalString(asRecord(params.turn).id);
+          if (completedTurnId) completedTurnIds.add(completedTurnId);
           if (this.activeTurn?.turnId === completedTurnId) this.activeTurn = undefined;
+          if (completedTurnId === turnId && pendingCapacity?.timer) clearTimeout(pendingCapacity.timer);
         }
         notifications.push(notification);
       },
       (cause) => notifications.fail(cause)
     );
-    let turnId: string | undefined;
     let interruptRequested = false;
     let interruptTimer: NodeJS.Timeout | undefined;
     const closeSafely = () => {
@@ -318,7 +347,7 @@ class AppServerThread implements ThreadLike {
       }));
       turnId = stringField(asRecord(response.turn), "id");
       if (!turnId) throw new Error("Codex App Server returned no turn id");
-      if (completedTurnId !== turnId) this.activeTurn = { transport, threadId, turnId };
+      if (!completedTurnIds.has(turnId)) this.activeTurn = { transport, threadId, turnId };
       if (interruptRequested) interrupt();
 
       yield { type: "turn.started" };
@@ -368,8 +397,19 @@ class AppServerThread implements ThreadLike {
           if (params.willRetry === true) continue;
           const message = optionalString(asRecord(params.error).message) ??
             "Codex App Server reported an unrecoverable stream error";
+          if (isCapacityMessage(message)) {
+            if (!pendingCapacity) {
+              const timer = completedTurnIds.has(turnId) ? undefined : setTimeout(() => {
+                notifications.fail(new Error("Codex capacity failure was not followed by turn completion"));
+                closeSafely();
+              }, CAPACITY_COMPLETION_TIMEOUT_MS);
+              timer?.unref();
+              pendingCapacity = { message, timer };
+            }
+            continue;
+          }
           yield { type: "error", message };
-          return;
+          return { kind: "finished" };
         }
 
         if (notification.method !== "turn/completed") continue;
@@ -379,18 +419,25 @@ class AppServerThread implements ThreadLike {
         if (status === "completed") {
           yield { type: "turn.completed", usage };
         } else {
-          const message = optionalString(asRecord(turn.error).message) ??
+          const terminalMessage = optionalString(asRecord(turn.error).message);
+          if (status === "failed" && !turnOptions.signal?.aborted &&
+              (terminalMessage ? isCapacityMessage(terminalMessage) : pendingCapacity)) {
+            return { kind: "capacity", message: terminalMessage ?? pendingCapacity?.message ?? "Model is at capacity" };
+          }
+          const message = terminalMessage ??
             (status === "interrupted"
               ? "Codex turn was interrupted"
               : "Codex turn failed");
           yield { type: "turn.failed", error: { message } };
         }
-        return;
+        return { kind: "finished" };
       }
+      return { kind: "finished" };
     } finally {
       this.activeTurn = undefined;
       turnOptions.signal?.removeEventListener("abort", interrupt);
       if (interruptTimer) clearTimeout(interruptTimer);
+      if (pendingCapacity?.timer) clearTimeout(pendingCapacity.timer);
       unsubscribe();
       notifications.end();
     }
@@ -459,6 +506,10 @@ class AppServerThread implements ThreadLike {
     }, signal ? { signal } : {});
     return threadId;
   }
+}
+
+function isCapacityMessage(message: string): boolean {
+  return /\bmodel\s+is\s+at\s+capacity\b/i.test(message);
 }
 
 /** Convert SDK input to App Server's separate text and camel-case localImage entries. */
