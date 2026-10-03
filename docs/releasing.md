@@ -39,8 +39,9 @@ succeed locally before any release tag or asset is uploaded.
 Local installation supports Linux, macOS and WSL and requires `sh`, `curl`,
 `tar`, `install` and `uname`. It downloads the installer attached to the published
 tag; that installer verifies the platform archive checksum, installs immutable
-bundles, and invokes the existing setup flow. Existing workers finish before the
-new engine starts, so keep the command open. Node.js/npm must be ready on Linux;
+bundles, and invokes the existing setup flow. Installation is deferred while
+workers are active. The existing daemon keeps processing its queue; retry
+installation when it is idle. Node.js/npm must be ready on Linux;
 the installer can provision missing runtimes on macOS. The install prefix defaults
 to `TMATRIX_PREFIX` or `~/.local` and can be set with `--prefix /absolute/path`.
 Run as the user whose installation and daemon should be updated.
@@ -85,8 +86,28 @@ python3 scripts/release.py --skip-install
 - Failed local installation leaves the published release intact. Inspect
   `tmatrix status` and resolve any installation/setup problem before using
   `--install-only` (which selects the latest published version at retry time).
-  A setup error or stop request does not prove a requested drain has completed.
+  A setup error or stop request does not prove the old engine exited.
 
 For a build without any remote writes or installation, the original
 `python3 scripts/release-local.py v0.1.7` remains available for an existing local
 tag at HEAD. Building a source binary alone never publishes or installs a release.
+
+## Idle-only upgrades
+
+`tmatrix update`, the release installer, `tmatrix setup`, and service installation
+refuse upgrades while
+workers are active. A deferred attempt leaves the existing CLI, engine settings,
+service, and intake unchanged. There is no automatic retry that pauses the queue.
+Run the update again when the daemon is idle.
+
+The installer verifies and prepares the release, then asks the old engine to
+stop only if it is still idle. A worker admitted after preflight defers the
+upgrade. Installation proceeds only after the engine removes its discovery
+record on exit. If the daemon cannot be reached or its state cannot be verified,
+the upgrade is deferred.
+
+Engines released before the idle-only shutdown protocol require a one-time
+manual stop: after workers finish, run `tmatrix engine stop`, wait for the engine
+to exit, then retry the upgrade. The installer never falls back to an unguarded
+shutdown of an older engine. Explicit engine restarts and operator stop requests
+retain their existing drain behavior.

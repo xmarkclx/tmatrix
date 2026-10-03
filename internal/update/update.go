@@ -1,8 +1,9 @@
 // Package update delegates release installation to the published installer so
-// checksum verification, immutable bundles and worker draining share one path.
+// checksum verification, immutable bundles and idle-only upgrades share one path.
 package update
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"tmatrix/internal/app"
+	"tmatrix/internal/config"
 )
 
 const installerURL = "https://github.com/xmarkclx/tmatrix/releases/latest/download/install.sh"
@@ -39,10 +43,19 @@ func Run(prefix string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if !filepath.IsAbs(prefix) {
 		return errors.New("update prefix must be an absolute path")
 	}
+	dir, err := config.DefaultDir()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.CheckUpgradeIdle(ctx, dir); err != nil {
+		return err
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		return errors.New("tmatrix update requires sh on PATH")
 	}
-	fmt.Fprintf(stdout, "Updating TMatrix in %s from the latest official release.\nExisting workers will finish before the new engine starts; keep this command open.\n", prefix)
+	fmt.Fprintf(stdout, "Updating TMatrix in %s from the latest official release.\nUpdates are deferred while workers are active; retry after they finish.\n", prefix)
 	script, err := downloadInstaller(installerClient(), installerURL)
 	if err != nil {
 		return err
@@ -111,11 +124,11 @@ func runInstaller(script []byte, prefix string, stdin io.Reader, stdout, stderr 
 		return fmt.Errorf("save update installer: %w", err)
 	}
 	// Pass literal arguments rather than interpolating paths into shell source.
-	// Only the download is time bounded: draining active workers can take hours.
+	// The installer rechecks idle state before replacing the installation.
 	command := exec.Command("sh", path, "--repo", "xmarkclx/tmatrix", "--version", "latest", "--prefix", prefix)
 	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("update installer failed; setup may be incomplete or a requested drain may still be running; inspect tmatrix status before retrying: %w", err)
+		return fmt.Errorf("update installer failed or was deferred; inspect tmatrix status before retrying: %w", err)
 	}
 	return nil
 }

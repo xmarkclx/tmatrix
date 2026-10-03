@@ -63,7 +63,7 @@ func run(args []string) error {
 		updateFlags := flag.NewFlagSet("tmatrix update", flag.ContinueOnError)
 		prefix := updateFlags.String("prefix", "", "installation prefix (default: TMATRIX_PREFIX, current release prefix, or ~/.local)")
 		updateFlags.Usage = func() {
-			fmt.Fprintln(updateFlags.Output(), "Usage: tmatrix update [--prefix /absolute/path]\n\nInstall the latest official release using the checksum-verifying installer.\nExisting workers finish before the new engine starts; keep this command open.\nRequires sh, curl, tar, install, Node.js and npm (macOS can install missing runtimes).")
+			fmt.Fprintln(updateFlags.Output(), "Usage: tmatrix update [--prefix /absolute/path]\n\nInstall the latest official release using the checksum-verifying installer.\nUpdates are deferred while workers are active; retry after they finish.\nRequires sh, curl, tar, install, Node.js and npm (macOS can install missing runtimes).")
 			updateFlags.PrintDefaults()
 		}
 		if err := updateFlags.Parse(command[1:]); errors.Is(err, flag.ErrHelp) {
@@ -108,6 +108,17 @@ func run(args []string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			return app.RecoverConversation(ctx, dir, *engineDir, command[2], len(command) == 4)
+		}
+		// Guard upgrades before New can persist a replacement engine directory.
+		if (len(command) == 1 && command[0] == "setup") || (len(command) == 2 && ((command[0] == "upgrade" && command[1] == "prepare") || (command[0] == "service" && command[1] == "install"))) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := app.PrepareUpgrade(ctx, dir); err != nil {
+				return err
+			}
+			if len(command) == 2 {
+				return nil
+			}
 		}
 		live, err := app.New(dir, *engineDir)
 		if err != nil {

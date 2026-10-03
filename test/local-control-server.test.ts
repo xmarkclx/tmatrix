@@ -38,6 +38,39 @@ function pausedSupervisor() {
 }
 
 describe("local console bridge", () => {
+  it("defers an idle-only upgrade without pausing or stopping active workers", async () => {
+    const pending = deferred<RunOutcome>();
+    const ticket = makeTicket();
+    let polls = 0;
+    const supervisor = new Supervisor({
+      config: makeConfig(), localState: new LocalWorkerState(),
+      poller: { poll: async () => ({ new_tickets: ++polls === 2 ? [ticket] : [], owned_in_progress: [], steering_events: [], cancellation_requests: [] }) },
+      runner: { run: () => pending.promise } as unknown as TicketRunner, logger: nullLogger(), metrics: new Metrics()
+    });
+    await supervisor.runOnce();
+    const client = await connect(supervisor);
+    try {
+      expect((await client.request("/v1/shutdown", { only_if_idle: true })).status).toBe(409);
+      expect(client.onShutdown).not.toHaveBeenCalled();
+      expect(supervisor.localSnapshot()).toMatchObject({ running_workers: 1, intake_paused: false });
+      expect((await client.request("/v1/shutdown", { only_if_idle: false })).status).toBe(400);
+      // Explicit operator stops retain the existing drain behavior.
+      expect((await client.request("/v1/shutdown", {})).status).toBe(202);
+      expect(client.onShutdown).toHaveBeenCalledOnce();
+    } finally { pending.resolve({ status: "completed" }); await supervisor.drain(); }
+  });
+
+  it("stops admission synchronously after an idle-only shutdown is accepted", async () => {
+    const { supervisor } = pausedSupervisor();
+    const client = await connect(supervisor);
+    client.onShutdown.mockImplementation(() => { void supervisor.shutdown(); });
+    expect((await client.request("/v1/shutdown", { only_if_idle: true })).status).toBe(202);
+    expect(supervisor.localSnapshot().poller.status).toBe("stopped");
+    supervisor.updateLocalSettings({ intake_paused: false });
+    expect((await supervisor.runOnce()).newWorkers).toBe(0);
+    expect(supervisor.runningCount).toBe(0);
+  });
+
   it("starts paused without contacting TzuDo, authenticates, and applies validated settings", async () => {
     const { supervisor, poll } = pausedSupervisor();
     await supervisor.runOnce();

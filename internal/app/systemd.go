@@ -71,6 +71,13 @@ func (s *Service) ManageService(action string) error {
 }
 
 func manageService(dir, action string, output io.Writer) error {
+	if action == "install" {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := PrepareUpgrade(ctx, dir); err != nil {
+			return err
+		}
+	}
 	if runtime.GOOS == "darwin" {
 		return manageLaunchAgent(dir, action, output)
 	}

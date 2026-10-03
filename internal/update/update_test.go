@@ -2,6 +2,8 @@ package update
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,9 +11,48 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"tmatrix/internal/backend"
+	"tmatrix/internal/config"
 )
+
+func TestRunDefersBeforeDownloadingWhenWorkersAreActive(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("upgrades require Linux or macOS")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	dir, err := config.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Error("update changed a busy daemon")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"version":1,"max_workers":50,"running_workers":2}`))
+	}))
+	defer server.Close()
+	data, _ := json.Marshal(map[string]any{"version": 1, "pid": os.Getpid(), "url": server.URL, "token": "fictional-update-test-token"})
+	if err := os.WriteFile(config.DiscoveryPath(dir), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := Run(filepath.Join(home, "install"), nil, &stdout, &stderr); !errors.Is(err, backend.ErrUpgradeBusy) {
+		t.Fatalf("got %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatal("installer started while workers were active")
+	}
+}
 
 func TestInstallPrefix(t *testing.T) {
 	home := t.TempDir()
@@ -129,7 +170,7 @@ func TestRunInstallerReportsFailureAndCleansUp(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err := runInstaller([]byte("printf '%s' \"$0\"\necho 'setup incomplete' >&2\nexit 42\n"), t.TempDir(), nil, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "exit status 42") || !strings.Contains(err.Error(), "drain may still be running") {
+	if err == nil || !strings.Contains(err.Error(), "exit status 42") || !strings.Contains(err.Error(), "failed or was deferred") {
 		t.Fatalf("installer failure lost: %v", err)
 	}
 	if !strings.Contains(stderr.String(), "setup incomplete") {

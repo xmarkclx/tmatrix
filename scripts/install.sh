@@ -102,7 +102,13 @@ if ! mkdir "$lock" 2>/dev/null; then
   echo 'Another install is running, or install.lock needs inspection after an interrupted install.' >&2
   exit 1
 fi
-# Unique immutable bundles keep old runtime code available throughout draining.
+# Reserve an idle engine before changing the CLI, settings, or OS service.
+# Busy workers leave intake running and can retry the installer after finishing.
+if ! "$temp/tmatrix" upgrade prepare; then
+  echo 'Upgrade deferred. The existing installation is unchanged; retry when workers are idle.' >&2
+  exit 1
+fi
+# Unique immutable bundles retain the previous installation for recovery.
 bundle=$(mktemp -d "$prefix/lib/tmatrix/releases/${archive_version}.XXXXXX")
 mv "$temp/engine" "$bundle/engine"
 install -m 755 "$temp/tmatrix" "$bundle/tmatrix"
@@ -135,9 +141,9 @@ for (const name of ['.profile', '.bashrc', '.zshrc']) {
 NODE
 echo "Installed: $prefix/bin/tmatrix (open a new terminal to refresh PATH)"
 echo "Authenticate Codex: $bundle/engine/node_modules/.bin/codex login"
-# The new CLI drains existing workers via the bridge and refreshes the OS service.
+# The new CLI refreshes the OS service after the idle engine has exited.
 # First installs defer service creation until the user connects with credentials.
-echo "Setting up the daemon. Existing workers will finish before the new engine starts; keep this terminal open."
+echo "Setting up the daemon after verifying that no workers are active."
 if ! "$prefix/bin/tmatrix" --engine-dir "$bundle/engine" setup; then
   echo "Service setup incomplete. Bundle retained at $bundle; rerun tmatrix setup after resolving the reported error. Previous releases are retained." >&2
   exit 1

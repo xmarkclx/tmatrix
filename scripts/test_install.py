@@ -140,7 +140,16 @@ class InstallerTests(unittest.TestCase):
         self.archive = self.root / "tmatrix_1.2.3_linux_amd64.tar.gz"
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, data in {
-                "tmatrix": b'#!/bin/sh\nif [ "$1" = --version ]; then echo "TMatrix 1.2.3 (build 42, commit 0123456789ab)"; exit 0; fi\nprintf "%s\\n" "$@" >> "$INSTALL_FIXTURE/setup-args"\nif [ -f "$INSTALL_FIXTURE/fail-setup" ]; then exit 1; fi\n' ,
+                "tmatrix": b'''#!/bin/sh
+if [ "$1" = --version ]; then echo "TMatrix 1.2.3 (build 42, commit 0123456789ab)"; exit 0; fi
+if [ "$1" = upgrade ]; then
+  printf '%s\\n' "$@" >> "$INSTALL_FIXTURE/upgrade-args"
+  if [ -f "$INSTALL_FIXTURE/busy-workers" ]; then echo 'Upgrade deferred while workers are active' >&2; exit 1; fi
+  exit 0
+fi
+printf '%s\\n' "$@" >> "$INSTALL_FIXTURE/setup-args"
+if [ -f "$INSTALL_FIXTURE/fail-setup" ]; then exit 1; fi
+''',
                 "engine/dist/index.js": b"// offline installer fixture\n",
                 "engine/package.json": b'{"private":true}',
             }.items():
@@ -266,6 +275,27 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.prefix.exists())
 
+    def test_busy_workers_leave_cli_and_settings_untouched(self):
+        (self.prefix / "bin").mkdir(parents=True)
+        current = self.prefix / "bin/tmatrix"
+        current.write_text('#!/bin/sh\necho "TMatrix 1.2.2"\n')
+        current.chmod(0o755)
+        config = self.home / ".config/tmatrix/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"engine_dir":"previous-engine","max_workers":50}')
+        before = config.read_bytes()
+        (self.root / "busy-workers").touch()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Upgrade deferred", result.stderr)
+        self.assertFalse(current.is_symlink())
+        self.assertIn("1.2.2", current.read_text())
+        self.assertEqual(config.read_bytes(), before)
+        self.assertFalse((self.root / "setup-args").exists())
+        self.assertFalse((self.home / ".profile").exists())
+        self.assertFalse((self.prefix / "lib/tmatrix/install.lock").exists())
+        self.assertEqual(list((self.prefix / "lib/tmatrix/releases").iterdir()), [])
+
     def test_latest_and_service_setup_arguments(self):
         result = self.run_installer("latest")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -297,12 +327,25 @@ shutil.copyfile(Path(os.environ['INSTALL_FIXTURE'])/name,args[args.index('-o')+1
         self.checksum.write_text(hashlib.sha256(self.archive.read_bytes()).hexdigest()
                                  + "  " + self.archive.name + "\n")
 
+        self_config_dir = self.home / ".config/tmatrix"
+
         class Bridge(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"version":1,"max_workers":3,"running_workers":0}')
+
+            def do_POST(self):
+                size = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(size))
+                assert self.path == "/v1/shutdown" and body == {"only_if_idle": True}
+                bridge = self_config_dir / "bridge.json"
+                bridge.unlink(missing_ok=True)
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"shutting_down"}')
 
             def log_message(self, *args):
                 pass

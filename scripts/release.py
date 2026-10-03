@@ -102,7 +102,7 @@ def prepare(tag, branch, root, env):
 
 
 def install(repo, tag, prefix, root, env):
-    print(f"Installing {tag} locally. Keep this command open while existing workers drain.", flush=True)
+    print(f"Installing {tag} locally. Installation is deferred if workers are active.", flush=True)
     # Use the installer attached to this published release, never a moving branch.
     with tempfile.TemporaryDirectory(prefix="tmatrix-release-install-") as temporary:
         run(["gh", "release", "download", tag, "--repo", repo, "--pattern", "install.sh",
