@@ -13,6 +13,41 @@ import {
 } from "./helpers.js";
 
 describe("Supervisor", () => {
+  it.each([{}, { max_tickets_per_poll: 100 }])(
+    "fills 50 workers across valid polls with batch settings %j", async (batchSettings) => {
+      const pending = deferred<RunOutcome>();
+      const run = vi.fn(() => pending.promise);
+      const owned: Ticket[] = [];
+      const poller = {
+        poll: vi.fn(async (request: PollRequest): Promise<PollResponse> => {
+          if (request.available_slots > 32) throw new Error("HTTP 400: available_slots exceeds 32");
+          const priorOwned = [...owned];
+          const tickets = Array.from({ length: request.available_slots }, (_, index) =>
+            makeTicket({ ticket_id: `T-${owned.length + index}`, worker_id: `w-${owned.length + index}` })
+          );
+          owned.push(...tickets);
+          return { new_tickets: tickets, owned_in_progress: priorOwned, steering_events: [], cancellation_requests: [] };
+        })
+      };
+      const supervisor = new Supervisor({
+        config: makeConfig({ max_workers: 50, ...batchSettings }), poller,
+        runner: { run } as unknown as TicketRunner, logger: nullLogger(), metrics: new Metrics()
+      });
+      try {
+        await supervisor.runOnce();
+        expect(supervisor.runningCount).toBe(32);
+        await supervisor.runOnce();
+        expect(supervisor.runningCount).toBe(50);
+        await supervisor.runOnce();
+        expect(run).toHaveBeenCalledTimes(50);
+        expect(poller.poll.mock.calls.map(([request]) => request.available_slots)).toEqual([0, 32, 18, 0]);
+      } finally {
+        pending.resolve({ status: "completed" });
+        await supervisor.drain();
+      }
+    }
+  );
+
   it("reuses a timed-out poll across cycles so committed claims are not multiplied", async () => {
     const poller = {
       poll: vi.fn(async (_request: PollRequest): Promise<PollResponse> => {

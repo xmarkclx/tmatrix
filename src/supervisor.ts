@@ -55,6 +55,8 @@ export interface PollCycleResult {
 }
 
 const MAX_CANCELLATION_TOMBSTONES = 10_000;
+// Tzu Do caps each poll at 32 new claims, independently of worker capacity.
+const MAX_POLL_SLOTS = 32;
 
 export class Supervisor {
   private readonly config: WorkerConfig;
@@ -433,7 +435,8 @@ export class Supervisor {
     if (this.intakePaused) return 0;
     return Math.min(
       Math.max(0, this.maxWorkers - this.running.size),
-      this.config.max_tickets_per_poll ?? this.maxWorkers
+      this.config.max_tickets_per_poll ?? this.maxWorkers,
+      MAX_POLL_SLOTS
     );
   }
 
