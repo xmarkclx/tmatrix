@@ -152,6 +152,36 @@ describe("active worker retention", () => {
 
 
 describe("worker pins", () => {
+  it("retains a sanitized steering message and updates its card without duplicates", () => {
+    const state = new LocalWorkerState();
+    const ticket = makeTicket();
+    state.start(ticket);
+    state.queue(ticket.worker_id, "message-1", "Check focus\nThen check wrapping\x1b[31m\napi_key=fixture-secret");
+    const queued = state.snapshot()[0]!.activity.at(-1)!;
+    expect(queued).toMatchObject({ steering_id: "message-1", kind: "steering.queued" });
+    expect(queued.text).toContain("Check focus\nThen check wrapping");
+    expect(queued.text).toContain("api_key=[REDACTED]");
+    expect(JSON.stringify(state.snapshot())).not.toContain("fixture-secret");
+    state.record(ticket.worker_id, { kind: "steering.runtime_received", text: "Received by runtime", steering_id: "message-1" });
+    state.record(ticket.worker_id, { kind: "steering.response_observed", text: "Visible response observed", steering_id: "message-1" });
+    const worker = state.snapshot()[0]!;
+    expect(worker.steering[0]).toMatchObject({ status: "response_observed", message: expect.stringContaining("Check focus") });
+    expect(worker.activity.filter(event => event.steering_id === "message-1")).toEqual([
+      { ...queued, kind: "steering.response_observed", text: expect.stringContaining("Visible response observed") }
+    ]);
+    expect(worker.activity.at(-1)?.text).toContain("Then check wrapping");
+  });
+
+  it("keeps a confirmed receipt distinct from a missing response on worker exit", () => {
+    const state = new LocalWorkerState();
+    const ticket = makeTicket();
+    state.start(ticket);
+    state.setPinned(ticket.worker_id, { pinned: true });
+    state.queue(ticket.worker_id, "received", "Check focus");
+    state.record(ticket.worker_id, { kind: "steering.runtime_received", text: "Received", steering_id: "received" });
+    state.status(ticket.worker_id, "completed");
+    expect(state.snapshot()[0]!.activity.find(event => event.steering_id === "received")?.text).toContain("Runtime received the message");
+  });
   it.each(["completed", "failed", "stopped"] as const)("keeps %s and its history until unpinned", (status) => {
     const state = new LocalWorkerState();
     const ticket = makeTicket();

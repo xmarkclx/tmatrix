@@ -204,6 +204,7 @@ class AppServerThread implements ThreadLike {
   private threadId?: string;
   private emittedThreadStarted = false;
   private replacedMissingThread = false;
+  private activeTurn: { transport: AppServerTransport; threadId: string; turnId: string } | undefined;
 
   constructor(codex: AppServerCodex, options: RuntimeThreadOptions | ReviewThreadOptions, private readonly resumeId?: string) {
     this.codex = codex;
@@ -216,6 +217,23 @@ class AppServerThread implements ThreadLike {
     missingConversationInput?: () => Promise<Input>;
   } = {}): Promise<StreamedTurnLike> {
     return { events: this.run(input, options) };
+  }
+
+  async steer(input: Input, options: { signal?: AbortSignal } = {}): Promise<boolean> {
+    throwIfAborted(options.signal);
+    const active = this.activeTurn;
+    if (!active) return false;
+    try {
+      const response = asRecord(await active.transport.request("turn/steer", {
+        threadId: active.threadId, expectedTurnId: active.turnId,
+        input: appServerInput(input)
+      }, options));
+      if (response.turnId !== active.turnId) throw new Error("Codex App Server returned an unexpected steering receipt");
+      return true;
+    } catch (cause) {
+      if (cause instanceof SteeringRejectedError) return false;
+      throw cause;
+    }
   }
 
   private async *run(input: Input, turnOptions: {
@@ -243,8 +261,16 @@ class AppServerThread implements ThreadLike {
     }
 
     const notifications = new NotificationQueue();
+    let completedTurnId: string | undefined;
     const unsubscribe = transport.subscribe(
-      (notification) => notifications.push(notification),
+      (notification) => {
+        const params = asRecord(notification.params);
+        if (notification.method === "turn/completed" && params.threadId === threadId) {
+          completedTurnId = optionalString(asRecord(params.turn).id);
+          if (this.activeTurn?.turnId === completedTurnId) this.activeTurn = undefined;
+        }
+        notifications.push(notification);
+      },
       (cause) => notifications.fail(cause)
     );
     let turnId: string | undefined;
@@ -292,6 +318,7 @@ class AppServerThread implements ThreadLike {
       }));
       turnId = stringField(asRecord(response.turn), "id");
       if (!turnId) throw new Error("Codex App Server returned no turn id");
+      if (completedTurnId !== turnId) this.activeTurn = { transport, threadId, turnId };
       if (interruptRequested) interrupt();
 
       yield { type: "turn.started" };
@@ -361,6 +388,7 @@ class AppServerThread implements ThreadLike {
         return;
       }
     } finally {
+      this.activeTurn = undefined;
       turnOptions.signal?.removeEventListener("abort", interrupt);
       if (interruptTimer) clearTimeout(interruptTimer);
       unsubscribe();
@@ -668,6 +696,14 @@ class AppServerTransport {
       if ("error" in message) {
         const error = asRecord(message.error);
         const code = error.code;
+        // Only explicit protocol rejection permits a next-turn retry. Never
+        // replay a timeout, disconnect, malformed receipt or unknown failure.
+        if (pending.method === "turn/steer" && (code === -32601 ||
+            (code === -32600 && typeof error.message === "string" &&
+             /^(?:no active turn|expected turn id .* does not match|turn id mismatch)/i.test(error.message)))) {
+          pending.reject(new SteeringRejectedError());
+          return;
+        }
         if (pending.method === "thread/resume" && pending.threadId && code === -32600 &&
             error.message === `no rollout found for thread id ${pending.threadId}`) {
           pending.reject(new MissingConversationError());
@@ -710,6 +746,7 @@ class AppServerTransport {
 
 /** Carries no raw protocol message, which could otherwise leak credentials. */
 class ResumeRejectedError extends Error {}
+class SteeringRejectedError extends Error {}
 
 class MissingConversationError extends Error {
   constructor() {
