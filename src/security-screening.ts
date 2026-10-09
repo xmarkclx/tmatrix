@@ -20,6 +20,10 @@ export interface SecurityAlert {
   category: SecurityCategory;
 }
 export type PromptScreen = (ticket: Ticket, text: string, signal?: AbortSignal) => Promise<void>;
+type ScreeningVerdict = z.infer<typeof verdictSchema> | {
+  category: "screening_unavailable";
+  reason: "unsupported_adapter" | "input_too_large" | "timeout" | "invalid_result" | "review_failed";
+};
 
 /** Classifies text in a tool-free request, then alerts without changing execution permissions. */
 export function createPromptScreen(options: {
@@ -33,31 +37,36 @@ export function createPromptScreen(options: {
     const digest = createHash("sha256").update(text).digest("hex");
     const cacheKey = `${ticket.worker_id}:${digest}`;
     if (checked.has(cacheKey)) return;
-    let category: z.infer<typeof verdictSchema>["category"] | "screening_unavailable";
-    try {
-      // Never silently truncate: an unexamined suffix could contain the attack.
-      if (!options.review || text.length > 120_000) throw new Error("Screening unavailable");
+    let verdict: ScreeningVerdict;
+    if (!options.review) verdict = { category: "screening_unavailable", reason: "unsupported_adapter" };
+    else if (text.length > 120_000) verdict = { category: "screening_unavailable", reason: "input_too_large" };
+    else {
       const timeout = AbortSignal.timeout(15_000);
       const signal_ = signal ? AbortSignal.any([signal, timeout]) : timeout;
-      const result = await reviewBeforeAbort(options.review, {
-        instructions: SECURITY_POLICY, input: text,
-        profile: { execution_mode: ticket.execution_mode, model: ticket.model,
-          reasoning_effort: ticket.reasoning_effort, service_tier: ticket.service_tier },
-        outputSchema: { type: "object", properties: { category: { type: "string", enum: categories } }, required: ["category"], additionalProperties: false },
-        signal: signal_,
-      });
-      category = verdictSchema.parse(result).category;
-    } catch {
-      if (signal?.aborted) return;
-      category = "screening_unavailable";
+      try {
+        const result = await reviewBeforeAbort(options.review, {
+          instructions: SECURITY_POLICY, input: text,
+          profile: { execution_mode: ticket.execution_mode, model: ticket.model,
+            reasoning_effort: "low", service_tier: ticket.service_tier },
+          outputSchema: { type: "object", properties: { category: { type: "string", enum: categories } }, required: ["category"], additionalProperties: false },
+          signal: signal_,
+        });
+        const parsed = verdictSchema.safeParse(result);
+        verdict = parsed.success ? parsed.data : { category: "screening_unavailable", reason: "invalid_result" };
+      } catch {
+        if (signal?.aborted) return;
+        verdict = { category: "screening_unavailable", reason: timeout.aborted ? "timeout" : "review_failed" };
+      }
     }
     if (signal?.aborted) return;
+    const { category } = verdict;
     if (category === "none") {
       if (checked.size >= 512) checked.delete(checked.values().next().value!);
       checked.add(cacheKey);
       return;
     }
-    options.logger.warn({ event: "security.alert", category, ticket_id: ticket.ticket_id }, "Security warning; execution continues");
+    options.logger.warn({ event: "security.alert", category, ticket_id: ticket.ticket_id,
+      ...("reason" in verdict ? { reason: verdict.reason } : {}) }, "Security warning; execution continues");
     try {
       const timeout = AbortSignal.timeout(10_000);
       await options.alert({ ticket_id: ticket.ticket_id, worker_id: ticket.worker_id, input_digest: digest, category },

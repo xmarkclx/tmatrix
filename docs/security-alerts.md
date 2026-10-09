@@ -6,9 +6,11 @@ steering and missing-conversation fallback prompts. A bounded in-memory cache
 avoids checking identical text twice for a run after successful handling.
 
 Screening uses the selected runtime adapter's optional `review(context, request)`
-capability. The worker's model, reasoning effort and service tier are reused,
-with the adapter's existing provider authentication. No separate classifier API
-key or model setting is required. The former `TMATRIX_SECURITY_OPENAI_API_KEY`
+capability. The worker's model and service tier are reused with the adapter's
+existing provider authentication. Screening uses `low` reasoning effort to fit
+its 15-second deadline. The executing task keeps its selected reasoning effort.
+No separate classifier API key or model setting is required. The former
+`TMATRIX_SECURITY_OPENAI_API_KEY`
 and `TMATRIX_SECURITY_MODEL` settings are no longer used; remove them from daemon
 configuration. The legacy credential is still stripped from child environments.
 Reviews consume the provider account's normal usage/quota and send submitted
@@ -52,6 +54,10 @@ alerts are not queued for later delivery.
 Screening has a 15-second timeout and alert delivery a 10-second deadline.
 Unsupported adapters, input over 120,000 characters (never silently truncated),
 refusals, malformed results and provider failures report `screening_unavailable`.
+The local `security.alert` warning includes one fixed `reason` value of
+`unsupported_adapter`, `input_too_large`, `timeout`, `invalid_result`, or
+`review_failed`. Exception text, provider responses and submitted content are
+never included. These reasons stay local and do not change the alert API payload.
 A cancelled run does not start an alert. Alert failures log only safe metadata.
 Execution continues after these bounded attempts, including suspicious verdicts;
 there is no hold, approval or automatic pause. This adds bounded pre-turn latency.

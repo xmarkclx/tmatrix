@@ -47,7 +47,7 @@ configured absolute module path.
 | `RuntimeAdapter.setup(context)` | Perform local initialization and return an `AdapterSetup`. Clean up resources if setup throws. Avoid network checks that delay worker intake. |
 | `AdapterSetupContext` | Sanitized child environment, logger and an `updateDirectory` isolated by adapter and engine instance. |
 | `AdapterSetup.create(context, profile)` | Create a fresh runtime for each worker. Select and pin that worker's executable before it can start. |
-| `RuntimeAdapter.review(context, request)` / `AdapterSetup.review` | Optional fresh, tool-free structured review using existing provider authentication and the worker profile. Setup may bind it to the installation manager. Honor cancellation and confirm teardown before settling. |
+| `RuntimeAdapter.review(context, request)` / `AdapterSetup.review` | Optional fresh, tool-free structured review using existing provider authentication, the worker's model and service tier, and low reasoning effort. Setup may bind it to the installation manager. Honor cancellation and confirm teardown before settling. |
 | `AdapterSetup.updates` | Optional lifecycle and control capability for the runtime updater. Setup may return a creator without an updater. |
 | `AdapterUpdates.start()` | Start background checks and the provider's schedule. |
 | `AdapterUpdates.snapshot()` | Return compact status, versions, check times and a safe error message. Include `can_rollback: true` only while rollback is available. |
