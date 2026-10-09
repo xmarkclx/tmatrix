@@ -19,6 +19,7 @@ describe("loadConfig", () => {
       env: {
         API_KEY: "env-secret",
         INSTANCE_ID: "from-env",
+        TEAM_ID: "01a102a4-c231-7dd2-b520-f3526b5bcecc",
         MAX_WORKERS: "5",
         MAX_TICKETS_PER_POLL: "1",
         CONVERSATION_STATE_DIR: "/private/worker-conversations",
@@ -28,12 +29,17 @@ describe("loadConfig", () => {
 
     expect(config.api_key).toBe("env-secret");
     expect(config.instance_id).toBe("from-env");
+    expect(config.team_id).toBe("01a102a4-c231-7dd2-b520-f3526b5bcecc");
     expect(config.max_workers).toBe(5);
     expect(config.max_tickets_per_poll).toBe(1);
     expect(config.conversation_state_dir).toBe("/private/worker-conversations");
     expect(config.pretty_logs).toBe(false);
     expect(safeConfig(config)).not.toHaveProperty("api_key");
     expect(JSON.stringify(safeConfig(config))).not.toContain("env-secret");
+  });
+
+  it("rejects invalid Team identifiers instead of reverting to Personal", async () => {
+    await expect(loadConfig({ cwd: tmpdir(), env: { POLL_URL: "https://tasks.example.test/poll", API_KEY: "fixture", INSTANCE_ID: "test", TEAM_ID: "untrusted" } })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
   it("rejects an insecure poll URL with a diagnostic code", async () => {

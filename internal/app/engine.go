@@ -143,6 +143,9 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 		"pretty_logs":     false,
 		"runtime_adapter": cfg.WorkerType,
 	}
+	if cfg.TeamID != "" {
+		engineConfig["team_id"] = cfg.TeamID
+	}
 	if cfg.AdapterModule != "" {
 		engineConfig["adapter_module"] = cfg.AdapterModule
 	}
