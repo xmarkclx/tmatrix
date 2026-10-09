@@ -7,7 +7,7 @@ import { SteeringMailbox, TicketRunner, type WorkerThreadEvent } from "../src/ru
 import { deferred, makeTicket } from "./helpers.js";
 
 describe("live steering delivery failures", () => {
-  it.each(["screening", "preparation", "steer", "cleanup"])("reports %s failures at the correct delivery boundary", async (stage) => {
+  it.each(["preparation", "steer", "cleanup"])("reports %s failures at the correct delivery boundary", async (stage) => {
     const failureObserved = deferred<void>();
     const observations: WorkerObservation[] = [];
     const mailbox = new SteeringMailbox();
@@ -43,9 +43,6 @@ describe("live steering delivery failures", () => {
     };
     const runner = new TicketRunner({
       runtimeFactory: () => ({ startThread: () => ({ runStreamed, steer }) }),
-      screenPrompt: async (_ticket, text) => {
-        if (stage === "screening" && text.includes("LOCAL_GUIDANCE")) throw fixtureError;
-      },
       api, logger: nullLogger(), metrics: new Metrics()
     });
     try {
@@ -56,11 +53,11 @@ describe("live steering delivery failures", () => {
           if (event.kind === "steering.failed") failureObserved.resolve();
         }
       })).resolves.toMatchObject({ status: "completed" });
-      const notSent = stage === "screening" || stage === "preparation";
+      const notSent = stage === "preparation";
       expect(observations.filter(event => event.steering_id === "local-failure")).toEqual([{
         kind: "steering.failed", steering_id: "local-failure",
         text: notSent
-          ? "Message was not sent because screening or input preparation failed."
+          ? "Message was not sent because input preparation failed."
           : "Could not confirm message delivery. It will not be resent automatically because the runtime may have received it."
       }]);
       expect(steer).toHaveBeenCalledTimes(notSent ? 0 : 1);

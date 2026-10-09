@@ -1,75 +1,87 @@
-# Prompt security alerts (alert-only)
+# Executing-worker security warnings
 
-The daemon screens full ticket context before creating an executing runtime,
-then each submitted turn, including resumed-context updates, local/remote
-steering and missing-conversation fallback prompts. A bounded in-memory cache
-avoids checking identical text twice for a run after successful handling.
+The executing agent can report concrete suspicious instructions through
+`report_security_warning({ category })` while it works. There is no separate
+classifier, pre-turn screening request, screening deadline, or automatic
+screening-unavailable email. Reporting adds no execution restriction. The task
+continues under its existing runtime instructions and permissions. A warning,
+suppressed delivery, or delivery failure does not itself pause, cancel, request
+approval, or change permissions. Actual user cancellation retains its existing
+ownership and confirmed-teardown behavior.
 
-Screening uses the selected runtime adapter's optional `review(context, request)`
-capability. The worker's model and service tier are reused with the adapter's
-existing provider authentication. Screening uses `low` reasoning effort to fit
-its 15-second deadline. The executing task keeps its selected reasoning effort.
-No separate classifier API key or model setting is required. The former
-`TMATRIX_SECURITY_OPENAI_API_KEY`
-and `TMATRIX_SECURITY_MODEL` settings are no longer used; remove them from daemon
-configuration. The legacy credential is still stripped from child environments.
-Reviews consume the provider account's normal usage/quota and send submitted
-text to that provider; ordinary provider data policies still apply.
+The action accepts only one of `credential_theft`, `data_exfiltration`,
+`destructive_actions`, `security_bypass`, and `suspicious_instructions`. It cannot
+accept an explanation, submitted text, credentials, recipient, URL, ticket ID or
+worker ID. Builds, authorized project work, discussion of security threats and
+intentional full-access configuration do not by themselves call for a warning.
+The agent decides whether a concrete suspicious instruction merits reporting;
+this is advisory behavior, not an independent security review or a safety guarantee.
 
-The policy is compiled into `src/security-screening.ts`, supplied separately from
-submitted user text, and never populated from project rules or task content.
-The bundled Codex adapter starts a separate App Server process with a pinned
-executable and an ephemeral thread in an empty temporary directory. It does not
-resume, store or lease an executing worker conversation. A local model descriptor
-with no tool support and explicit overrides disable shell, file editing, web,
-apps, plugins, hooks, skills and other execution capabilities. Configured MCP
-servers are enumerated and individually disabled before the thread starts.
-The turn also has read-only sandboxing with command network access disabled;
-provider network access remains necessary. Interactive/tool requests fail the
-review. The temporary directory and version pin are released after confirmed
-process shutdown. Review input/output is excluded from raw protocol diagnostics.
+## Runtime integration
 
-Codex's shared account home can still supply global AGENTS guidance. The fixed
-system policy treats this as nonoperative context and reviews only the final
-submitted user message; project instructions and skill catalogs are suppressed.
-These controls do not make the LLM immune to prompt injection or stop a
-compromised full-access host from changing worker code.
+The bundled Codex adapter starts a private, stateless loopback MCP endpoint for
+one worker runtime. Its random capability token grants only the category action
+and expires when that runtime closes. The endpoint validates loopback access,
+host, origin, capability, body size and strict tool arguments. It does not log
+request bodies, tokens, task text or provider diagnostics. It supports MCP
+initialization, tool discovery and calls with JSON responses; notifications
+receive an empty 202 response and GET returns 405.
 
-Other adapters may implement the same isolated capability without changing
-adapter API v1. An adapter without it remains usable and reports
-`screening_unavailable`; there is no fallback to its full-access executing
-runtime. Adapters must honor cancellation, withhold tools/workspace access, and
-finish owned-process teardown before settling their review result. See
-[adapter setup](adapter-updates.md).
+Both fresh and resumed threads receive the MCP integration through per-thread
+configuration. This also works for conversations created before the feature,
+without rebuilding them or changing their thread ID. The existing operator's
+MCP integrations remain configured. Every turn receives fixed worker guidance in
+an application context block, separate from ticket text. This preserves the
+operator's existing developer guidance rather than replacing it. The warning
+server belongs to the runtime and closes during teardown, including pending
+startup. If it cannot start, a safe local diagnostic is recorded and ordinary
+task execution continues without that action.
 
-A category result triggers an authenticated POST to the configured app origin at
-`/api/v1/alert-user-emergency`. Only ticket/run IDs, a SHA-256 input digest and a
-fixed category are sent. Tzu Do selects the verified account recipient and email
-text; no recipient or mail credentials live here. Deploying that endpoint first
-is recommended, but updating TMatrix first does not prevent workers running: an
-older Tzu Do server's missing endpoint is handled as unconfirmed alert delivery.
-Local `security.alert` warnings appear even when email is unavailable. Missed
-alerts are not queued for later delivery.
+Other API-v1 runtime adapters may implement the optional
+`RuntimeThreadOptions.reportSecurityWarning` callback and apply
+`securityWarningInstructions` through their provider's trusted instruction
+mechanism. Expose a category-only model action and return the host callback's
+receipt. Adapters that ignore these optional fields remain usable; the daemon
+never fabricates a warning or screening result because an adapter lacks support.
+No generic tool registry, extra dependency, classifier credentials or classifier
+model setting is required. Legacy classifier environment variables remain
+excluded from runtime child environments but are no longer used.
 
-Screening has a 15-second timeout and alert delivery a 10-second deadline.
-Unsupported adapters, input over 120,000 characters (never silently truncated),
-refusals, malformed results and provider failures report `screening_unavailable`.
-The local `security.alert` warning includes one fixed `reason` value of
-`unsupported_adapter`, `input_too_large`, `timeout`, `invalid_result`, or
-`review_failed`. Exception text, provider responses and submitted content are
-never included. These reasons stay local and do not change the alert API payload.
-A cancelled run does not start an alert. Alert failures log only safe metadata.
-Execution continues after these bounded attempts, including suspicious verdicts;
-there is no hold, approval or automatic pause. This adds bounded pre-turn latency.
+## Delivery and receipts
 
-Tzu Do limits email to one per account per minute and suppresses duplicates for
-24 hours. Further warnings remain local. No durable outbox is provided. Provider
-acceptance does not prove inbox delivery. Stop active jobs separately from pausing
-intake and review queued work before resuming. Alerts cannot undo execution.
+The host binds every call to the claimed ticket/run and a SHA-256 digest of its
+latest submitted text. Initial input, reconstructed conversation input, remote
+steering and submitted local steering update that digest. Explicitly rejected
+local steering restores the prior digest; ambiguous delivery keeps the submitted
+one. The digest groups duplicate notifications. It does not claim to preserve
+an exact copy of whatever suspicious material the agent encountered.
 
-The scan covers text, not image pixels, repository files, future tool results or
-runtime history unavailable in the ticket. It can miss attacks or raise false
-positives. Tests include the real pinned Codex CLI against a local fake provider
-to verify that no tools are advertised and configured MCP servers do not start.
-Deterministic verdict fixtures do not measure attack detection. Live model/inbox
-verification requires an authenticated test account.
+The host sends the existing authenticated POST to the configured app origin at
+`/api/v1/alert-user-emergency`. Only ticket/run IDs, the digest and the fixed
+category cross that boundary. Tzu Do verifies claim ownership, selects the
+account recipient, and constructs its warning email and task links. Queue API
+credentials stay in the host; they are not included in prompts or tool arguments.
+
+The action returns a fixed receipt:
+
+| Status | Meaning |
+| --- | --- |
+| `sent` | The server reports provider acceptance, not confirmed inbox delivery. |
+| `test_only` | The server deliberately suppressed email in test mode. |
+| `suppressed` | This run already handled the same input/category, or the API throttled the request. |
+| `unconfirmed` | Delivery failed, timed out, was cancelled, or returned an unsupported response. |
+
+Delivery takes at most ten seconds, even if a client ignores cancellation. Its
+failure cannot fail the task turn. Duplicate accepted reports are suppressed
+within the run. Failed or API-throttled reports may be retried by a later action.
+Concurrent identical calls share the pending attempt. Tzu Do independently
+limits email to one per account per minute and suppresses duplicates for 24
+hours. Safe local warning metadata remains available when email is unavailable.
+No durable notification outbox or automatic later retry is provided.
+
+The executing agent can miss suspicious instructions or raise false positives.
+It reports during execution rather than before any work occurs, and warnings
+cannot undo earlier changes. Tests exercise real pinned Codex against a local
+fake provider, including old-thread resume, ordinary completion after warning
+failure, and preservation of operator instructions/integrations. Those fixtures
+verify the mechanism, not the model's detection accuracy or live inbox delivery.

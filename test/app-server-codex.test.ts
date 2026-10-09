@@ -11,6 +11,7 @@ import type {
   WorkerThreadEvent
 } from "../src/runner.js";
 import { deferred } from "./helpers.js";
+import * as warningMcp from "../src/security-warning-mcp.js";
 
 type RequestMessage = {
   method: string;
@@ -903,4 +904,40 @@ it("streams local command activity before a running turn completes", async () =>
   expect((await events.next()).value).toMatchObject({ type: "turn.completed" });
   await events.next();
   await codex.close();
+});
+
+it("continues ordinary execution when the local warning action cannot start", async () => {
+  const start = vi.spyOn(warningMcp, "startSecurityWarningMcp").mockRejectedValue(new Error("Private startup diagnostic"));
+  const server = standardServer();
+  const logger = { error: vi.fn(), warn: vi.fn() };
+  const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), logger });
+  try {
+    const streamed = await codex.startThread({ ...threadOptions, reportSecurityWarning: async () => ({ status: "sent" }), securityWarningInstructions: "Fixed warning guidance" }).runStreamed("Ordinary task");
+    const events = await collect(streamed.events);
+    expect(events.at(-1)).toMatchObject({ type: "turn.completed" });
+    expect(server.requests.find(request => request.method === "thread/start")?.params.config).not.toHaveProperty("mcp_servers");
+    expect(server.requests.find(request => request.method === "turn/start")?.params).not.toHaveProperty("additionalContext");
+    expect(logger.warn.mock.calls).toEqual([[{ event: "security.warning_action_unavailable" }, "Worker warning action unavailable; execution continues"]]);
+  } finally { await codex.close(); start.mockRestore(); }
+});
+
+it("closes a warning server whose startup was still pending during runtime teardown", async () => {
+  const created = deferred<void>();
+  const bind = deferred<warningMcp.SecurityWarningMcpServer>();
+  const close = vi.fn(async () => undefined);
+  const start = vi.spyOn(warningMcp, "startSecurityWarningMcp").mockImplementation(() => { created.resolve(); return bind.promise; });
+  const server = standardServer();
+  const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess() });
+  try {
+    const streamed = await codex.startThread({ ...threadOptions, reportSecurityWarning: async () => ({ status: "sent" }) }).runStreamed("Ordinary task");
+    const running = collect(streamed.events).catch(() => undefined);
+    await created.promise;
+    const closing = codex.close();
+    await vi.waitFor(() => expect(server.stdin.writableEnded).toBe(true));
+    bind.resolve({ url: "http://127.0.0.1:1234/mcp", headers: { Authorization: "Bearer synthetic-capability" }, close });
+    await closing;
+    await running;
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(server.requests.some(request => request.method === "turn/start")).toBe(false);
+  } finally { start.mockRestore(); }
 });

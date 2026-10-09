@@ -5,6 +5,16 @@ import { nullLogger } from "../src/logger.js";
 import { makeCancellation, makeConfig, makeTicket } from "./helpers.js";
 
 describe("ApiClient", () => {
+  it("sends only the bound warning payload to the configured origin with host authentication", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('{"status":"sent"}'));
+    const client = new ApiClient({ config: makeConfig(), logger: nullLogger(), metrics: new Metrics(), fetch });
+    expect(await client.alertUserEmergency({ ticket_id: "ticket", worker_id: "worker", input_digest: "a".repeat(64), category: "security_bypass" })).toEqual({ status: "sent" });
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url).toBe("https://tasks.example.test/api/v1/alert-user-emergency");
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test-secret-key");
+    expect(JSON.parse(String(init?.body))).toEqual({ ticket_id: "ticket", worker_id: "worker", input_digest: "a".repeat(64), category: "security_bypass" });
+  });
   it("returns accepted handoff comment identities for conversation continuity", async () => {
     const receipt = { success: true, comment_id: "9223372036854775807", result_comment_id: "9223372036854775807", context_comment_id: "9223372036854775807" };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify(receipt), { headers: { "content-type": "application/json" } }));

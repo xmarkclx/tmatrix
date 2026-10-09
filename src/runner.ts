@@ -1,4 +1,4 @@
-import type { PromptScreen } from "./security-screening.js";
+import { createSecurityWarningReporter, SECURITY_WARNING_INSTRUCTIONS, type AlertSecurityWarning } from "./security-warning.js";
 import { LiveSteering, NotSentError } from "./helpers/live-steering.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
@@ -137,7 +137,7 @@ interface TurnOutcome {
 }
 
 export class TicketRunner {
-  private readonly screenPrompt: PromptScreen | undefined;
+  private readonly alertSecurityWarning: AlertSecurityWarning | undefined;
   private readonly runtimeFactory: RuntimeFactory;
   private readonly api: TicketApi;
   private readonly logger: Logger;
@@ -147,7 +147,7 @@ export class TicketRunner {
   private readonly conversationStore: ConversationStore | undefined;
 
   constructor(options: {
-    screenPrompt?: PromptScreen;
+    alertSecurityWarning?: AlertSecurityWarning;
     runtimeFactory?: RuntimeFactory;
     /** @deprecated Use runtimeFactory. */
     codexFactory?: RuntimeFactory;
@@ -160,7 +160,7 @@ export class TicketRunner {
   }) {
     const factory = options.runtimeFactory ?? options.codexFactory;
     if (!factory) throw new Error("A runtime factory is required");
-    this.screenPrompt = options.screenPrompt;
+    this.alertSecurityWarning = options.alertSecurityWarning;
     this.runtimeFactory = factory;
     this.api = options.api;
     this.logger = options.logger.child({ component: "ticket_runner" });
@@ -192,6 +192,10 @@ export class TicketRunner {
       reasoning_effort: profile.reasoning_effort,
       service_tier: profile.service_tier
     });
+    const warning = this.alertSecurityWarning ? createSecurityWarningReporter({
+      ticket, alert: this.alertSecurityWarning, logger: log,
+      ...(options.signal ? { signal: options.signal } : {})
+    }) : undefined;
     const reporter = new ProgressReporter({
       api: this.api,
       ticket,
@@ -225,7 +229,6 @@ export class TicketRunner {
           options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
         }
         const fullPrompt = buildPrompt(ticket, history);
-        await this.screenPrompt?.(ticket, fullPrompt, options.signal);
         const workingDirectory = await resolveWorkingDirectory(
           ticket.project_path,
           this.fallbackWorkingDirectory
@@ -255,6 +258,10 @@ export class TicketRunner {
           workingDirectory,
           workerTitle(ticket)
         );
+        if (warning) {
+          threadOptions.reportSecurityWarning = warning.report;
+          threadOptions.securityWarningInstructions = SECURITY_WARNING_INSTRUCTIONS;
+        }
         if (releaseConversation?.recovered) threadOptions.rebuildOnResumeRejection = true;
         if (resumeId && !runtime.resumeThread) {
           options.observe?.({ kind: "conversation.unlinked", text: "This runtime cannot resume conversations. Starting a fresh conversation from the task history and saved handoff." });
@@ -297,7 +304,8 @@ export class TicketRunner {
             observeRuntime,
             localSteeringId,
             missingConversationText,
-            steering
+            steering,
+            warning
           );
           missingConversationText = undefined;
           threadId = turn.threadId ?? threadId;
@@ -533,9 +541,9 @@ export class TicketRunner {
     observe?: (event: WorkerObservation) => void | Promise<void>,
     localSteeringId?: string,
     missingConversationText?: string,
-    steering?: SteeringMailbox
+    steering?: SteeringMailbox,
+    warning?: ReturnType<typeof createSecurityWarningReporter>
   ): Promise<TurnOutcome> {
-    await this.screenPrompt?.(ticket, text, signal);
     const endpoint = ticket.endpoints.history.replace(/^GET\s+/i, "");
     const prepared = await prepareCodexInput(text, {
       origin: new URL(endpoint).origin,
@@ -550,14 +558,15 @@ export class TicketRunner {
 
     let fallback: Awaited<ReturnType<typeof prepareCodexInput>> | undefined;
     const missingConversationInput = missingConversationText === undefined ? undefined : async () => {
-      await this.screenPrompt?.(ticket, missingConversationText, signal);
       fallback = await prepareCodexInput(missingConversationText, {
         origin: new URL(endpoint).origin, fetch: this.fetch, ...(signal ? { signal } : {})
       });
       await observe?.({ kind: "prompt.prepared", text: missingConversationText, input_revision: ticket.input_revision ?? 0 });
+      warning?.submitInput(missingConversationText);
       return fallback.input;
     };
     try {
+      warning?.submitInput(text);
       return await this.runTurn(
         thread,
         prepared.input,
@@ -568,7 +577,8 @@ export class TicketRunner {
         localSteeringId,
         missingConversationInput,
         steering,
-        ticket
+        ticket,
+        warning
       );
     } finally {
       await prepared.cleanup();
@@ -587,7 +597,8 @@ export class TicketRunner {
     localSteeringId?: string,
     missingConversationInput?: () => Promise<Input>,
     steering?: SteeringMailbox,
-    ticket?: Ticket
+    ticket?: Ticket,
+    warning?: ReturnType<typeof createSecurityWarningReporter>
   ): Promise<TurnOutcome> {
     let finalResponse: string | undefined;
     let threadId: string | undefined;
@@ -604,13 +615,19 @@ export class TicketRunner {
         };
         let prepared: Awaited<ReturnType<typeof prepareCodexInput>>;
         try {
-          await this.screenPrompt?.(ticket, text, signal);
           prepared = await prepareCodexInput(text, preparationOptions);
         } catch (cause) {
           throw new NotSentError("Local message was not sent", { cause });
         }
-        try { return await thread.steer!(prepared.input, signal ? { signal } : {}); }
-        finally { await prepared.cleanup(); }
+        const restoreInput = warning?.submitInput(text);
+        try {
+          const accepted = await thread.steer!(prepared.input, signal ? { signal } : {});
+          if (!accepted) restoreInput?.();
+          return accepted;
+        } catch (cause) {
+          if (cause instanceof NotSentError) restoreInput?.();
+          throw cause;
+        } finally { await prepared.cleanup(); }
       }
     }) : undefined;
     try {
