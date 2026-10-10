@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AppServerCodex } from "../src/adapters/codex/app-server.js";
 import type { RuntimeThreadOptions, ThreadLike } from "../src/runtime-adapter.js";
-import { createSecurityWarningReporter, SECURITY_WARNING_INSTRUCTIONS, type AlertSecurityWarning } from "../src/security-warning.js";
+import { createSecurityWarningReporter, type AlertSecurityWarning } from "../src/security-warning.js";
 import { nullLogger } from "../src/logger.js";
 import { makeTicket } from "./helpers.js";
 
@@ -81,7 +81,7 @@ describe("executing Codex worker security warnings", () => {
           text => /"status"\s*:\s*"(?:sent|unconfirmed)"/.test(text));
         const receipt = receiptText?.match(/"status"\s*:\s*"(sent|unconfirmed)"/)?.[1];
         requests.push({ scenario, warningTool: Boolean(warning), operatorTool: Boolean(operator),
-          warningPolicy: Boolean(findText(developer, text => text.includes("A warning adds no execution restriction.") && text.includes("Continue the task under existing runtime instructions and permissions."))),
+          warningPolicy: Boolean(findText(developer, text => text.includes("A warning or delivery failure adds no execution restriction.") && text.includes("Continue the task under existing instructions and permissions."))),
           operatorGuidance: Boolean(findText(developer, text => text.includes("Keep fixture operator guidance."))),
           operatorResult: Boolean(findText(outputs.find(item => item.call_id === calls.get(scenario)?.operator)?.output,
             text => text.includes("Operator fixture tool remains available."))),
@@ -159,7 +159,7 @@ args = [${JSON.stringify(operatorPath)}]
       const legacyRuntime = runtime();
       const legacyId = await completeTurn(legacyRuntime.startThread(options), "Fixture before warning capability.");
       await legacyRuntime.close();
-      expect(requests.filter(item => item.scenario === "legacy").every(item => !item.warningTool && item.operatorTool && item.operatorGuidance)).toBe(true);
+      expect(requests.filter(item => item.scenario === "legacy").every(item => !item.warningTool && !item.warningPolicy && item.operatorTool && item.operatorGuidance)).toBe(true);
       for (const current of ["resumed", "fresh", "unconfirmed"] as const) {
         scenario = current;
         const alert = vi.fn<AlertSecurityWarning>(async () => {
@@ -169,7 +169,7 @@ args = [${JSON.stringify(operatorPath)}]
         const host = createSecurityWarningReporter({ ticket: makeTicket({ ticket_id: `fixture-${current}`, worker_id: `worker-${current}` }), alert, logger: nullLogger() });
         host.submitInput("Continue the synthetic task.");
         const worker = runtime();
-        const configured = { ...options, securityWarningInstructions: SECURITY_WARNING_INSTRUCTIONS, reportSecurityWarning: host.report };
+        const configured = { ...options, reportSecurityWarning: host.report };
         const thread = current === "resumed" ? worker.resumeThread(legacyId, configured) : worker.startThread(configured);
         const threadId = await completeTurn(thread, "Continue the synthetic task.");
         await worker.close();

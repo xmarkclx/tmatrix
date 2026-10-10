@@ -55,8 +55,6 @@ export interface RuntimeThreadOptions {
   approvalPolicy: "never";
   networkAccessEnabled: true;
   threadName: string;
-  /** Fixed worker guidance applied to new and resumed executing conversations. */
-  securityWarningInstructions?: string;
   /** Category-only advisory action; the host owns credentials and alert identifiers. */
   reportSecurityWarning?: ReportSecurityWarning;
   /** Set only after the task lease was safely recovered from a dead owner. */

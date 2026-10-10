@@ -1,4 +1,4 @@
-import { createSecurityWarningReporter, SECURITY_WARNING_INSTRUCTIONS, type AlertSecurityWarning } from "./security-warning.js";
+import { createSecurityWarningReporter, type AlertSecurityWarning } from "./security-warning.js";
 import { LiveSteering, NotSentError } from "./helpers/live-steering.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
@@ -260,7 +260,6 @@ export class TicketRunner {
         );
         if (warning) {
           threadOptions.reportSecurityWarning = warning.report;
-          threadOptions.securityWarningInstructions = SECURITY_WARNING_INSTRUCTIONS;
         }
         if (releaseConversation?.recovered) threadOptions.rebuildOnResumeRejection = true;
         if (resumeId && !runtime.resumeThread) {

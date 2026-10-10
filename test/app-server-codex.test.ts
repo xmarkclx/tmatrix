@@ -912,7 +912,7 @@ it("continues ordinary execution when the local warning action cannot start", as
   const logger = { error: vi.fn(), warn: vi.fn() };
   const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), logger });
   try {
-    const streamed = await codex.startThread({ ...threadOptions, reportSecurityWarning: async () => ({ status: "sent" }), securityWarningInstructions: "Fixed warning guidance" }).runStreamed("Ordinary task");
+    const streamed = await codex.startThread({ ...threadOptions, reportSecurityWarning: async () => ({ status: "sent" }) }).runStreamed("Ordinary task");
     const events = await collect(streamed.events);
     expect(events.at(-1)).toMatchObject({ type: "turn.completed" });
     expect(server.requests.find(request => request.method === "thread/start")?.params.config).not.toHaveProperty("mcp_servers");

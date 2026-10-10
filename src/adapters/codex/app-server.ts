@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import type { Logger } from "pino";
 import type { Input } from "../../runtime-adapter.js";
 import { startSecurityWarningMcp, type SecurityWarningMcpServer } from "../../security-warning-mcp.js";
-import type { ReportSecurityWarning } from "../../security-warning.js";
+import { SECURITY_WARNING_INSTRUCTIONS, type ReportSecurityWarning } from "../../security-warning.js";
 import type {
   RuntimeLike,
   RuntimeThreadOptions,
@@ -305,8 +305,8 @@ class AppServerThread implements ThreadLike {
         serviceTier: this.options.serviceTier,
         effort: this.options.modelReasoningEffort,
         summary: "auto",
-        ...(this.warningAvailable && this.options.securityWarningInstructions ? {
-          additionalContext: { tmatrix_security_warning: { kind: "application", value: this.options.securityWarningInstructions } }
+        ...(this.warningAvailable ? {
+          additionalContext: { tmatrix_security_warning: { kind: "application", value: SECURITY_WARNING_INSTRUCTIONS } }
         } : {}),
         ...(turnOptions.outputSchema !== undefined
           ? { outputSchema: turnOptions.outputSchema }
