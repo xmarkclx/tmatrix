@@ -31,6 +31,20 @@ The existing local release script runs the TypeScript/Go tests, installer tests,
 security audits and archive checks. Release staging remains separate from the
 development engine.
 
+The module prefers the patched Go 1.27.2 toolchain while retaining the Go 1.25
+language minimum. With `GOTOOLCHAIN=auto`, Go selects this compiler or a newer
+installed compiler and downloads it if needed. If `govulncheck` reports standard
+library vulnerabilities, check `go env GOVERSION` from this checkout.
+`GOTOOLCHAIN=local` or an explicit older version can prevent the upgrade.
+Retry with automatic selection:
+
+```sh
+GOTOOLCHAIN=auto python3 scripts/release.py
+```
+
+The vulnerability check still blocks affected code. Follow the tag recovery
+instructions below if the source commit changed after a failed release.
+
 GitHub Actions workflows are not needed for this machine-run release process.
 The local release command owns validation, building, archive verification and
 publication; GitHub hosts the source and uploaded releases. All checks must
@@ -58,6 +72,11 @@ This needs Git and authenticated `gh` to resolve origin and download its release
 installer, plus the installation prerequisites. It resolves latest once and pins
 both installer and archive to that tag. An installed TMatrix also supports
 `tmatrix update` without needing this checkout or GitHub CLI.
+
+For the security-warning fix, confirm the latest published release contains
+[PR #33](https://github.com/xmarkclx/tmatrix/pull/33) before using `--install-only`
+or `tmatrix update`. Building a local CLI binary alone does not update the running
+engine.
 
 To publish without installing on the release machine:
 
