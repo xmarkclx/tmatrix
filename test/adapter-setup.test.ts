@@ -3,7 +3,7 @@ import { setupAdapter } from "../src/adapter-loader.js";
 import { resolveAdapterUpdateDirectory } from "../src/adapter-updates.js";
 import { nullLogger } from "../src/logger.js";
 import type {
-  AdapterContext, AdapterReviewRequest, AdapterSetupContext, AdapterUpdates, AdapterUpdateState, RuntimeAdapter, RuntimeCreator
+   AdapterSetupContext, AdapterUpdates, AdapterUpdateState, RuntimeAdapter, RuntimeCreator
 } from "../src/runtime-adapter.js";
 import { deferred, makeTicket } from "./helpers.js";
 
@@ -23,48 +23,10 @@ function updates(overrides: Partial<AdapterUpdates> = {}): AdapterUpdates {
 }
 
 describe("adapter-owned runtime setup", () => {
-  it("binds prepared reviews and isolates their environment/profile from workers", async () => {
-    const request: AdapterReviewRequest = { instructions: "fixed", input: "material", profile: makeTicket(), outputSchema: {} };
-    const fallback = vi.fn();
-    const environments: Record<string, string>[] = [];
-    const prepared = {
-      label: "prepared", create,
-      async review(reviewContext: AdapterContext, reviewRequest: AdapterReviewRequest) {
-        expect(this.label).toBe("prepared");
-        expect(reviewContext.environment.PATH).toBe("/bin");
-        environments.push(reviewContext.environment);
-        reviewContext.environment.PATH = "/mutated";
-        // Even a module that casts away readonly cannot mutate the worker's profile.
-        (reviewRequest.profile as { model: string }).model = "changed";
-        return { category: "none" };
-      }
-    };
-    const setup = await setupAdapter({ apiVersion: 1, id: "echo", create, review: fallback, setup: () => prepared }, context);
-    await expect(setup.review!(request)).resolves.toEqual({ category: "none" });
-    await setup.review!(request);
-    expect(fallback).not.toHaveBeenCalled();
-    expect(environments[0]).not.toBe(environments[1]);
-    expect(context.environment.PATH).toBe("/bin");
-    expect(request.profile.model).toBe(makeTicket().model);
-  });
-
-  it("retains the adapter review when optional setup fails or omits it", async () => {
-    const request: AdapterReviewRequest = { instructions: "fixed", input: "material", profile: makeTicket(), outputSchema: {} };
-    for (const fails of [false, true]) {
-      const adapter = {
-        apiVersion: 1 as const, id: "echo", label: "default", create,
-        async review() { expect(this.label).toBe("default"); return { category: "none" }; },
-        setup() { if (fails) throw new Error("private"); return { create }; },
-      };
-      await expect((await setupAdapter(adapter, context)).review!(request)).resolves.toEqual({ category: "none" });
-    }
-  });
-
   it("keeps existing API v1 adapters working without an updater", async () => {
     const original = vi.fn(create);
     const setup = await setupAdapter({ apiVersion: 1, id: "echo", create: original }, context);
     expect(setup.updates).toBeUndefined();
-    expect(setup.review).toBeUndefined();
     const runtime = setup.runtimeFactory(makeTicket());
     expect(original).toHaveBeenCalledOnce();
     await runtime.close?.();

@@ -45,10 +45,10 @@ tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
 - Turn off / pause intake when not being used.
 
 
-## Prompt security alerts
+## Executing-worker security warnings
 
-See [security alerts](docs/security-alerts.md) for the independent, alert-only
-classifier, existing adapter authentication, Tzu Do mail endpoint and operational limits.
+See [security warnings](docs/security-alerts.md) for the executing agent's advisory
+action, private runtime integration, Tzu Do mail endpoint and delivery limits.
 
 ### Team workers
 

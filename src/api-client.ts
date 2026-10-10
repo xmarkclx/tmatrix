@@ -1,4 +1,4 @@
-import type { SecurityAlert } from "./security-screening.js";
+import type { SecurityAlert } from "./security-warning.js";
 import { randomUUID } from "node:crypto";
 import { IDENTITY_CONTRACT_HEADERS, parseIdentityJson, stringifyIdentityJson } from "./identity-transport.js";
 import type { Logger } from "pino";

@@ -5,6 +5,7 @@ describe("sanitizedCodexEnvironment", () => {
   it("keeps Codex auth and tools while removing the task API credential", () => {
     const result = sanitizedCodexEnvironment({
       API_KEY: "task-secret",
+      TMATRIX_SECURITY_OPENAI_API_KEY: "legacy-classifier-secret",
       TMATRIX_CONVERSATION_LEASE: "ancestor-lease",
       CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "private-parent-value",
       OPENAI_API_KEY: "codex-secret",
