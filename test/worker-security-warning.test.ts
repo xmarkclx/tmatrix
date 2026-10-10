@@ -30,12 +30,21 @@ describe("advisory warning during task execution", () => {
   it("keeps a legacy custom adapter working without inventing warning emails", async () => {
     const api = apiMock();
     const alert = vi.fn<AlertSecurityWarning>(async () => ({ status: "sent" }));
+    let submittedOptions: RuntimeThreadOptions | undefined;
+    let submittedInput = "";
     const runner = new TicketRunner({ api, alertSecurityWarning: alert, logger: nullLogger(), metrics: new Metrics(),
-      runtimeFactory: () => ({ startThread() { return { async runStreamed() {
-        return { events: (async function* (): AsyncGenerator<WorkerThreadEvent> { yield* completion(); })() };
-      } }; } }) });
+      runtimeFactory: () => ({ startThread(options) {
+        submittedOptions = options;
+        return { async runStreamed(input) {
+          submittedInput = textOf(input);
+          return { events: (async function* (): AsyncGenerator<WorkerThreadEvent> { yield* completion(); })() };
+        } };
+      } }) });
     expect(await runner.run(makeTicket(), { runId: "legacy", recovered: false })).toEqual({ status: "completed" });
     expect(api.reportResult.mock.calls[0]?.[1]).toMatchObject({ status: "completed", outcome: "AI_DONE" });
+    expect(submittedOptions).not.toHaveProperty("securityWarningInstructions");
+    expect(submittedInput).not.toContain("report_security_warning");
+    expect(submittedInput).not.toContain("A warning or delivery failure adds no execution restriction.");
     expect(alert).not.toHaveBeenCalled();
   });
   it.each(["sent", "failure"])("reports during an active turn and continues after %s delivery", async mode => {
