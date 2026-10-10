@@ -93,7 +93,7 @@ describe("ControlClient", () => {
     const onCancellation = vi.fn();
     const metrics = new Metrics();
     const client = new ControlClient({
-      config: makeConfig(),
+      config: makeConfig({ team_id: "01a102a4-c231-7dd2-b520-f3526b5bcecc" }),
       logger: nullLogger(),
       metrics,
       onCancellation,
@@ -118,6 +118,7 @@ describe("ControlClient", () => {
     expect(createSocket.mock.calls[0]?.[0]).not.toContain("test-secret-key");
     expect(createSocket.mock.calls[0]?.[1]).toMatchObject({
       "x-tzudo-identity-version": "3",
+      "x-tzudo-workspace": "team:01a102a4-c231-7dd2-b520-f3526b5bcecc",
       authorization: "Bearer test-secret-key",
       "x-aiworker-instance": "test-instance",
       "x-aiworker-swarm": "test-swarm"

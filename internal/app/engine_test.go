@@ -24,6 +24,25 @@ func TestEngineEnvironmentIsolatesQueueIdentity(t *testing.T) {
 	}
 }
 
+func TestEngineEnvironmentKeepsConfiguredWorkspace(t *testing.T) {
+	for _, selected := range []string{"", "11111111-1111-4111-8111-111111111111"} {
+		overrides := map[string]string{"CONFIG_PATH": "/private/engine-config.json"}
+		if selected != "" {
+			overrides["TEAM_ID"] = selected
+		}
+		env := engineEnvironment([]string{"TEAM_ID=22222222-2222-4222-8222-222222222222", "PATH=/bin"}, overrides)
+		var workspace string
+		for _, entry := range env {
+			if strings.HasPrefix(entry, "TEAM_ID=") {
+				workspace = strings.TrimPrefix(entry, "TEAM_ID=")
+			}
+		}
+		if workspace != selected {
+			t.Fatalf("workspace %q, want configured %q", workspace, selected)
+		}
+	}
+}
+
 func TestStartupWithoutCredentialsCannotLaunch(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
 	err := StartEngine(context.Background(), dir, config.Default())

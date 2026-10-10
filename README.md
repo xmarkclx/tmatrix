@@ -49,3 +49,9 @@ tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
 
 See [security warnings](docs/security-alerts.md) for the executing agent's advisory
 action, private runtime integration, Tzu Do mail endpoint and delivery limits.
+
+### Team workers
+
+Set `TEAM_ID` to a Team UUID (or add `"team_id": "<Team UUID>"` in the engine configuration) to select one Team. For the standalone TMatrix daemon, set `team_id` in its private `config.json`; the Go launcher forwards it to the engine. A Team Leader must grant the API key access, and its owner must remain an active member. Polls, ticket history, progress, results and cancellation acknowledgments all send the same Team selection; the control WebSocket does too. Omit `TEAM_ID` for Personal work. A granted key does not select a Team automatically.
+
+Access revocation prevents later reads and writes, including results from a worker already running. Granting access again does not revive a prior claim.

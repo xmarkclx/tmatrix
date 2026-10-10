@@ -294,6 +294,7 @@ export class ApiClient implements TicketApi {
           method: options.method,
           headers: {
             ...IDENTITY_CONTRACT_HEADERS,
+            ...(this.config.team_id ? { "x-tzudo-workspace": `team:${this.config.team_id}` } : {}),
             authorization: `Bearer ${this.config.api_key}`,
             accept: "application/json",
             "content-type": "application/json",

@@ -158,6 +158,7 @@ export class ControlClient {
     try {
       socket = this.createSocket(url, {
         ...IDENTITY_CONTRACT_HEADERS,
+        ...(this.config.team_id ? { "x-tzudo-workspace": `team:${this.config.team_id}` } : {}),
         authorization: `Bearer ${this.config.api_key}`,
         "user-agent": "aiworker/0.1.0",
         "x-aiworker-instance": this.config.instance_id,
