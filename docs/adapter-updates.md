@@ -71,10 +71,9 @@ its candidate and preserve existing execution before activation.
 The optional executing-worker warning action is independent of update support.
 The engine supplies a category-only `RuntimeThreadOptions.reportSecurityWarning`
 callback. An adapter may expose the callback as a model action without receiving
-queue credentials. Only after registering the action, it may import
-`SECURITY_WARNING_INSTRUCTIONS` from `src/security-warning.ts` and install it
-through its provider's trusted instruction mechanism. The engine passes no
-warning instruction text to adapters. Existing adapters that ignore the callback
+queue credentials. The bundled Codex adapter adds no automatic security prompt
+to fresh or resumed turns. The engine passes no warning instruction text to
+adapters. Existing adapters that ignore the callback
 continue working without automatic availability alerts.
 See [security warnings](security-alerts.md) for the advisory behavior and receipts.
 
