@@ -27,7 +27,6 @@ src/adapters/codex/
   factory.ts         Codex runtime factory helper
   prepare-input.ts   Codex input preparation
   probe.ts           Candidate execution, initialization and model checks
-  review.ts          Isolated prompt review using existing provider authentication
   release.ts         Stable release discovery, download and installation
   update-manager.ts  Scheduling, activation, retention and rollback
 ```
@@ -47,7 +46,6 @@ configured absolute module path.
 | `RuntimeAdapter.setup(context)` | Perform local initialization and return an `AdapterSetup`. Clean up resources if setup throws. Avoid network checks that delay worker intake. |
 | `AdapterSetupContext` | Sanitized child environment, logger and an `updateDirectory` isolated by adapter and engine instance. |
 | `AdapterSetup.create(context, profile)` | Create a fresh runtime for each worker. Select and pin that worker's executable before it can start. |
-| `RuntimeAdapter.review(context, request)` / `AdapterSetup.review` | Optional fresh, tool-free structured review using existing provider authentication, the worker's model and service tier, and low reasoning effort. Setup may bind it to the installation manager. Honor cancellation and confirm teardown before settling. |
 | `AdapterSetup.updates` | Optional lifecycle and control capability for the runtime updater. Setup may return a creator without an updater. |
 | `AdapterUpdates.start()` | Start background checks and the provider's schedule. |
 | `AdapterUpdates.snapshot()` | Return compact status, versions, check times and a safe error message. Include `can_rollback: true` only while rollback is available. |
@@ -70,12 +68,15 @@ update operations, stopping timers, and cleaning up subprocesses. The shared
 service cannot make an unsafe provider installer safe: each adapter must verify
 its candidate and preserve existing execution before activation.
 
-The optional review capability is independent of update support. The engine binds
-the prepared review method when present, otherwise the adapter default, with a
-fresh environment/profile copy per request. It never obtains a review by reusing
-a full-access worker runtime. Adapters without review support remain compatible
-and report screening as unavailable. See [security alerts](security-alerts.md)
-for isolation requirements and limits.
+The optional executing-worker warning action is independent of update support.
+The engine supplies a category-only `RuntimeThreadOptions.reportSecurityWarning`
+callback. An adapter may expose the callback as a model action without receiving
+queue credentials. Only after registering the action, it may import
+`SECURITY_WARNING_INSTRUCTIONS` from `src/security-warning.ts` and install it
+through its provider's trusted instruction mechanism. The engine passes no
+warning instruction text to adapters. Existing adapters that ignore the callback
+continue working without automatic availability alerts.
+See [security warnings](security-alerts.md) for the advisory behavior and receipts.
 
 ## Example adapter
 

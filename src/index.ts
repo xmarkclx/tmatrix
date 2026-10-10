@@ -1,4 +1,3 @@
-import { createPromptScreen } from "./security-screening.js";
 import { startLocalControlServer, type LocalControlServer } from "./local-control-server.js";
 import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
@@ -39,7 +38,7 @@ async function main(): Promise<void> {
 
   const api = new ApiClient({ config, logger, metrics });
   const codexEnvironment = sanitizedCodexEnvironment(process.env);
-  const { runtimeFactory, updates: adapterUpdates, review } = await setupAdapter(adapter, {
+  const { runtimeFactory, updates: adapterUpdates } = await setupAdapter(adapter, {
     environment: codexEnvironment,
     logger,
     updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.poll_origin, config.instance_id)
@@ -56,11 +55,8 @@ async function main(): Promise<void> {
     runtimeHome: adapter.id === "codex" ? (codexEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex")) : homedir(),
     referenceKey: config.api_key
   });
-  const screenPrompt = createPromptScreen({
-    ...(review ? { review } : {}),
-    alert: (alert, signal) => api.alertUserEmergency(alert, signal), logger,
-  });
-  const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, conversationStore, screenPrompt });
+  const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, conversationStore,
+    alertSecurityWarning: (alert, signal) => api.alertUserEmergency(alert, signal) });
   let supervisor!: Supervisor;
   const control = new ControlClient({
     config,

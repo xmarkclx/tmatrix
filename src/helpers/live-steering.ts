@@ -69,7 +69,7 @@ export class LiveSteering {
         await this.options.observe({ kind: "steering.runtime_received", text: "Runtime accepted the local message in the active turn. Waiting for a visible response.", steering_id: local.id });
       } catch (cause) {
         const text = cause instanceof NotSentError
-          ? "Message was not sent because screening or input preparation failed."
+          ? "Message was not sent because input preparation failed."
           : "Could not confirm message delivery. It will not be resent automatically because the runtime may have received it.";
         await this.options.observe({ kind: "steering.failed", text, steering_id: local.id });
       }

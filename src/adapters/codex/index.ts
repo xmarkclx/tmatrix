@@ -1,7 +1,6 @@
 import { AppServerCodex, resolveBundledCodexInstallation } from "./app-server.js";
 import { CodexUpdateManager, type CodexExecutableLease } from "./update-manager.js";
 import type { AdapterContext, RuntimeAdapter, RuntimeCreator } from "../../runtime-adapter.js";
-import { reviewCodexPrompt } from "./review.js";
 
 function createCodex(context: AdapterContext, lease?: CodexExecutableLease): ReturnType<RuntimeCreator> {
   try {
@@ -31,7 +30,6 @@ export default {
   apiVersion: 1,
   id: "codex",
   create: (context) => createCodex(context),
-  review: (context, request) => reviewCodexPrompt({ context, request }),
   async setup(context) {
     const updates = new CodexUpdateManager({
       directory: context.updateDirectory,
@@ -42,8 +40,7 @@ export default {
       await updates.initialize();
       return {
         updates,
-        create: (workerContext) => createCodex(workerContext, updates.acquire()),
-        review: (workerContext, request) => reviewCodexPrompt({ context: workerContext, request, lease: updates.acquire() })
+        create: (workerContext) => createCodex(workerContext, updates.acquire())
       };
     } catch (error) {
       await updates.close();

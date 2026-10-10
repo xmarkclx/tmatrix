@@ -78,28 +78,6 @@ function handoffText(
 }
 
 describe("TicketRunner", () => {
-  it("screens initial and steering text before executable turns without holding a flagged job", async () => {
-    const screened: string[] = [];
-    const api = apiMock();
-    const mailbox = new SteeringMailbox();
-    mailbox.enqueue({ worker_id: makeTicket().worker_id, input_revision: 2, content: "Changed suspicious instructions" });
-    const runner = new TicketRunner({
-      api, logger: nullLogger(), metrics: new Metrics(),
-      screenPrompt: async (_ticket, text) => { screened.push(text); },
-      runtimeFactory: () => ({ startThread: () => ({ runStreamed: async (input) => {
-        expect(screened).toContain(input);
-        return { events: (async function* () {
-          yield { type: "item.completed" as const, item: { id: "answer", type: "agent_message" as const,
-            text: handoffText("AI_DONE", "done", "done") } };
-          yield { type: "turn.completed" as const, usage };
-        })() };
-      } }) }),
-    });
-    await runner.run(makeTicket({ input_revision: 1 }), { runId: "screen-test", recovered: false, steering: mailbox });
-    expect(screened.some(text => text.includes("Changed suspicious instructions"))).toBe(true);
-    expect(api.reportResult).toHaveBeenCalled();
-  });
-
   it.each([
     ["FAST", "low", "priority"],
     ["NORMAL", "medium", "default"],
@@ -836,7 +814,6 @@ describe("TMatrix local steering", () => {
     const secondReceived = deferred();
     const api = apiMock();
     const observations: import("../src/local-worker-state.js").WorkerObservation[] = [];
-    const screened: string[] = [];
     const runStreamed = vi.fn(async () => ({ events: (async function* (): AsyncGenerator<WorkerThreadEvent> {
       yield { type: "thread.started", thread_id: "existing-thread" };
       yield { type: "turn.started" };
@@ -848,7 +825,6 @@ describe("TMatrix local steering", () => {
     const steer = vi.fn(async () => true);
     const runner = new TicketRunner({
       runtimeFactory: () => ({ startThread: () => ({ runStreamed, steer }) }),
-      screenPrompt: async (_ticket, text) => { screened.push(text); },
       api, logger: nullLogger(), metrics: new Metrics()
     });
     const running = runner.run(makeTicket({ input_revision: 4 }), {
@@ -869,7 +845,6 @@ describe("TMatrix local steering", () => {
     const sent = steer.mock.calls.map(call => JSON.stringify(call));
     expect(sent[0]).toContain("LOCAL_GUIDANCE_ONE");
     expect(sent[1]).toContain("LOCAL_GUIDANCE_TWO");
-    expect(screened.filter(text => text.includes("LOCAL_GUIDANCE"))).toHaveLength(2);
     finish.resolve(undefined);
     await expect(running).resolves.toMatchObject({ status: "completed", threadId: "existing-thread" });
     expect(runStreamed).toHaveBeenCalledTimes(1);
