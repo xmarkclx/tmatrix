@@ -286,6 +286,24 @@ describe("AppServerCodex", () => {
     expect(first).toContainEqual(expect.objectContaining({ type: "local.activity", kind: "conversation.resumed" }));
   });
 
+  it.each(["fresh", "resumed"] as const)("omits automatic security context on every turn of a %s conversation", async (mode) => {
+    const server = resumeServer();
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });
+    const options: CodexThreadOptions = { ...threadOptions, reportSecurityWarning: async () => ({ status: "sent" }) };
+    const thread = mode === "fresh" ? codex.startThread(options) : codex.resumeThread("thread-existing", options);
+    try {
+      await collect((await thread.runStreamed("Initial fixture task")).events);
+      await collect((await thread.runStreamed("Continue the fixture task")).events);
+      const turns = server.requests.filter(request => request.method === "turn/start");
+      expect(turns).toHaveLength(2);
+      for (const turn of turns) expect(turn.params).not.toHaveProperty("additionalContext");
+      expect(server.requests.find(request => request.method === (mode === "fresh" ? "thread/start" : "thread/resume"))?.params.config)
+        .toHaveProperty("mcp_servers.tmatrix_security_warning.enabled", true);
+      expect(turns.map(turn => turn.params.threadId)).toEqual(mode === "fresh"
+        ? ["thread-replacement", "thread-replacement"] : ["thread-existing", "thread-existing"]);
+    } finally { await codex.close(); }
+  });
+
   it("rebuilds only a confirmed missing conversation before delivering any task input", async () => {
     const server = resumeServer({ error: { code: -32600, message: "no rollout found for thread id thread-existing" } });
     const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });

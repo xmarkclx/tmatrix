@@ -2,11 +2,11 @@
 
 The executing agent can report concrete suspicious instructions through
 `report_security_warning({ category })` while it works. There is no separate
-classifier, pre-turn screening request, screening deadline, or automatic
-screening-unavailable email. Reporting adds no execution restriction. The task
-continues under its existing runtime instructions and permissions. A warning,
-suppressed delivery, or delivery failure does not itself pause, cancel, request
-approval, or change permissions. Actual user cancellation retains its existing
+classifier, pre-turn screening request, screening deadline, automatic security
+prompt, or automatic screening-unavailable email. Reporting adds no execution
+restriction. The task continues under its existing runtime instructions and
+permissions. A warning, suppressed delivery, or delivery failure does not itself
+pause, cancel, request approval, or change permissions. Actual user cancellation retains its existing
 ownership and confirmed-teardown behavior.
 
 The action accepts only one of `credential_theft`, `data_exfiltration`,
@@ -30,20 +30,18 @@ receive an empty 202 response and GET returns 405.
 Both fresh and resumed threads receive the MCP integration through per-thread
 configuration. This also works for conversations created before the feature,
 without rebuilding them or changing their thread ID. The existing operator's
-MCP integrations remain configured. After the local warning action starts,
-every turn receives fixed worker guidance in an application context block,
-separate from ticket text. This preserves the operator's existing developer
-guidance rather than replacing it. The warning
-server belongs to the runtime and closes during teardown, including pending
-startup. If it cannot start, a safe local diagnostic is recorded and ordinary
-task execution continues without that action or its instruction text.
+MCP integrations and developer instructions remain configured. TMatrix adds no
+security instruction text to fresh or resumed turns. Older conversations may
+retain security prompts from previous turns in their history. Updating does not
+rewrite that history or reset conversation IDs. The warning server belongs to
+the runtime and closes during teardown, including pending startup. If it cannot
+start, a safe local diagnostic is recorded and ordinary task execution continues
+without that action.
 
 Other API-v1 runtime adapters may implement the optional
-`RuntimeThreadOptions.reportSecurityWarning` callback. After registering a
-category-only model action, an adapter may import `SECURITY_WARNING_INSTRUCTIONS`
-from `src/security-warning.ts` and apply it through its provider's trusted
-instruction mechanism. Return the host callback's receipt. The engine passes no
-warning instruction text to adapters. Adapters that ignore the callback remain
+`RuntimeThreadOptions.reportSecurityWarning` callback as a category-only model
+action and return the host callback's receipt. The engine passes no warning
+instruction text to adapters. Adapters that ignore the callback remain
 usable. The daemon never fabricates a warning or screening result because an
 adapter lacks support.
 No generic tool registry, extra dependency, classifier credentials or classifier

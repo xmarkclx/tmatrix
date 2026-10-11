@@ -57,7 +57,7 @@ async function completeTurn(thread: ThreadLike, input: string): Promise<string> 
 }
 
 describe("executing Codex worker security warnings", () => {
-  it("reports on fresh and legacy resumed threads, preserves operator integrations, and completes after delivery failure", async () => {
+  it("reports without an automatic security prompt, preserves operator integrations, and completes after delivery failure", async () => {
     const home = await mkdtemp(join(tmpdir(), "tmatrix-warning-integration-"));
     const runtimes: AppServerCodex[] = [];
     const requests: ObservedRequest[] = [];
@@ -178,7 +178,8 @@ args = [${JSON.stringify(operatorPath)}]
           input_digest: "1b2a8619474a4d136cdf6777c851c298a63019930cf3f66e29223f4205630ca3", category: "credential_theft" }, expect.any(AbortSignal));
         const observed = requests.filter(item => item.scenario === current);
         expect(observed).toHaveLength(2);
-        expect(observed.every(item => item.warningTool && item.operatorTool && item.warningPolicy && item.operatorGuidance)).toBe(true);
+        expect(observed.every(item => item.warningTool && item.operatorTool && item.operatorGuidance)).toBe(true);
+        expect(observed.map(item => item.warningPolicy)).toEqual([false, false]);
         expect(observed[1]?.operatorResult).toBe(true);
         expect(observed[1]?.receipt).toBe(current === "unconfirmed" ? "unconfirmed" : "sent");
       }

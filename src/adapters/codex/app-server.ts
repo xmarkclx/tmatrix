@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import type { Logger } from "pino";
 import type { Input } from "../../runtime-adapter.js";
 import { startSecurityWarningMcp, type SecurityWarningMcpServer } from "../../security-warning-mcp.js";
-import { SECURITY_WARNING_INSTRUCTIONS, type ReportSecurityWarning } from "../../security-warning.js";
+import type { ReportSecurityWarning } from "../../security-warning.js";
 import type {
   RuntimeLike,
   RuntimeThreadOptions,
@@ -196,7 +196,6 @@ class AppServerThread implements ThreadLike {
   private readonly options: RuntimeThreadOptions;
   private threadId?: string;
   private emittedThreadStarted = false;
-  private warningAvailable = false;
   private replacedMissingThread = false;
   private activeTurn: { transport: AppServerTransport; threadId: string; turnId: string } | undefined;
 
@@ -305,9 +304,6 @@ class AppServerThread implements ThreadLike {
         serviceTier: this.options.serviceTier,
         effort: this.options.modelReasoningEffort,
         summary: "auto",
-        ...(this.warningAvailable ? {
-          additionalContext: { tmatrix_security_warning: { kind: "application", value: SECURITY_WARNING_INSTRUCTIONS } }
-        } : {}),
         ...(turnOptions.outputSchema !== undefined
           ? { outputSchema: turnOptions.outputSchema }
           : {})
@@ -390,7 +386,6 @@ class AppServerThread implements ThreadLike {
     if (this.threadId) return this.threadId;
     const warning = this.options.reportSecurityWarning
       ? await this.codex.securityWarningServer(this.options.reportSecurityWarning) : undefined;
-    this.warningAvailable = warning !== undefined;
     const configuration = {
       model: this.options.model,
       serviceTier: this.options.serviceTier,
