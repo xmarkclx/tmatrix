@@ -5,6 +5,20 @@ import { nullLogger } from "../src/logger.js";
 import { makeCancellation, makeConfig, makeTicket } from "./helpers.js";
 
 describe("ApiClient", () => {
+  it.each([undefined, "01a102a4-c231-7dd2-b520-f3526b5bcecc"])("propagates the selected workspace through poll, taken, history, progress, result and cancellation: %s", async (teamId) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+    const client = new ApiClient({ config: makeConfig({ team_id: teamId }), logger: nullLogger(), metrics: new Metrics(), fetch });
+    const ticket=makeTicket();
+    await client.poll({ poll_id: "poll-scope", instance_id: "test-instance", available_slots: 1 });
+    await client.markTaken(ticket);
+    await client.getHistory(ticket);
+    await client.reportProgress(ticket, { kind: "worker-started", input_revision: 1, sequence: 1, occurred_at: "2026-10-09T00:00:00.000Z", summary: {} });
+    await client.reportResult(ticket, { status: "completed", input_revision: 1, outcome: "AI_DONE", context_summary: "context", user_message: "Ready", started_at: "2026-09-29T10:00:00.000Z", completed_at: "2026-09-29T10:01:00.000Z", duration_ms: 60_000 });
+    await client.acknowledgeCancellation(makeCancellation());
+    expect(fetch).toHaveBeenCalledTimes(6);
+    for (const [,options] of fetch.mock.calls) expect(new Headers(options?.headers).get("x-tzudo-workspace")).toBe(teamId ? `team:${teamId}` : null);
+  });
+
   it("sends only the bound warning payload to the configured origin with host authentication", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('{"status":"sent"}'));
     const client = new ApiClient({ config: makeConfig(), logger: nullLogger(), metrics: new Metrics(), fetch });

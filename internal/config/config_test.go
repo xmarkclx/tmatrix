@@ -15,6 +15,7 @@ func TestSettingsRoundTripKeepsCredentialSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.MaxWorkers = 7
+	c.TeamID = "01a102a4-c231-7dd2-b520-f3526b5bcecc"
 	if err := Save(dir, c); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +59,7 @@ func TestRejectUnsafeConnectionAndSettings(t *testing.T) {
 	}
 	for _, mutate := range []func(*Config){
 		func(c *Config) { c.MaxWorkers = 0 },
+		func(c *Config) { c.TeamID = "not-a-team" },
 		func(c *Config) { c.MaxWorkers = 101 },
 		func(c *Config) { c.PollIntervalMS = 249 },
 		func(c *Config) { c.PollIntervalMS = 300001 },

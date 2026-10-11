@@ -25,6 +25,7 @@ const (
 )
 
 type Config struct {
+	TeamID         string `json:"team_id,omitempty"`
 	AdapterModule  string `json:"adapter_module,omitempty"`
 	ResumeIntake   bool   `json:"resume_intake,omitempty"`
 	Version        int    `json:"version"`
@@ -99,6 +100,9 @@ func Validate(c Config) error {
 	}
 	if decoded, err := hex.DecodeString(strings.ReplaceAll(c.InstanceID, "-", "")); err != nil || len(decoded) != 16 {
 		return errors.New("invalid instance ID")
+	}
+	if c.TeamID != "" && !regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`).MatchString(c.TeamID) {
+		return errors.New("team_id must be a Team UUID")
 	}
 	if len(c.EngineDir) > 4096 || strings.ContainsRune(c.EngineDir, '\x00') {
 		return errors.New("invalid engine directory")
