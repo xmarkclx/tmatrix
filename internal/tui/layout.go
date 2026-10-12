@@ -34,9 +34,9 @@ func (m Model) headerHeight() int {
 		}
 	}
 	if m.compact() {
-		return 6 + cardGrowth
+		return 6 + cardGrowth + len(m.creditRows())
 	}
-	return 9 + cardGrowth
+	return 9 + cardGrowth + len(m.creditRows())
 }
 func (m Model) bodyHeight() int { return max(1, m.height-m.headerHeight()-2) }
 func (m Model) activityHeight() int {
@@ -106,6 +106,7 @@ func (m Model) renderLayout() (string, []hitTarget) {
 		frameLine(" >_ TMATRIX: "+badge, m.width, badgeStyle),
 		frameLine(mode+strings.Repeat(" ", max(1, m.width-lipgloss.Width(mode)-lipgloss.Width(capacity)-1))+capacity+" ", m.width, mutedStyle),
 	}}
+	b.lines = append(b.lines, m.creditRows()...)
 	b.append(m.navLayout())
 	if m.screen == workersScreen {
 		b.append(m.workerCards())

@@ -13,12 +13,14 @@ import { deferred, makeConfig, makeTicket } from "./helpers.js";
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
 
-async function connect(supervisor: Supervisor, adapterUpdates?: import("../src/runtime-adapter.js").AdapterUpdateControl) {
+async function connect(supervisor: Supervisor, adapterUpdates?: import("../src/runtime-adapter.js").AdapterUpdateControl,
+  adapterCredits?: import("../src/runtime-adapter.js").AdapterCreditControl) {
   const dir = await mkdtemp(join(tmpdir(), "tmatrix-control-test-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "control.json");
   const onShutdown = vi.fn();
-  const bridge = await startLocalControlServer({ supervisor, file, onShutdown, ...(adapterUpdates ? { adapterUpdates } : {}) });
+  const bridge = await startLocalControlServer({ supervisor, file, onShutdown,
+    ...(adapterUpdates ? { adapterUpdates } : {}), ...(adapterCredits ? { adapterCredits } : {}) });
   cleanup.push(() => bridge.close());
   const discovery = JSON.parse(await readFile(file, "utf8"));
   return { file, bridge, onShutdown, discovery, request: (path: string, body?: unknown) => fetch(discovery.url + path, {
@@ -38,6 +40,32 @@ function pausedSupervisor() {
 }
 
 describe("local console bridge", () => {
+  it("serves cached quota and accepts only authenticated empty refresh requests without awaiting the provider", async () => {
+    const { supervisor } = pausedSupervisor();
+    const pending = deferred<void>();
+    let refreshed = 0;
+    const credits = {
+      snapshot: () => ({ adapter_id: "echo", display_name: "Echo", status: "ready" as const, refreshing: false,
+        last_successful_at: "2026-10-12T00:00:00Z", windows: [{ label: "5h", remaining_percent: 0 }] }),
+      refresh: () => { refreshed++; return pending.promise; }
+    };
+    const client = await connect(supervisor, undefined, credits);
+    expect(await (await client.request("/v1/snapshot")).json()).toMatchObject({ adapter_credits: credits.snapshot(), intake_paused: true });
+    expect(refreshed).toBe(0);
+    expect((await fetch(client.discovery.url + "/v1/adapter/credits/refresh", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}"
+    })).status).toBe(401);
+    expect((await client.request("/v1/adapter/credits/refresh", { extra: true })).status).toBe(400);
+    const response = await client.request("/v1/adapter/credits/refresh", {});
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(refreshed).toBe(1);
+    expect(supervisor.localSnapshot().intake_paused).toBe(true);
+    pending.resolve();
+    const legacy = await connect(supervisor);
+    expect((await legacy.request("/v1/adapter/credits/refresh", {})).status).toBe(409);
+    expect(await (await legacy.request("/v1/snapshot")).json()).toMatchObject({ version: 1, workers: [] });
+  });
   it("defers an idle-only upgrade without pausing or stopping active workers", async () => {
     const pending = deferred<RunOutcome>();
     const ticket = makeTicket();
