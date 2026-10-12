@@ -99,6 +99,14 @@ func (s *Service) RollbackAdapterUpdate(ctx context.Context) error {
 	return client.RollbackAdapterUpdate(ctx)
 }
 
+func (s *Service) RefreshAdapterCredits(ctx context.Context) error {
+	client, err := s.client()
+	if err != nil {
+		return errors.New("engine is disconnected; credit refresh could not be requested")
+	}
+	return client.RefreshAdapterCredits(ctx)
+}
+
 func (s *Service) Configure(ctx context.Context, settings backend.Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

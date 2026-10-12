@@ -111,6 +111,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = workersScreen
 		}
 		return m, nil
+	case creditRefreshResult:
+		m.creditRefreshPending = false
+		if msg.err != nil {
+			m.failure = single(msg.err.Error())
+			return m, nil
+		}
+		m.failure = ""
+		m.notice = "Credit refresh requested."
+		return m, nil
 	case tea.MouseMsg:
 		if m.mouseDisabled || m.matrix.active {
 			return m, nil
@@ -146,6 +155,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	name := key.String()
+	if name == "ctrl+r" {
+		return m.refreshCredits()
+	}
 	if m.matrix.active {
 		switch name {
 		case "esc", "m":

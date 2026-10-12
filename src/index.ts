@@ -38,7 +38,7 @@ async function main(): Promise<void> {
 
   const api = new ApiClient({ config, logger, metrics });
   const codexEnvironment = sanitizedCodexEnvironment(process.env);
-  const { runtimeFactory, updates: adapterUpdates } = await setupAdapter(adapter, {
+  const { runtimeFactory, updates: adapterUpdates, credits: adapterCredits } = await setupAdapter(adapter, {
     environment: codexEnvironment,
     logger,
     updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.poll_origin, config.instance_id)
@@ -91,8 +91,10 @@ async function main(): Promise<void> {
       clearInterval(metricsTimer);
       // Abort an update immediately, independently of the worker drain.
       const updateClosed = adapterUpdates?.close();
+      const creditsClosed = adapterCredits?.close();
       await supervisor.shutdown(graceMs);
       await updateClosed;
+      await creditsClosed;
       await localControl?.close();
       metrics.log(logger, "shutdown");
       await close();
@@ -104,6 +106,7 @@ async function main(): Promise<void> {
     localControl = await startLocalControlServer({
       supervisor,
       ...(adapterUpdates ? { adapterUpdates } : {}),
+      ...(adapterCredits ? { adapterCredits } : {}),
       file: process.env.TMATRIX_CONTROL_FILE,
       port: Number(process.env.TMATRIX_CONTROL_PORT ?? "0"),
       onShutdown: () => { void shutdown("tmatrix"); }
@@ -138,6 +141,7 @@ async function main(): Promise<void> {
   }, "AI worker daemon started");
 
   adapterUpdates?.start();
+  adapterCredits?.start();
 
   if (process.argv.includes("--once")) {
     await supervisor.runOnce();

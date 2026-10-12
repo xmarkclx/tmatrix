@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AdapterUpdateService } from "./adapter-updates.js";
+import { AdapterCreditService } from "./adapter-credits.js";
 import type { AdapterContext, AdapterSetup, AdapterSetupContext, RuntimeAdapter, RuntimeFactory } from "./runtime-adapter.js";
 
 export const adapterIdPattern = /^[a-z][a-z0-9-]{0,63}$/;
@@ -35,6 +36,7 @@ export async function loadAdapter(id: string, modulePath?: string): Promise<Runt
 export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetupContext): Promise<{
   runtimeFactory: RuntimeFactory;
   updates?: AdapterUpdateService;
+  credits?: AdapterCreditService;
 }> {
   const workerContext = { environment: context.environment, logger: context.logger };
   let prepared: AdapterSetup | undefined;
@@ -43,10 +45,14 @@ export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetu
       prepared = await adapter.setup({ ...context, environment: { ...context.environment } });
       if (!prepared || typeof prepared.create !== "function") throw new Error("Invalid adapter setup");
       const updates = prepared.updates ? new AdapterUpdateService(adapter.id, prepared.updates, context.logger) : undefined;
+      let credits: AdapterCreditService | undefined;
+      try { if (prepared.credits) credits = new AdapterCreditService(adapter.id, prepared.credits); }
+      catch { context.logger.warn({ event: "adapter.credits_unavailable", adapter_id: adapter.id }, "Adapter credit reporting unavailable"); }
       const initialized = { ...adapter, create: prepared.create.bind(prepared) };
       return {
         runtimeFactory: createRuntimeFactory(initialized, workerContext),
-        ...(updates ? { updates } : {})
+        ...(updates ? { updates } : {}),
+        ...(credits ? { credits } : {})
       };
     } catch {
       // Never expose arbitrary module errors; a failed optional updater must not

@@ -166,6 +166,20 @@ func (h *HTTP) RollbackAdapterUpdate(ctx context.Context) error {
 	return h.adapterUpdateAction(ctx, "/v1/adapter/rollback")
 }
 
+func (h *HTTP) RefreshAdapterCredits(ctx context.Context) error {
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	err := h.request(ctx, http.MethodPost, "/v1/adapter/credits/refresh", struct{}{}, &result)
+	if errors.Is(err, errActionNotFound) || errors.Is(err, errActionConflict) {
+		return errors.New("credit reporting is unavailable in this engine")
+	}
+	if err == nil && !result.OK {
+		return errors.New("engine did not acknowledge the credit refresh request")
+	}
+	return err
+}
+
 func (h *HTTP) adapterUpdateAction(ctx context.Context, path string) error {
 	var result struct {
 		OK bool `json:"ok"`

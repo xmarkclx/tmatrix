@@ -4,7 +4,7 @@ import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
-import type { AdapterUpdateControl } from "./runtime-adapter.js";
+import type { AdapterCreditControl, AdapterUpdateControl } from "./runtime-adapter.js";
 import type { Supervisor } from "./supervisor.js";
 
 const settingsSchema = z.object({
@@ -28,6 +28,7 @@ export async function startLocalControlServer(options: {
   port?: number;
   onShutdown: () => void;
   adapterUpdates?: AdapterUpdateControl;
+  adapterCredits?: AdapterCreditControl;
 }): Promise<LocalControlServer> {
   if (!isAbsolute(options.file)) throw new Error("TMATRIX_CONTROL_FILE must be an absolute path");
   const port = options.port ?? 0;
@@ -57,7 +58,7 @@ export async function startLocalControlServer(options: {
       return;
     }
     if (request.method === "GET" && request.url === "/v1/snapshot") {
-      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}) });
+      respond(response, 200, localSnapshot());
       return;
     }
     if (request.method !== "POST") {
@@ -71,6 +72,13 @@ export async function startLocalControlServer(options: {
     let body: unknown;
     try { body = await readBody(request); } catch {
       respond(response, 400, { error: "Expected a JSON object of at most 16 KiB" });
+      return;
+    }
+    if (request.url === "/v1/adapter/credits/refresh") {
+      if (!z.object({}).strict().safeParse(body).success) { respond(response, 400, { error: "Expected an empty object" }); return; }
+      if (!options.adapterCredits) { respond(response, 409, { error: "Credit reporting is unavailable for this engine" }); return; }
+      void options.adapterCredits.refresh().catch(() => undefined);
+      respond(response, 202, { ok: true });
       return;
     }
     if (request.url === "/v1/adapter/check-now" || request.url === "/v1/adapter/rollback") {
@@ -97,7 +105,7 @@ export async function startLocalControlServer(options: {
         ...(parsed.data.intake_paused !== undefined ? { intake_paused: parsed.data.intake_paused } : {}),
         ...(parsed.data.poll_interval_ms !== undefined ? { poll_interval_ms: parsed.data.poll_interval_ms } : {})
       });
-      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}) });
+      respond(response, 200, localSnapshot());
       return;
     }
     if (request.url === "/v1/shutdown") {
@@ -141,6 +149,12 @@ export async function startLocalControlServer(options: {
       respond(response, 409, { error: "Worker is no longer running" }); return;
     }
     respond(response, 202, { status: "stopping" });
+  }
+
+  function localSnapshot() {
+    return { ...options.supervisor.localSnapshot(),
+      ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}),
+      ...(options.adapterCredits ? { adapter_credits: options.adapterCredits.snapshot() } : {}) };
   }
 
   let actualPort = 0;
