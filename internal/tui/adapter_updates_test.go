@@ -146,7 +146,7 @@ func TestAdapterUpdateDetailsRemainReachableAtMinimumSize(t *testing.T) {
 	m.snapshot.AdapterUpdate.LatestVersion = "2.0.0"
 	m, _ = press(m, "o")
 	m, _ = serviceKey(m, "end")
-	if m.pageOffset == 0 || !strings.Contains(m.View(), "activating") {
+	if m.pageOffset == 0 || !strings.Contains(m.View(), "they had started.") {
 		t.Fatal("narrow screen lost lower update details")
 	}
 	if !strings.Contains(m.View(), "Check now") || !strings.Contains(m.View(), "Current: 2.0.0") {
@@ -187,7 +187,7 @@ func TestAdapterUpdateUsesProviderNameAndScheduling(t *testing.T) {
 			t.Fatal("update screen lost the adapter display name")
 		}
 		details := strings.Join(m.adapterUpdateDetails(), " ")
-		if !strings.Contains(details, "runtime adapter manages") || strings.Contains(details, "24 hours") || strings.Contains(details, "stable") {
+		if strings.Contains(details, "24 hours") || strings.Contains(details, "stable") {
 			t.Fatal("shared screen imposed a provider's release policy")
 		}
 	}

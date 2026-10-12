@@ -158,10 +158,7 @@ func (m Model) adapterUpdateDetails() []string {
 	}
 	add("Last check: " + lastCheck)
 	add("Next check: " + adapterUpdateTime(update.NextCheckAt))
-	add("The runtime adapter manages update checks, installation and verification. Active workers keep their original version.")
-	if update.CanRollback {
-		add("The runtime adapter verifies rollback before activating it for new workers.")
-	}
+	add("Active workers keep running on the version they had started.")
 	return lines
 }
 
