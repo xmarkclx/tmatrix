@@ -19,13 +19,13 @@ func (m Model) initialPromptCard(width int) string {
 		body = prompt.Text
 		var notes []string
 		if prompt.Truncated {
-			notes = append(notes, "Excerpt: initial prompt exceeds the local limit.")
+			notes = append(notes, "Display excerpt only. This preview limit does not truncate model input.")
 		}
 		if prompt.Redacted {
 			notes = append(notes, "Credential-like values redacted.")
 		}
 		if len(notes) > 0 {
-			body += "\n\n" + strings.Join(notes, " ")
+			body += "\n\n" + strings.Join(notes, "\n")
 		}
 	}
 	style := lipgloss.NewStyle().Width(width-2).Padding(0, 1).

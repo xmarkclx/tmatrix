@@ -21,7 +21,7 @@ func TestInitialPromptPreservesCapturedInputWithoutVersionLabels(t *testing.T) {
 	m.syncActivity()
 	m, _ = press(m, "home")
 	frame := ansi.Strip(m.viewport.View())
-	for _, wanted := range []string{"INITIAL PROMPT", "Prepared input · receipt shown in activity", "Original task instructions", "Excerpt:", "Credential-like values redacted.", "╔", "║"} {
+	for _, wanted := range []string{"INITIAL PROMPT", "Prepared input · receipt shown in activity", "Original task instructions", "Display excerpt only.", "does not truncate model input", "Credential-like values redacted.", "╔", "║"} {
 		if !strings.Contains(frame, wanted) {
 			t.Fatalf("missing prompt evidence %q: %s", wanted, frame)
 		}
