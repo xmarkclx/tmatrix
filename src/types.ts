@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { externalIdSchema } from "./identity-transport.js";
 
-export const executionModeSchema = z.enum(["FAST", "NORMAL", "HIGH"]);
+export const executionModeSchema = z.enum(["FAST", "NORMAL", "HIGH", "URGENT"]);
 export const modelSchema = z.string()
   .trim()
   .min(1)

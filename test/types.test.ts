@@ -66,10 +66,16 @@ describe("ticket execution profile", () => {
       instructions: "Resume from history.",
       endpoints: makeTicket().endpoints
     });
-    const completeOwned = ownedTicketSchema.parse(makeTicket());
+    const completeOwned = ownedTicketSchema.parse(makeTicket({
+      execution_mode: "URGENT",
+      model: "gpt-6-astra",
+      reasoning_effort: "max",
+      service_tier: "priority"
+    }));
 
     expect(isRecoverableOwnedTicket(bareOwned)).toBe(false);
     expect(isRecoverableOwnedTicket(completeOwned)).toBe(true);
+    expect(completeOwned.execution_mode).toBe("URGENT");
   });
 
   it("parses the exact AI comment anchor for new and recovered tickets", () => {
