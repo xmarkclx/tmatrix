@@ -39,6 +39,9 @@ describe("ApiClient", () => {
         input_revision: 1, summary: { history: restored }
       });
       expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).event.summary.history).toEqual(history);
+      for (const [, init] of fetch.mock.calls) {
+        expect(new Headers(init?.headers).get("x-tzudo-ai-execution-version")).toBe("2");
+      }
     }
   );
 
@@ -51,9 +54,10 @@ describe("ApiClient", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("polls with the instance identity and parses tickets", async () => {
+  it.each(["NORMAL", "URGENT"] as const)("polls with the instance identity and parses %s tickets", async (executionMode) => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({
       new_tickets: [makeTicket({
+        execution_mode: executionMode,
         task_id: 42,
         input_revision: 3,
         project_path: "/workspace/project",
@@ -85,6 +89,7 @@ describe("ApiClient", () => {
     });
 
     expect(response.new_tickets).toHaveLength(1);
+    expect(response.new_tickets[0]?.execution_mode).toBe(executionMode);
     expect(response.new_tickets[0]?.trigger_comment_id).toBeNull();
     expect(response.owned_in_progress).toHaveLength(1);
     expect(response.steering_events).toMatchObject([{
@@ -101,6 +106,7 @@ describe("ApiClient", () => {
     expect(init?.method).toBe("POST");
     expect((init?.headers as Record<string, string>).authorization).toBe("Bearer test-secret-key");
     expect((init?.headers as Record<string, string>)["x-tzudo-identity-version"]).toBe("3");
+    expect(new Headers(init?.headers).get("x-tzudo-ai-execution-version")).toBe("2");
     expect(JSON.parse(String(init?.body))).toEqual({
       poll_id: "57a2a78b-74cc-4b87-b9f5-012b3e1ac620",
       instance_id: "test-instance",
