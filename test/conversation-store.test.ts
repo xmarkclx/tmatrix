@@ -53,6 +53,46 @@ describe("ConversationStore", () => {
     expect(await store.resolve(reply, { comments: [{ id: "102", replyToCommentId: "102" }] })).toBeUndefined();
   });
 
+  it.each(["ticket", "history"])("isolates sibling work items when the mode comes from %s", async (source) => {
+    const { directory } = await setup();
+    const store = new ConversationStore({ directory, namespace, referenceKey: "fictional-reference-key" });
+    await store.remember(ticket, "parent-thread");
+    await store.bindResult(ticket, "parent-thread", { success: true, comment_id: "100" });
+    const summary = store.attachContext(ticket, "parent-thread", "Parent compact handoff");
+    const reply = makeTicket({
+      task_id: ticket.task_id, ticket_id: "reply", thread_anchor_comment_id: "100",
+      ...(source === "ticket" ? { conversation_mode: "work_item" } : {})
+    });
+    const history = {
+      conversation: store.reference("parent-thread"),
+      ...(source === "history" ? { conversation_mode: "work_item" } : {}),
+      inherited_context: { sourceCommentId: "100", content: summary },
+      trigger_comment: { replyToCommentId: "100" },
+      comments: [{ id: "100", isAI: true }]
+    };
+    expect(await store.resolve(reply, history)).toBeUndefined();
+    await store.remember(reply, "reply-thread");
+    await store.remember(reply, "replacement-thread", "reply-thread");
+    const reloaded = new ConversationStore({ directory, namespace, referenceKey: "fictional-reference-key" });
+    expect(await reloaded.resolve(reply, history)).toBe("replacement-thread");
+    expect(await reloaded.resolve({ ...reply, ticket_id: "sibling" }, history)).toBeUndefined();
+    expect(await reloaded.resolve({ ...ticket, conversation_mode: "work_item" }, history)).toBe("parent-thread");
+    expect(await reloaded.resolve({ ...reply, conversation_mode: "task" }, { ...history, conversation_mode: "task" })).toBe("parent-thread");
+  });
+
+  it("recovers isolated work only from authenticated same-ticket handoffs", async () => {
+    const { directory } = await setup();
+    const store = new ConversationStore({ directory, namespace, referenceKey: "fictional-reference-key" });
+    const isolated = makeTicket({ ...ticket, conversation_mode: "work_item" });
+    const summary = store.attachContext(isolated, "own-thread", "Own compact handoff");
+    const history = { inherited_context: { sourceCommentId: "100", content: summary } };
+    expect(await store.resolve({ ...isolated, ticket_id: "sibling", thread_anchor_comment_id: "100" }, history)).toBeUndefined();
+    expect(await store.resolve(isolated, { inherited_context: { sourceCommentId: "100", content: summary.replace("v1:", "v1:A") } })).toBeUndefined();
+    expect(await store.resolve(isolated, history)).toBe("own-thread");
+    expect(await store.resolve(isolated, {})).toBe("own-thread");
+    await expect(store.resolve(isolated, { conversation_mode: "unexpected" })).rejects.toMatchObject({ code: "CONVERSATION_STATE_INVALID" });
+  });
+
   it("prefers the server task route and rejects foreign stores or runtimes", async () => {
     const { store, directory } = await setup();
     await store.remember(ticket, "local-old");

@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { LEASE_ENV, legacyLockPredatesBoot, processStart, stopLeaseProcesses } from "./conversation-recovery.js";
 import { WorkerError } from "./errors.js";
-import { conversationReferenceSchema, type Ticket, type ConversationReference } from "./types.js";
+import { conversationModeSchema, conversationReferenceSchema, type Ticket, type ConversationReference } from "./types.js";
 
 export type BootIdentity = { machine: string; boot: string };
 
@@ -76,11 +76,15 @@ export class ConversationStore {
     return `${bounded}\n\n${marker}`;
   }
 
-  /** Prefer the explicit task route, then the local task route, then legacy reply links. */
+  /** Resolve this ticket alone when requested, otherwise retain task-wide continuity. */
   async resolve(ticket: Ticket, history: unknown): Promise<string | undefined> {
     const record = await this.read(ticket);
     const context = this.object(history);
-    const serverRoute = context && Object.hasOwn(context, "conversation") ? context.conversation : ticket.conversation;
+    const mode = conversationModeSchema.safeParse(context?.conversation_mode ?? ticket.conversation_mode ?? "task");
+    if (!mode.success) throw this.invalidState();
+    const workItemOnly = mode.data === "work_item";
+    const serverRoute = workItemOnly ? null
+      : context && Object.hasOwn(context, "conversation") ? context.conversation : ticket.conversation;
     const explicit = conversationReferenceSchema.safeParse(serverRoute);
     // An explicit foreign route must not fall back to an obsolete local branch.
     if (explicit.success && (explicit.data.runtime !== this.runtime || explicit.data.scope !== this.scope)) return undefined;
@@ -97,7 +101,8 @@ export class ConversationStore {
         found = reference.thread;
         await this.remember(ticket, found);
       }
-      let anchor = this.id(ticket.thread_anchor_comment_id) ?? this.id(context?.thread_anchor_comment_id) ?? this.id(trigger?.replyToCommentId);
+      let anchor = workItemOnly ? undefined
+        : this.id(ticket.thread_anchor_comment_id) ?? this.id(context?.thread_anchor_comment_id) ?? this.id(trigger?.replyToCommentId);
       const comments = new Map<string, Record<string, unknown>>();
       if (Array.isArray(context?.comments)) {
         for (const entry of context.comments) {
