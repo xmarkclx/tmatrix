@@ -87,17 +87,18 @@ server.listen(0,'127.0.0.1',() => fs.writeFileSync(bridge, JSON.stringify({versi
 		defer cancel()
 		_ = client.Shutdown(ctx)
 	}()
+	logPath := filepath.Join(dir, "engine-launch.log")
 	await := func(test func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(10 * time.Second)
 		for !test() {
 			if time.Now().After(deadline) {
-				t.Fatal("fixture did not reach expected state")
+				data, err := os.ReadFile(logPath)
+				t.Fatalf("fixture did not reach expected state; log tail %q, read error: %v", data[max(0, len(data)-1024):], err)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	logPath := filepath.Join(dir, "engine-launch.log")
 	await(func() bool { _, err := os.Stat(logPath + ".3"); return err == nil })
 	for _, suffix := range []string{"", ".1", ".2", ".3"} {
 		info, err := os.Stat(logPath + suffix)
@@ -112,10 +113,10 @@ server.listen(0,'127.0.0.1',() => fs.writeFileSync(bridge, JSON.stringify({versi
 		t.Fatal("shutdown did not drain before exit")
 	}
 	await(func() bool { _, err := os.Stat(config.DiscoveryPath(dir)); return os.IsNotExist(err) })
-	data, err := os.ReadFile(logPath)
-	if err != nil || !strings.HasSuffix(string(data), "DRAINED\n") {
-		t.Fatalf("drain output missing: %v", err)
-	}
+	await(func() bool {
+		data, err := os.ReadFile(logPath)
+		return err == nil && strings.HasSuffix(string(data), "DRAINED\n")
+	})
 	if err := os.WriteFile(filepath.Join(engine, "dist", "index.js"), []byte("// TMATRIX_CONTROL_FILE TMATRIX_INTAKE_PAUSED\nprocess.exit(42)"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +126,41 @@ server.listen(0,'127.0.0.1',() => fs.writeFileSync(bridge, JSON.stringify({versi
 	}
 	if _, err := os.Stat(filepath.Join(dir, "start.lock")); !os.IsNotExist(err) {
 		t.Fatal("failed daemon retained startup lock")
+	}
+
+	cfg.ResumeIntake = true
+	if err := config.Save(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	lostResumeResponse := `// TMATRIX_CONTROL_FILE TMATRIX_INTAKE_PAUSED
+const fs = require('node:fs');
+const http = require('node:http');
+const bridge = process.env.TMATRIX_CONTROL_FILE;
+let resumed = false;
+process.on('SIGTERM', () => {
+ setTimeout(() => process.stderr.write('DRAINED_AFTER_RESUME\n', () => {
+  fs.unlinkSync(bridge);
+  process.exit(0);
+ }), resumed ? 5500 : 0);
+});
+const server = http.createServer((req,res) => {
+ if (req.url === '/v1/settings') { resumed = true; req.socket.destroy(); return; }
+ res.setHeader('content-type', 'application/json');
+ res.end(JSON.stringify({version:1,max_workers:1,running_workers:0,intake_paused:!resumed,poller:{status:'paused'}}));
+});
+server.listen(0,'127.0.0.1',() => fs.writeFileSync(bridge, JSON.stringify({version:1,pid:process.pid,url:'http://127.0.0.1:'+server.address().port,token:'fixture-token-123456789'}),{mode:0o600}));`
+	if err := os.WriteFile(filepath.Join(engine, "dist", "index.js"), []byte(lostResumeResponse), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := command("engine", "start").CombinedOutput(); err == nil {
+		t.Fatalf("lost resume response unexpectedly succeeded: %s", output)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil || !strings.HasSuffix(string(data), "DRAINED_AFTER_RESUME\n") {
+		t.Fatalf("accepted work did not finish draining: %v, log tail %q", err, data[max(0, len(data)-1024):])
+	}
+	if _, err := os.Stat(filepath.Join(dir, "start.lock")); !os.IsNotExist(err) {
+		t.Fatal("failed resume retained startup lock")
 	}
 }
 
