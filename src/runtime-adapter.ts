@@ -117,6 +117,26 @@ export interface AdapterSetup {
   /** Bound to this engine instance, with a fresh context supplied for each worker. */
   create: RuntimeCreator;
   updates?: AdapterUpdates;
+  credits?: AdapterCredits;
+}
+export interface AdapterCreditWindow { label: string; remaining_percent: number }
+export interface AdapterCreditReading { windows: AdapterCreditWindow[] }
+export interface AdapterCredits {
+  displayName: string;
+  fetch(options: { signal: AbortSignal }): Promise<AdapterCreditReading | null>;
+}
+export type AdapterCreditStatus = {
+  adapter_id: string;
+  display_name: string;
+  refreshing: boolean;
+  checked_at?: string;
+} & (
+  | { status: "unavailable" }
+  | { status: "ready" | "stale"; last_successful_at: string; windows: AdapterCreditWindow[] }
+);
+export interface AdapterCreditControl {
+  snapshot(): AdapterCreditStatus;
+  refresh(): Promise<void>;
 }
 export interface RuntimeAdapter {
   apiVersion: 1;

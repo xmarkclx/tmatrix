@@ -46,33 +46,34 @@ type resultMsg struct {
 }
 
 type Model struct {
-	matrix              matrixPlayback
-	mouseDisabled       bool
-	backend             backend.Backend
-	options             Options
-	snapshot            backend.Snapshot
-	width, height       int
-	screen              screen
-	selected            string
-	pageOffset          int
-	viewport            viewport.Model
-	following           bool
-	reading             map[string]readingPosition
-	activitySpans       []activitySpan
-	activityWorker      string
-	composer            textinput.Model
-	composing           bool
-	drafts              map[string]string
-	form                []textinput.Model
-	field               int
-	serviceConfirmation string
-	confirmation        string
-	busy                bool
-	restarting          bool
-	notice, failure     string
-	connectionError     string
-	loaded              bool
-	now                 time.Time
+	matrix               matrixPlayback
+	mouseDisabled        bool
+	backend              backend.Backend
+	options              Options
+	snapshot             backend.Snapshot
+	width, height        int
+	screen               screen
+	selected             string
+	pageOffset           int
+	viewport             viewport.Model
+	following            bool
+	reading              map[string]readingPosition
+	activitySpans        []activitySpan
+	activityWorker       string
+	composer             textinput.Model
+	composing            bool
+	drafts               map[string]string
+	form                 []textinput.Model
+	field                int
+	serviceConfirmation  string
+	confirmation         string
+	busy                 bool
+	creditRefreshPending bool
+	restarting           bool
+	notice, failure      string
+	connectionError      string
+	loaded               bool
+	now                  time.Time
 }
 
 func New(service backend.Backend, options Options) Model {

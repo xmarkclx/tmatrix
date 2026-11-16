@@ -1,5 +1,6 @@
 import { AppServerCodex, resolveBundledCodexInstallation } from "./app-server.js";
 import { CodexUpdateManager, type CodexExecutableLease } from "./update-manager.js";
+import { createCodexCredits } from "./credits.js";
 import type { AdapterContext, RuntimeAdapter, RuntimeCreator } from "../../runtime-adapter.js";
 
 function createCodex(context: AdapterContext, lease?: CodexExecutableLease): ReturnType<RuntimeCreator> {
@@ -40,6 +41,7 @@ export default {
       await updates.initialize();
       return {
         updates,
+        credits: createCodexCredits({ environment: context.environment, acquire: () => updates.acquire() }),
         create: (workerContext) => createCodex(workerContext, updates.acquire())
       };
     } catch (error) {

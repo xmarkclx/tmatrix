@@ -23,7 +23,7 @@ func TestAdapterUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *te
 		t.Fatal(err)
 	}
 	before, _ := config.Load(s.Dir)
-	paths := make(chan string, 2)
+	paths := make(chan string, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/adapter/") {
 			t.Errorf("update changed worker or service lifecycle: %s", r.URL.Path)
@@ -37,12 +37,12 @@ func TestAdapterUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *te
 	if err := os.WriteFile(config.DiscoveryPath(s.Dir), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []func(context.Context) error{s.CheckAdapterUpdate, s.RollbackAdapterUpdate} {
+	for _, action := range []func(context.Context) error{s.CheckAdapterUpdate, s.RollbackAdapterUpdate, s.RefreshAdapterCredits} {
 		if err := action(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if <-paths != "/v1/adapter/check-now" || <-paths != "/v1/adapter/rollback" {
+	if <-paths != "/v1/adapter/check-now" || <-paths != "/v1/adapter/rollback" || <-paths != "/v1/adapter/credits/refresh" {
 		t.Fatal("application misrouted runtime update")
 	}
 	after, _ := config.Load(s.Dir)
@@ -53,7 +53,7 @@ func TestAdapterUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *te
 	if err := os.Remove(config.DiscoveryPath(s.Dir)); err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []func(context.Context) error{s.CheckAdapterUpdate, s.RollbackAdapterUpdate} {
+	for _, action := range []func(context.Context) error{s.CheckAdapterUpdate, s.RollbackAdapterUpdate, s.RefreshAdapterCredits} {
 		if err := action(context.Background()); err == nil || !strings.Contains(err.Error(), "disconnected") {
 			t.Fatal("disconnected update did not explain unavailable engine")
 		}

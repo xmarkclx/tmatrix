@@ -25,6 +25,25 @@ type AdapterUpdater interface {
 	RollbackAdapterUpdate(context.Context) error
 }
 
+type AdapterCreditRefresher interface {
+	RefreshAdapterCredits(context.Context) error
+}
+
+type AdapterCreditWindow struct {
+	Label            string   `json:"label"`
+	RemainingPercent *float64 `json:"remaining_percent"`
+}
+
+type AdapterCredits struct {
+	AdapterID        string                `json:"adapter_id"`
+	DisplayName      string                `json:"display_name"`
+	Status           string                `json:"status"`
+	Refreshing       bool                  `json:"refreshing"`
+	CheckedAt        string                `json:"checked_at,omitempty"`
+	LastSuccessfulAt string                `json:"last_successful_at,omitempty"`
+	Windows          []AdapterCreditWindow `json:"windows,omitempty"`
+}
+
 type AdapterUpdate struct {
 	AdapterID       string `json:"adapter_id"`
 	DisplayName     string `json:"display_name"`
@@ -40,17 +59,18 @@ type AdapterUpdate struct {
 }
 
 type Snapshot struct {
-	AdapterUpdate  *AdapterUpdate `json:"adapter_update,omitempty"`
-	RuntimeAdapter string         `json:"runtime_adapter"`
-	RestartPending bool           `json:"restart_pending,omitempty"`
-	Version        int            `json:"version"`
-	InstanceID     string         `json:"instance_id"`
-	MaxWorkers     int            `json:"max_workers"`
-	RunningWorkers int            `json:"running_workers"`
-	PollIntervalMS int            `json:"poll_interval_ms"`
-	IntakePaused   bool           `json:"intake_paused"`
-	Poller         Poller         `json:"poller"`
-	Workers        []Worker       `json:"workers"`
+	AdapterCredits *AdapterCredits `json:"adapter_credits,omitempty"`
+	AdapterUpdate  *AdapterUpdate  `json:"adapter_update,omitempty"`
+	RuntimeAdapter string          `json:"runtime_adapter"`
+	RestartPending bool            `json:"restart_pending,omitempty"`
+	Version        int             `json:"version"`
+	InstanceID     string          `json:"instance_id"`
+	MaxWorkers     int             `json:"max_workers"`
+	RunningWorkers int             `json:"running_workers"`
+	PollIntervalMS int             `json:"poll_interval_ms"`
+	IntakePaused   bool            `json:"intake_paused"`
+	Poller         Poller          `json:"poller"`
+	Workers        []Worker        `json:"workers"`
 }
 
 type Poller struct {

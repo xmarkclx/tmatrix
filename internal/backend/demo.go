@@ -13,10 +13,11 @@ import (
 // Demo contains fictional, deterministic activity. Actions progress on snapshot
 // reads only and never launch a process, contact a poller, or write credentials.
 type Demo struct {
-	mu       sync.Mutex
-	snapshot Snapshot
-	nextID   int
-	now      func() time.Time
+	mu              sync.Mutex
+	snapshot        Snapshot
+	nextID          int
+	now             func() time.Time
+	creditRefreshes int
 }
 
 func NewDemo() *Demo {
@@ -60,6 +61,7 @@ func newDemo(now func() time.Time) *Demo {
 		return parsed.Add(offset).Format(time.RFC3339Nano)
 	}
 	demo.snapshot.Poller.LastPollAt = shift(demo.snapshot.Poller.LastPollAt)
+	demo.snapshot.AdapterCredits = demoCredits(now(), 15, 21)
 	for i := range demo.snapshot.Workers {
 		worker := &demo.snapshot.Workers[i]
 		worker.StartedAt = shift(worker.StartedAt)
@@ -83,6 +85,17 @@ func (d *Demo) Snapshot(ctx context.Context) (Snapshot, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	copy := d.snapshot
+	if copy.AdapterCredits != nil {
+		credits := *copy.AdapterCredits
+		credits.Windows = append([]AdapterCreditWindow(nil), credits.Windows...)
+		for i := range credits.Windows {
+			if credits.Windows[i].RemainingPercent != nil {
+				percent := *credits.Windows[i].RemainingPercent
+				credits.Windows[i].RemainingPercent = &percent
+			}
+		}
+		copy.AdapterCredits = &credits
+	}
 	copy.Workers = append([]Worker(nil), d.snapshot.Workers...)
 	for i := range copy.Workers {
 		if copy.Workers[i].InitialPrompt != nil {
@@ -203,6 +216,23 @@ func (d *Demo) Connect(ctx context.Context, connection Connection) error {
 	d.snapshot.Poller.URL = connection.URL
 	d.snapshot.Poller.Status = "demo"
 	return nil
+}
+
+func (d *Demo) RefreshAdapterCredits(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.creditRefreshes++
+	d.snapshot.AdapterCredits = demoCredits(d.now(), float64((15+d.creditRefreshes)%101), float64((21+d.creditRefreshes)%101))
+	return nil
+}
+
+func demoCredits(now time.Time, primary, secondary float64) *AdapterCredits {
+	return &AdapterCredits{AdapterID: "codex", DisplayName: "Codex", Status: "ready",
+		CheckedAt: now.UTC().Format(time.RFC3339Nano), LastSuccessfulAt: now.UTC().Format(time.RFC3339Nano),
+		Windows: []AdapterCreditWindow{{Label: "5h", RemainingPercent: &primary}, {Label: "7d", RemainingPercent: &secondary}}}
 }
 
 func (d *Demo) worker(id string) *Worker {
