@@ -49,3 +49,8 @@ tmatrix service uninstall && rm -f "$HOME/.local/bin/tmatrix"
 
 See [security warnings](docs/security-alerts.md) for the executing agent's advisory
 action, private runtime integration, Tzu Do mail endpoint and delivery limits.
+
+## Engine launch logs
+
+The daemon rotates `engine-launch.log` at 10 MiB and keeps three backups.
+See [engine launch logs](docs/launch-logs.md) for retention and upgrade behavior.

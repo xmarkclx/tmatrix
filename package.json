@@ -1,6 +1,6 @@
 {
   "name": "tmatrix-engine",
-  "version": "0.1.0",
+  "version": "0.1.12",
   "private": true,
   "description": "Outbound-only Codex App Server daemon for API-backed ticket queues",
   "type": "module",

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -57,15 +58,87 @@ func findEngine(configured, executable string) (string, error) {
 }
 
 func StartEngine(ctx context.Context, dir string, cfg config.Config) error {
-	return runEngine(ctx, dir, cfg, false)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return errors.New("the v1 live engine requires WSL; run TMatrix inside WSL (the native Windows binary supports the demo)")
+	}
+	if err := config.Validate(cfg); err != nil {
+		return err
+	}
+	key, err := config.LoadAPIKey(dir)
+	if err != nil {
+		return err
+	}
+	if key == "" {
+		return errors.New("connect Tzu Do in TMatrix first (press c)")
+	}
+	if client, err := backend.NewHTTP(config.DiscoveryPath(dir)); err == nil {
+		probe, cancel := context.WithTimeout(ctx, time.Second)
+		_, err = client.Snapshot(probe)
+		cancel()
+		if err == nil {
+			return nil
+		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(executable, "--config-dir", dir, "--engine-dir", cfg.EngineDir, "daemon")
+	var diagnostics startupDiagnostics
+	cmd.Stderr = &diagnostics
+	detach(cmd)
+	if err := cmd.Start(); err != nil {
+		return errors.New("cannot start engine supervisor")
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	stop := func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		<-done
+	}
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			stop()
+			return ctx.Err()
+		case <-timer.C:
+			stop()
+			return errors.New("engine supervisor did not become ready; inspect the private engine-launch.log")
+		case <-done:
+			return fmt.Errorf("engine supervisor exited during startup: %s; inspect the private engine-launch.log", strings.TrimSpace(string(diagnostics)))
+		case <-tick.C:
+			if _, err := os.Lstat(filepath.Join(dir, "start.lock")); !errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			client, err := backend.NewHTTP(config.DiscoveryPath(dir))
+			if err != nil {
+				continue
+			}
+			probe, cancel := context.WithTimeout(ctx, time.Second)
+			_, err = client.Snapshot(probe)
+			cancel()
+			if err == nil {
+				return nil
+			}
+		}
+	}
 }
 
 // RunDaemon owns the child until it exits so systemd can supervise the runtime.
 func RunDaemon(ctx context.Context, dir string, cfg config.Config) error {
-	return runEngine(ctx, dir, cfg, true)
+	return runEngine(ctx, dir, cfg)
 }
 
-func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bool) error {
+func runEngine(ctx context.Context, dir string, cfg config.Config) error {
+	ctx, cancelSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer cancelSignals()
 	if runtime.GOOS == "windows" {
 		return errors.New("the v1 live engine requires WSL; run TMatrix inside WSL (the native Windows binary supports the demo)")
 	}
@@ -80,7 +153,8 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 		return errors.New("engine startup already in progress (if a launch crashed, inspect and remove start.lock)")
 	}
 	lock.Close()
-	defer os.Remove(filepath.Join(dir, "start.lock"))
+	releaseLock := sync.OnceFunc(func() { _ = os.Remove(filepath.Join(dir, "start.lock")) })
+	defer releaseLock()
 	path := config.DiscoveryPath(dir)
 	if _, err := os.Lstat(path); err == nil {
 		client, err := backend.NewHTTP(path)
@@ -91,10 +165,7 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 		_, err = client.Snapshot(probe)
 		cancel()
 		if err == nil {
-			if foreground {
-				return errors.New("engine already running; drain it before starting the service")
-			}
-			return nil
+			return errors.New("engine already running; drain it before starting the service")
 		}
 		var old struct {
 			PID int `json:"pid"`
@@ -151,35 +222,19 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 	if err := privateWrite(engineConfigPath, data); err != nil {
 		return err
 	}
-	logPath := filepath.Join(dir, "engine-launch.log")
-	if info, statErr := os.Lstat(logPath); statErr == nil && !info.Mode().IsRegular() {
-		return errors.New("engine launch log must be a regular private file")
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return errors.New("cannot inspect engine launch log")
-	}
-	log, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	log, err := newLaunchLog(filepath.Join(dir, "engine-launch.log"), 10*1024*1024, 3)
 	if err != nil {
-		return errors.New("cannot open private engine launch log")
+		return fmt.Errorf("cannot open private engine launch log: %w", err)
 	}
 	defer log.Close()
-	if err := log.Chmod(0600); err != nil {
-		return errors.New("cannot protect engine launch log")
-	}
 	cmd := exec.Command(node, filepath.Join(engineDir, "dist", "index.js"))
 	cmd.Dir = engineDir
 	cmd.Env = engineEnvironment(os.Environ(), map[string]string{
 		"CONFIG_PATH": engineConfigPath, "API_KEY": key,
 		"TMATRIX_CONTROL_FILE": path, "TMATRIX_CONTROL_PORT": "0", "TMATRIX_INTAKE_PAUSED": "1",
 	})
-	cmd.Stdout, cmd.Stderr = log, log
-	if !foreground {
-		detach(cmd)
-	}
-	signals := make(chan os.Signal, 1)
-	if foreground {
-		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-		defer signal.Stop(signals)
-	}
+	output := &engineLogOutput{log: log, errors: make(chan error, 1)}
+	cmd.Stdout, cmd.Stderr = output, output
 	if err := cmd.Start(); err != nil {
 		return errors.New("cannot start worker engine")
 	}
@@ -192,12 +247,15 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 	for {
 		select {
 		case <-ctx.Done():
-			_ = cmd.Process.Kill() // This startup is paused; no workers were admitted.
+			stopPausedEngine(cmd, done)
 			return ctx.Err()
+		case err := <-output.errors:
+			stopPausedEngine(cmd, done)
+			return fmt.Errorf("engine launch log failed: %w", err)
 		case <-done:
 			return errors.New("engine exited during startup; inspect the private engine-launch.log")
 		case <-timer.C:
-			_ = cmd.Process.Kill()
+			stopPausedEngine(cmd, done)
 			return errors.New("engine did not expose its control interface; rebuild the TMatrix engine adapter")
 		case <-tick.C:
 			client, err := backend.NewHTTP(path)
@@ -211,18 +269,17 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 				if cfg.ResumeIntake {
 					paused := false
 					if err := client.Configure(ctx, backend.Settings{IntakePaused: &paused}); err != nil {
-						_ = client.Shutdown(context.Background())
+						_ = cmd.Process.Signal(syscall.SIGTERM)
+						<-done
 						return err
 					}
 				}
-				if !foreground {
-					return nil
-				}
-				_ = os.Remove(filepath.Join(dir, "start.lock"))
+				releaseLock()
+				var logErr error
 				select {
+				case logErr = <-output.errors:
 				case err := <-done:
 					return err
-				case <-signals:
 				case <-ctx.Done():
 				}
 				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -231,9 +288,32 @@ func runEngine(ctx context.Context, dir string, cfg config.Config, foreground bo
 				if err != nil {
 					_ = cmd.Process.Signal(syscall.SIGTERM)
 				}
-				return <-done
+				childErr := <-done
+				if logErr != nil {
+					return fmt.Errorf("engine launch log failed: %w", logErr)
+				}
+				return childErr
 			}
 		}
+	}
+}
+
+type startupDiagnostics []byte
+
+func (d *startupDiagnostics) Write(p []byte) (int, error) {
+	*d = append(*d, p[:min(len(p), 4096-len(*d))]...)
+	return len(p), nil
+}
+
+func stopPausedEngine(cmd *exec.Cmd, done <-chan error) {
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		_ = cmd.Process.Kill()
+		<-done
 	}
 }
 

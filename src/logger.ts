@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import packageInfo from "../package.json" with { type: "json" };
 import { resolve } from "node:path";
 import pino, { type Logger, type StreamEntry } from "pino";
 import pretty from "pino-pretty";
@@ -50,7 +51,7 @@ export function createLogger(config: WorkerConfig): LoggerBundle {
     level: config.log_level,
     base: {
       service: "aiworker",
-      version: "0.1.0",
+      version: packageInfo.version,
       instance_id: config.instance_id,
       swarm_id: config.swarm_id
     },
@@ -66,7 +67,7 @@ export function createLogger(config: WorkerConfig): LoggerBundle {
     level: config.log_level,
     base: {
       service: "aiworker",
-      version: "0.1.0",
+      version: packageInfo.version,
       instance_id: config.instance_id,
       component: "log_rotation"
     },
