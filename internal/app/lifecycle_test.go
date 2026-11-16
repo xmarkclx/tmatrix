@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,22 @@ import (
 	"tmatrix/internal/backend"
 	"tmatrix/internal/config"
 )
+
+func TestMain(m *testing.M) {
+	if len(os.Args) == 6 && os.Args[1] == "--config-dir" && os.Args[3] == "--engine-dir" && os.Args[5] == "daemon" {
+		cfg, err := config.Load(os.Args[2])
+		if err == nil {
+			cfg.EngineDir = os.Args[4]
+			err = RunDaemon(context.Background(), os.Args[2], cfg)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // The optional integration runs the actual compiled engine with a fresh private
 // identity, reserved .invalid endpoints, and fake credentials.
