@@ -87,7 +87,7 @@ python3 scripts/release.py --skip-install
 ## Maintain the development glob matcher
 
 Vitest, Vite, tinyglobby, and fdir use the private `tmatrix-picomatch` fork in
-`vendor/picomatch`. The root development dependency and npm override route every
+`third_party/picomatch`. The root development dependency and npm override route every
 `picomatch` consumer to that copy. Production installs omit it.
 
 The fork starts from picomatch 4.0.7 and restricts the parser to file globs because
@@ -98,7 +98,7 @@ literal text, including otherwise safe forms. The parser always sets `regex` and
 globstars, braces, brackets, negation, and non-repeating extglobs remain available.
 The explicit raw regular-expression APIs still require trusted callers.
 
-`vendor/picomatch/provenance.json` records the upstream tarball integrity,
+`third_party/picomatch/provenance.json` records the upstream tarball integrity,
 original file hashes, advisory, and compatibility restrictions. The upstream MIT
 license is preserved. Run `npm run test:glob-security` to check exploit deadlines
 and ordinary file matching through the actual dependency consumers. `npm run check`
