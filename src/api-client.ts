@@ -1,5 +1,7 @@
 import type { SecurityAlert } from "./security-warning.js";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import type { ProjectBannerImage } from "./helpers/read-project-banner.js";
 import { IDENTITY_CONTRACT_HEADERS, parseIdentityJson, stringifyIdentityJson } from "./identity-transport.js";
 import type { Logger } from "pino";
 import type { WorkerConfig } from "./config.js";
@@ -46,6 +48,7 @@ export interface TicketApi {
   getHistory(ticket: Ticket, signal?: AbortSignal): Promise<unknown>;
   reportProgress(ticket: Ticket, event: ProgressEvent, signal?: AbortSignal): Promise<void>;
   reportResult(ticket: Ticket, result: TicketResult, signal?: AbortSignal): Promise<unknown>;
+  uploadProjectBanner?(image: ProjectBannerImage, signal?: AbortSignal): Promise<string>;
 }
 
 export interface CancellationApi {
@@ -157,6 +160,24 @@ export class ApiClient implements TicketApi {
       body: { ...this.ticketEnvelope(ticket, result.input_revision), ...result },
       ...(signal ? { signal } : {})
     });
+  }
+
+  /** Uploads the generated image with host credentials that never enter the runtime. */
+  async uploadProjectBanner(image: ProjectBannerImage, signal?: AbortSignal): Promise<string> {
+    const path = "/api/uploads/images/upload";
+    const body = new FormData();
+    body.set("image", new Blob([image.bytes], { type: image.contentType }), image.filename);
+    const response = await this.request({
+      operation: "banner_upload", method: "POST", url: new URL(path, this.config.poll_origin).toString(),
+      path, body, expectJson: true, ...(signal ? { signal } : {})
+    });
+    const parsed = z.object({ url: z.string().min(1) }).safeParse(response);
+    const url = parsed.success && URL.canParse(parsed.data.url, this.config.poll_origin) ? new URL(parsed.data.url, this.config.poll_origin) : undefined;
+    if (!url || url.origin !== this.config.poll_origin || url.username || url.password || url.search || url.hash ||
+        !/^\/api\/uploads\/images\/markdown-images\/\d+\/[0-9a-f-]{36}\.(?:jpg|png|webp)$/i.test(url.pathname)) {
+      throw new WorkerError({ message: "The banner upload did not return a trusted image URL.", code: "PROJECT_BANNER_UPLOAD_INVALID", stage: "banner.upload" });
+    }
+    return url.pathname;
   }
 
   /** Confirms a cancellation only after the owning local process has stopped. */
@@ -292,16 +313,17 @@ export class ApiClient implements TicketApi {
 
         const response = await this.fetch(options.url, {
           method: options.method,
+          ...(options.body instanceof FormData ? { redirect: "error" as const } : {}),
           headers: {
             ...IDENTITY_CONTRACT_HEADERS,
             authorization: `Bearer ${this.config.api_key}`,
             accept: "application/json",
-            "content-type": "application/json",
+            ...(options.body instanceof FormData ? {} : { "content-type": "application/json" }),
             "user-agent": "aiworker/0.1.0",
             "x-aiworker-instance": this.config.instance_id,
             "x-request-id": operationId
           },
-          ...(options.body !== undefined && options.method !== "GET" ? { body: stringifyIdentityJson(options.body) } : {}),
+          ...(options.body !== undefined && options.method !== "GET" ? { body: options.body instanceof FormData ? options.body : stringifyIdentityJson(options.body) } : {}),
           signal: controller.signal
         });
 

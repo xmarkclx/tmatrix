@@ -54,3 +54,8 @@ action, private runtime integration, Tzu Do mail endpoint and delivery limits.
 
 The daemon rotates `engine-launch.log` at 10 MiB and keeps three backups.
 See [engine launch logs](docs/launch-logs.md) for retention and upgrade behavior.
+
+## Project banners
+
+Tzu Do can queue a standalone image-generation job for a project banner.
+See [project banners](docs/project-banners.md) for the worker contract and recovery behavior.

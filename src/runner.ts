@@ -3,9 +3,12 @@ import { LiveSteering, NotSentError } from "./helpers/live-steering.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
 import { workerTitle } from "./helpers/worker-title.js";
+import { projectBannerDirectory } from "./helpers/project-banner-directory.js";
+import { readProjectBanner } from "./helpers/read-project-banner.js";
+import { readProjectBannerCheckpoint, writeProjectBannerCheckpoint } from "./helpers/project-banner-checkpoint.js";
 import type { ConversationStore } from "./conversation-store.js";
 import type { WorkerObservation } from "./local-worker-state.js";
-import { stat } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { Input, Usage, RuntimeFactory, RuntimeLike, RuntimeThreadOptions,
   ThreadLike, WorkerThreadEvent, WorkerThreadItem } from "./runtime-adapter.js";
@@ -71,7 +74,22 @@ const handoffSchema = z.object({
   user_message: z.string().min(1).max(HANDOFF_TEXT_LIMIT)
 }).strict();
 
-type Handoff = z.infer<typeof handoffSchema>;
+const bannerHandoffSchema = handoffSchema.extend({
+  banner_image_path: z.string().min(1).max(4_096).nullable()
+});
+const BANNER_HANDOFF_OUTPUT_SCHEMA = {
+  ...HANDOFF_OUTPUT_SCHEMA,
+  required: [...HANDOFF_OUTPUT_SCHEMA.required, "banner_image_path"],
+  properties: {
+    ...HANDOFF_OUTPUT_SCHEMA.properties,
+    banner_image_path: {
+      type: ["string", "null"],
+      description: "Absolute path to the generated image inside this banner's working directory. Return null when generation could not finish. The daemon uploads the file and updates the project through the API."
+    }
+  }
+};
+
+type Handoff = z.infer<typeof handoffSchema> | z.infer<typeof bannerHandoffSchema>;
 
 export interface RunOutcome {
   status: "completed" | "failed" | "cancelled";
@@ -213,6 +231,7 @@ export class TicketRunner {
     let runtimeCloseFailure: unknown;
     let cancelled = cancellationReason(options.signal);
     let releaseConversation: import("./conversation-store.js").ConversationLease | undefined;
+    let bannerDirectory: string | undefined;
 
     try {
       log.info({ event: "worker.run_started", stage: "claim" }, "Ticket run started");
@@ -228,120 +247,122 @@ export class TicketRunner {
         if (this.conversationStore && !resumeId && hasReplyAncestry(ticket, history)) {
           options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
         }
-        const fullPrompt = buildPrompt(ticket, history);
-        const workingDirectory = await resolveWorkingDirectory(
-          ticket.project_path,
-          this.fallbackWorkingDirectory
-        );
-        runtime = this.runtimeFactory(profile, releaseConversation?.environment);
-        const commentPrompt = resumeId && runtime.resumeThread ? buildCommentPrompt(ticket, history) : undefined;
-        const context = conversationContext(history);
-        const changes = commentPrompt !== undefined && resumeId
-          ? await this.conversationStore?.contextChanges(ticket, resumeId, context) ?? {}
-          : {};
-        const updates = Object.keys(changes).length ? `# Updated task context\n${JSON.stringify(changes, null, 2)}\n\n` : "";
-        const prompt = commentPrompt === undefined ? fullPrompt : updates + commentPrompt;
-        let missingConversationText = commentPrompt === undefined ? undefined : fullPrompt;
+        if (ticket.subject_kind === "project_banner") bannerDirectory = await projectBannerDirectory(ticket);
+        const workingDirectory = bannerDirectory ?? await resolveWorkingDirectory(ticket.project_path, this.fallbackWorkingDirectory);
+        const fullPrompt = buildPrompt(ticket, history, bannerDirectory);
+        const bannerCheckpoint = bannerDirectory ? await readProjectBannerCheckpoint(bannerDirectory) : undefined;
+        if (bannerCheckpoint) handoff = bannerCheckpoint.handoff;
+        if (!bannerCheckpoint) {
+          runtime = this.runtimeFactory(profile, releaseConversation?.environment);
+          const commentPrompt = resumeId && runtime.resumeThread ? buildCommentPrompt(ticket, history) : undefined;
+          const context = conversationContext(history);
+          const changes = commentPrompt !== undefined && resumeId
+            ? await this.conversationStore?.contextChanges(ticket, resumeId, context) ?? {}
+            : {};
+          const updates = Object.keys(changes).length ? `# Updated task context\n${JSON.stringify(changes, null, 2)}\n\n` : "";
+          const prompt = commentPrompt === undefined ? fullPrompt : updates + commentPrompt;
+          let missingConversationText = commentPrompt === undefined ? undefined : fullPrompt;
 
 
-        log.info({
-          event: resumeId ? "codex.thread_resuming" : "codex.thread_starting",
-          stage: "codex.start",
-          instruction_chars: ticket.instructions.length,
-          prompt_chars: prompt.length,
-          working_directory: workingDirectory,
-          used_project_path: workingDirectory === ticket.project_path
-        }, resumeId ? "Resuming runtime conversation" : "Starting runtime conversation");
-
-        const threadOptions = runtimeThreadOptions(
-          profile,
-          workingDirectory,
-          workerTitle(ticket)
-        );
-        if (warning) {
-          threadOptions.reportSecurityWarning = warning.report;
-        }
-        if (releaseConversation?.recovered) threadOptions.rebuildOnResumeRejection = true;
-        if (resumeId && !runtime.resumeThread) {
-          options.observe?.({ kind: "conversation.unlinked", text: "This runtime cannot resume conversations. Starting a fresh conversation from the task history and saved handoff." });
-        }
-        const requestedResumeId = runtime.resumeThread ? resumeId : undefined;
-        const thread = resumeId && runtime.resumeThread
-          ? runtime.resumeThread(resumeId, threadOptions)
-          : runtime.startThread(threadOptions);
-        const observeRuntime = async (event: WorkerObservation) => {
-          if (event.thread_id) {
-            threadId = event.thread_id;
-            // Persist before the generator advances to turn/start, so a restart
-            // recovers this same conversation even if the first turn fails.
-            await this.conversationStore?.remember(ticket, threadId, resumeId);
-            resumeId = threadId;
-          }
-          // Compare against the original route, not resumeId (which advances
-          // after connection). A missing conversation may have been rebuilt.
-          options.observe?.(event.kind === "thread.started" ? {
-            ...event,
-            run_kind: requestedResumeId && event.thread_id === requestedResumeId ? "resumed" : "initial"
-          } : event);
-        };
-
-        // Local console only: never enqueue prompt text in remote progress/logs.
-        // This records prepared input, not confirmation of runtime receipt.
-        options.observe?.({ kind: "prompt.prepared", text: prompt, input_revision: processedInputRevision });
-
-        let turnInput = prompt;
-        let localSteeringId: string | undefined;
-        while (true) {
-          reporter.setInputRevision(processedInputRevision);
-          const turn = await this.runPreparedTurn(
-            thread,
-            turnInput,
-            ticket,
-            log,
-            reporter,
-            options.signal,
-            observeRuntime,
-            localSteeringId,
-            missingConversationText,
-            steering,
-            warning
-          );
-          missingConversationText = undefined;
-          threadId = turn.threadId ?? threadId;
-          usage = mergeUsage(usage, turn.usage);
-          handoff = parseHandoff(turn.finalResponse);
-          if (threadId) await this.conversationStore?.rememberContext(ticket, threadId, context);
-
-          if (localSteeringId) options.observe?.({ kind: "steering.response_observed", text: "A response was observed after the local message", steering_id: localSteeringId });
-          localSteeringId = undefined;
-          const nextSteering = steering.takeLatestAfter(processedInputRevision);
-          if (!nextSteering) {
-            const local = steering.takeLocal();
-            if (!local) {
-              // Close synchronously before final delivery so no accepted message
-              // can disappear in the gap between the last turn and teardown.
-              steering.closeLocal();
-              break;
-            }
-            localSteeringId = local.id;
-            turnInput = localSteeringPrompt(local.message);
-            continue;
-          }
-
-          processedInputRevision = nextSteering.input_revision;
-          reporter.setInputRevision(processedInputRevision);
-          reporter.enqueue("steering.applied", {
-            input_revision: processedInputRevision,
-            ...(nextSteering.trigger_comment_id !== undefined
-              ? { trigger_comment_id: nextSteering.trigger_comment_id }
-              : {})
-          });
           log.info({
-            event: "worker.steering_applied",
-            input_revision: processedInputRevision
-          }, "Queued steering input will continue in the current runtime conversation");
-          options.observe?.({ kind: "revision.delivering", text: "Task update queued for the next runtime turn", input_revision: processedInputRevision });
-          turnInput = buildSteeringPrompt(nextSteering);
+            event: resumeId ? "codex.thread_resuming" : "codex.thread_starting",
+            stage: "codex.start",
+            instruction_chars: ticket.instructions.length,
+            prompt_chars: prompt.length,
+            working_directory: workingDirectory,
+            used_project_path: workingDirectory === ticket.project_path
+          }, resumeId ? "Resuming runtime conversation" : "Starting runtime conversation");
+
+          const threadOptions = runtimeThreadOptions(
+            profile,
+            workingDirectory,
+            workerTitle(ticket)
+          );
+          if (warning) {
+            threadOptions.reportSecurityWarning = warning.report;
+          }
+          if (releaseConversation?.recovered) threadOptions.rebuildOnResumeRejection = true;
+          if (resumeId && !runtime.resumeThread) {
+            options.observe?.({ kind: "conversation.unlinked", text: "This runtime cannot resume conversations. Starting a fresh conversation from the task history and saved handoff." });
+          }
+          const requestedResumeId = runtime.resumeThread ? resumeId : undefined;
+          const thread = resumeId && runtime.resumeThread
+            ? runtime.resumeThread(resumeId, threadOptions)
+            : runtime.startThread(threadOptions);
+          const observeRuntime = async (event: WorkerObservation) => {
+            if (event.thread_id) {
+              threadId = event.thread_id;
+              // Persist before the generator advances to turn/start, so a restart
+              // recovers this same conversation even if the first turn fails.
+              await this.conversationStore?.remember(ticket, threadId, resumeId);
+              resumeId = threadId;
+            }
+            // Compare against the original route, not resumeId (which advances
+            // after connection). A missing conversation may have been rebuilt.
+            options.observe?.(event.kind === "thread.started" ? {
+              ...event,
+              run_kind: requestedResumeId && event.thread_id === requestedResumeId ? "resumed" : "initial"
+            } : event);
+          };
+
+          // Local console only: never enqueue prompt text in remote progress/logs.
+          // This records prepared input, not confirmation of runtime receipt.
+          options.observe?.({ kind: "prompt.prepared", text: prompt, input_revision: processedInputRevision });
+
+          let turnInput = prompt;
+          let localSteeringId: string | undefined;
+          while (true) {
+            reporter.setInputRevision(processedInputRevision);
+            const turn = await this.runPreparedTurn(
+              thread,
+              turnInput,
+              ticket,
+              log,
+              reporter,
+              options.signal,
+              observeRuntime,
+              localSteeringId,
+              missingConversationText,
+              steering,
+              warning
+            );
+            missingConversationText = undefined;
+            threadId = turn.threadId ?? threadId;
+            usage = mergeUsage(usage, turn.usage);
+            handoff = parseHandoff(turn.finalResponse, ticket);
+            if (threadId) await this.conversationStore?.rememberContext(ticket, threadId, context);
+
+            if (localSteeringId) options.observe?.({ kind: "steering.response_observed", text: "A response was observed after the local message", steering_id: localSteeringId });
+            localSteeringId = undefined;
+            const nextSteering = steering.takeLatestAfter(processedInputRevision);
+            if (!nextSteering) {
+              const local = steering.takeLocal();
+              if (!local) {
+                // Close synchronously before final delivery so no accepted message
+                // can disappear in the gap between the last turn and teardown.
+                steering.closeLocal();
+                break;
+              }
+              localSteeringId = local.id;
+              turnInput = localSteeringPrompt(local.message);
+              continue;
+            }
+
+            processedInputRevision = nextSteering.input_revision;
+            reporter.setInputRevision(processedInputRevision);
+            reporter.enqueue("steering.applied", {
+              input_revision: processedInputRevision,
+              ...(nextSteering.trigger_comment_id !== undefined
+                ? { trigger_comment_id: nextSteering.trigger_comment_id }
+                : {})
+            });
+            log.info({
+              event: "worker.steering_applied",
+              input_revision: processedInputRevision
+            }, "Queued steering input will continue in the current runtime conversation");
+            options.observe?.({ kind: "revision.delivering", text: "Task update queued for the next runtime turn", input_revision: processedInputRevision });
+            turnInput = buildSteeringPrompt(nextSteering);
+          }
         }
 
         if (!handoff) {
@@ -353,6 +374,22 @@ export class TicketRunner {
         }
 
         await reporter.flush();
+        let bannerImageUrl = bannerCheckpoint?.banner_image_url;
+        if (bannerDirectory && !bannerImageUrl && handoff.outcome === "AI_DONE") {
+          if (!("banner_image_path" in handoff) || !handoff.banner_image_path) {
+            throw new WorkerError({ message: "The banner generation finished without an image file.", code: "PROJECT_BANNER_IMAGE_MISSING", stage: "banner.image" });
+          }
+          if (!this.api.uploadProjectBanner) {
+            throw new WorkerError({ message: "This worker transport cannot upload generated banners.", code: "PROJECT_BANNER_UPLOAD_UNSUPPORTED", stage: "banner.upload" });
+          }
+          options.signal?.throwIfAborted();
+          const image = await readProjectBanner(handoff.banner_image_path, bannerDirectory);
+          bannerImageUrl = await this.api.uploadProjectBanner(image, options.signal);
+          await writeProjectBannerCheckpoint(bannerDirectory, {
+            handoff: { outcome: "AI_DONE", context_summary: handoff.context_summary, user_message: handoff.user_message, banner_image_path: handoff.banner_image_path },
+            banner_image_url: bannerImageUrl
+          });
+        }
         // Keep the authored response intact; PRs retain file diffs and CI evidence.
         const userMessage = handoff.user_message;
         result = {
@@ -364,6 +401,7 @@ export class TicketRunner {
             : handoff.context_summary,
           user_message: userMessage,
           final_response: userMessage,
+          ...(bannerImageUrl ? { banner_image_url: bannerImageUrl } : {}),
           ...(threadId ? { thread_id: threadId, ...(this.conversationStore ? { conversation: this.conversationStore.reference(threadId) } : {}) } : {}),
           started_at: startedAt,
           completed_at: new Date().toISOString(),
@@ -479,6 +517,13 @@ export class TicketRunner {
             // The signed reference in the private handoff can restore this link.
             log.warn({ event: "conversation.result_link_failed", ...errorContext(cause) }, "Result saved but its local conversation link could not be indexed");
             options.observe?.({ kind: "conversation.link_warning", text: "Result saved. Its local conversation link could not be saved; the private handoff retains recovery context." });
+          }
+        }
+        if (bannerDirectory && runtimeCloseFailure === undefined) {
+          try {
+            await rm(bannerDirectory, { recursive: true, force: true });
+          } catch (cause) {
+            log.warn({ event: "banner.cleanup_failed", ...errorContext(cause) }, "Banner result saved but its temporary files could not be removed");
           }
         }
         this.metrics.increment("results_sent");
@@ -631,7 +676,7 @@ export class TicketRunner {
     }) : undefined;
     try {
       const streamed = await thread.runStreamed(input, {
-        outputSchema: HANDOFF_OUTPUT_SCHEMA,
+        outputSchema: ticket?.subject_kind === "project_banner" ? BANNER_HANDOFF_OUTPUT_SCHEMA : HANDOFF_OUTPUT_SCHEMA,
         ...(missingConversationInput ? { missingConversationInput } : {}),
         ...(signal ? { signal } : {})
       });
@@ -769,7 +814,7 @@ function runtimeThreadOptions(
 }
 
 
-function buildPrompt(ticket: Ticket, history: unknown): string {
+function buildPrompt(ticket: Ticket, history: unknown, bannerDirectory?: string): string {
   const serializedHistory = typeof history === "string"
     ? history
     : JSON.stringify(history ?? null, null, 2);
@@ -788,6 +833,7 @@ function buildPrompt(ticket: Ticket, history: unknown): string {
     "",
     "## Ticket instructions",
     ticket.instructions,
+    ...(bannerDirectory ? ["", `Generate the image with the available image-generation tool, then copy the finished PNG, JPEG, or WebP from the tool's output location into ${JSON.stringify(bannerDirectory)}. Return the copied file's absolute path as banner_image_path in the structured handoff. Use null with AI_NEEDS_FEEDBACK if generation cannot finish. The daemon handles the authenticated image upload and project API update. Do not upload the image yourself or include its local path in user_message or context_summary.`] : []),
     ...contextSection,
     "",
     "## Durable ticket history",
@@ -828,7 +874,7 @@ async function resolveWorkingDirectory(
 }
 
 /** Validates the runtime's schema-constrained JSON without including its content in errors. */
-function parseHandoff(value: string): Handoff {
+function parseHandoff(value: string, ticket?: Ticket): Handoff {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -841,7 +887,7 @@ function parseHandoff(value: string): Handoff {
     });
   }
 
-  const result = handoffSchema.safeParse(parsed);
+  const result = ticket?.subject_kind === "project_banner" ? bannerHandoffSchema.safeParse(parsed) : handoffSchema.safeParse(parsed);
   if (!result.success) {
     throw new WorkerError({
       message: "Runtime handoff did not match the required output schema",

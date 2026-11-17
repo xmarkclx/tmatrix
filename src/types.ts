@@ -127,6 +127,7 @@ export interface PollRequest {
   instance_id: string;
   swarm_id?: string;
   available_slots: number;
+  capabilities?: readonly "project_banner"[];
 }
 
 export interface ProgressEvent {
@@ -152,6 +153,7 @@ export interface TicketResult {
   context_summary?: string;
   user_message?: string;
   final_response?: string;
+  banner_image_url?: string;
   error?: {
     code: string;
     message: string;

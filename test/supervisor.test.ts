@@ -43,6 +43,7 @@ describe("Supervisor", () => {
         await supervisor.runOnce();
         expect(run).toHaveBeenCalledTimes(50);
         expect(poller.poll.mock.calls.map(([request]) => request.available_slots)).toEqual([0, 32, 18, 0]);
+        expect(poller.poll.mock.calls[0]?.[0].capabilities).toEqual(["project_banner"]);
       } finally {
         pending.resolve({ status: "completed" });
         await supervisor.drain();

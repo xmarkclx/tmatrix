@@ -251,7 +251,8 @@ export class Supervisor {
       poll_id: randomUUID(),
       instance_id: this.config.instance_id,
       ...(this.config.swarm_id ? { swarm_id: this.config.swarm_id } : {}),
-      available_slots: availableSlots
+      available_slots: availableSlots,
+      capabilities: ["project_banner"]
     };
     this.pendingPoll = request;
     const pollId = request.poll_id;
