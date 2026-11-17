@@ -84,6 +84,27 @@ To publish without installing on the release machine:
 python3 scripts/release.py --skip-install
 ```
 
+## Maintain the development glob matcher
+
+Vitest, Vite, tinyglobby, and fdir use the private `tmatrix-picomatch` fork in
+`vendor/picomatch`. The root development dependency and npm override route every
+`picomatch` consumer to that copy. Production installs omit it.
+
+The fork starts from picomatch 4.0.7 and restricts the parser to file globs because
+[GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) has no
+upstream patched release. All recognized repeated `+(...)` and `*(...)` extglobs match their
+literal text, including otherwise safe forms. The parser always sets `regex` and
+`unescape` to `false`, even when callers request them. Normal discovery wildcards,
+globstars, braces, brackets, negation, and non-repeating extglobs remain available.
+The explicit raw regular-expression APIs still require trusted callers.
+
+`vendor/picomatch/provenance.json` records the upstream tarball integrity,
+original file hashes, advisory, and compatibility restrictions. The upstream MIT
+license is preserved. Run `npm run test:glob-security` to check exploit deadlines
+and ordinary file matching through the actual dependency consumers. `npm run check`
+runs these checks before Vitest, and the full `npm audit` release check remains
+enabled. Replace the fork only after a fixed upstream release passes this check.
+
 ## Failure recovery
 
 - A failed pull or preflight never creates a new tag. Resolve the reported

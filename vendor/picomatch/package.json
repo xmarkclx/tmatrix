@@ -1,0 +1,25 @@
+{
+  "name": "tmatrix-picomatch",
+  "version": "4.0.7-tmatrix.1",
+  "private": true,
+  "description": "Restricted file-glob fork of picomatch 4.0.7 for TMatrix development tools.",
+  "license": "MIT",
+  "author": "Jon Schlinkert (https://github.com/jonschlinkert)",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "posix.js",
+    "lib",
+    "LICENSE",
+    "provenance.json"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xmarkclx/tmatrix.git",
+    "directory": "vendor/picomatch"
+  }
+}

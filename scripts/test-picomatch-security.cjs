@@ -6,30 +6,33 @@ const { test } = require('node:test');
 const consumers = ['vitest', 'vite', 'tinyglobby', 'fdir'];
 const implementations = new Set(consumers.map(name =>
   createRequire(require.resolve(name)).resolve('picomatch')));
+const hostilePatterns = [
+  ['+(*a)', 'a'.repeat(40) + '!'],
+  ['+(*)x', 'a'.repeat(40) + '!'],
+  ['*(*a)', 'a'.repeat(40) + '!'],
+  ['+(*a|*b)', 'a'.repeat(40) + '!'],
+  ['+(ab|abab)', 'ab'.repeat(40) + '!'],
+  ['+(@(*a))', 'a'.repeat(40) + '!'],
+  ['(*a)+', 'a'.repeat(40) + '!'],
+  ['(a+)+', 'a'.repeat(40) + '!'],
+  [String.raw`(a\+)\+`, 'a'.repeat(40) + '!'],
+  [String.raw`(a\+)\*`, 'a'.repeat(40) + '!'],
+];
 
 for (const implementation of implementations) {
   test('file matchers finish on repeated extglobs and regex quantifiers', () => {
     const result = spawnSync(process.execPath, ['-e', `
       const assert = require('node:assert/strict');
       const pm = require(process.argv[1]);
-      const cases = [
-        ['+(*a)', 'a'.repeat(40) + '!'],
-        ['+(*)x', 'a'.repeat(40) + '!'],
-        ['*(*a)', 'a'.repeat(40) + '!'],
-        ['+(*a|*b)', 'a'.repeat(40) + '!'],
-        ['+(ab|abab)', 'ab'.repeat(40) + '!'],
-        ['+(@(*a))', 'a'.repeat(40) + '!'],
-        ['(*a)+', 'a'.repeat(40) + '!'],
-        ['(a+)+', 'a'.repeat(40) + '!'],
-      ];
-      for (const options of [{}, { maxExtglobRecursion: false, regex: true }, { fastpaths: false }]) {
+      const cases = JSON.parse(process.argv[2]);
+      for (const options of [{}, { maxExtglobRecursion: false, regex: true, unescape: true }, { fastpaths: false }]) {
         for (const [pattern, input] of cases) {
           assert.equal(pm(pattern, options)(input), false, pattern);
           assert.equal(pm.makeRe(pattern, options).test(input), false, pattern);
           assert.equal(pm.compileRe(pm.parse(pattern, options)).test(input), false, pattern);
         }
       }
-    `, implementation], { encoding: 'utf8', timeout: 2000 });
+    `, implementation, JSON.stringify(hostilePatterns)], { encoding: 'utf8', timeout: 2000 });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
   });
