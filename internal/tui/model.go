@@ -54,6 +54,9 @@ type Model struct {
 	width, height       int
 	screen              screen
 	selected            string
+	selectedSource      string
+	editingSource       string
+	removingSource      string
 	pageOffset          int
 	viewport            viewport.Model
 	following           bool
@@ -105,7 +108,7 @@ func (m Model) operation(kind, workerID string, fn func(context.Context) (string
 		ctx := context.Background()
 		// Connection changes wait for admitted workers to finish, however long
 		// their tasks take. Individual bridge requests still have HTTP timeouts.
-		if kind != "connect" {
+		if kind != "connect" && kind != "remove-source" {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
@@ -153,4 +156,28 @@ func (m Model) selectedIndex() int {
 		}
 	}
 	return 0
+}
+
+func (m Model) sourceIndex() int {
+	for i, source := range m.snapshot.Pollers {
+		if source.ID == m.selectedSource {
+			return i
+		}
+	}
+	return 0
+}
+func (m Model) source() *backend.Poller {
+	if len(m.snapshot.Pollers) == 0 {
+		return nil
+	}
+	return &m.snapshot.Pollers[m.sourceIndex()]
+}
+func (m *Model) selectSource(step int) {
+	if len(m.snapshot.Pollers) == 0 {
+		m.selectedSource = ""
+		return
+	}
+	index := (m.sourceIndex() + step + len(m.snapshot.Pollers)) % len(m.snapshot.Pollers)
+	m.selectedSource = m.snapshot.Pollers[index].ID
+	m.pageOffset = max(0, index-max(1, m.bodyHeight()-10))
 }

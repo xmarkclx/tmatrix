@@ -113,7 +113,7 @@ func TestHeaderShowsSharedRestartDuringDrainAndReconnect(t *testing.T) {
 			t.Fatal("restart lost during reconnect")
 		}
 		b.snapshot.RestartPending = false
-		b.snapshot.Poller.Status = "stopped"
+		b.snapshot.Pollers[0].Status = "stopped"
 		updated, _ = m.Update(snapshotMsg{snapshot: b.snapshot})
 		m = updated.(Model)
 		if strings.Contains(m.View(), "RESTART PENDING") || strings.Contains(m.View(), "Accepting New Tasks") {

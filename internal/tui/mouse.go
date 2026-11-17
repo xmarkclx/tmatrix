@@ -43,7 +43,7 @@ func (m Model) activateTarget(target hitTarget) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// Confirmations cannot click through into another view.
-	if m.confirmation != "" {
+	if m.confirmation != "" || m.removingSource != "" {
 		if target.action == "key" && (target.key == "y" || target.key == "n" || target.key == "esc") {
 			return m.handleKey(mouseKey(target.key))
 		}
@@ -110,7 +110,7 @@ func (m Model) activateTarget(target hitTarget) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) scrollMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.confirmation != "" || m.screen == settingsScreen || m.screen == connectScreen {
+	if m.confirmation != "" || m.removingSource != "" || m.screen == settingsScreen || m.screen == connectScreen {
 		return m, nil
 	}
 	if m.screen == workersScreen {

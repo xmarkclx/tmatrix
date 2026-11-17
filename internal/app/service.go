@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,22 @@ type Service struct {
 
 func New(dir, engineDir string) (*Service, error) {
 	cfg, err := config.Load(dir)
+	if err != nil {
+		return nil, err
+	}
+	_, statErr := os.Lstat(filepath.Join(dir, config.ConfigFilename))
+	if statErr == nil && (engineDir == "" || engineDir == cfg.EngineDir) {
+		return &Service{Dir: dir}, nil
+	}
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+	unlock, err := config.LockSettings(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	cfg, err = config.Load(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -52,9 +69,9 @@ func (s *Service) Snapshot(ctx context.Context) (snapshot backend.Snapshot, snap
 		return backend.Snapshot{}, err
 	}
 	return backend.Snapshot{
-		Version: 1, InstanceID: cfg.InstanceID, MaxWorkers: cfg.MaxWorkers, RuntimeAdapter: cfg.WorkerType,
+		Version: 2, InstanceID: cfg.InstanceID, MaxWorkers: cfg.MaxWorkers, RuntimeAdapter: cfg.WorkerType,
 		PollIntervalMS: cfg.PollIntervalMS, IntakePaused: true,
-		Poller:  backend.Poller{Type: cfg.PollerType, Status: "not_connected", URL: cfg.PollURL},
+		Pollers: savedPollers(cfg),
 		Workers: []backend.Worker{},
 	}, nil
 }
@@ -102,6 +119,12 @@ func (s *Service) RollbackAdapterUpdate(ctx context.Context) error {
 func (s *Service) Configure(ctx context.Context, settings backend.Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := config.LockSettings(s.Dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	if err := backend.ValidateSettings(settings); err != nil {
 		return err
 	}
@@ -121,9 +144,6 @@ func (s *Service) Configure(ctx context.Context, settings backend.Settings) erro
 	}
 	if settings.WorkerType != nil && *settings.WorkerType != cfg.WorkerType {
 		return errors.New("select worker_type and adapter_module together in config.json, then restart the engine")
-	}
-	if settings.PollerType != nil {
-		cfg.PollerType = *settings.PollerType
 	}
 	if err := config.Save(s.Dir, cfg); err != nil {
 		return err
@@ -152,6 +172,12 @@ func (s *Service) Configure(ctx context.Context, settings backend.Settings) erro
 func (s *Service) Connect(ctx context.Context, connection backend.Connection) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := config.LockSettings(s.Dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	if err := config.ValidatePollURL(connection.URL); err != nil {
 		return err
 	}
@@ -159,9 +185,34 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	if err != nil {
 		return err
 	}
+	cfg.Sources = append([]config.Source{}, cfg.Sources...)
+	index := -1
+	var source config.Source
+	if connection.SourceID != "" {
+		for i, candidate := range cfg.Sources {
+			if candidate.ID == connection.SourceID {
+				index = i
+				source = candidate
+				break
+			}
+		}
+		if index < 0 {
+			return errors.New("source no longer exists")
+		}
+	} else {
+		if len(cfg.Sources) >= 32 {
+			return errors.New("at most 32 sources are supported")
+		}
+		source = config.NewSource(connection.Name, connection.URL)
+	}
+	source.Name = strings.TrimSpace(connection.Name)
+	if source.PollURL != connection.URL {
+		source.ConversationNamespace = config.SourceNamespace(connection.URL, source.ID)
+	}
+	source.PollURL = connection.URL
 	key := connection.APIKey
-	if key == "" {
-		key, err = config.LoadAPIKey(s.Dir)
+	if key == "" && index >= 0 {
+		key, err = config.LoadSourceKey(s.Dir, source.CredentialID)
 	}
 	if err != nil {
 		return err
@@ -169,40 +220,155 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	if err := config.ValidateAPIKey(key); err != nil {
 		return err
 	}
+	if index < 0 {
+		for _, existing := range cfg.Sources {
+			if existing.PollURL != connection.URL {
+				continue
+			}
+			existingKey, loadErr := config.LoadSourceKey(s.Dir, existing.CredentialID)
+			if loadErr == nil && existingKey == key {
+				return errors.New("this source connection is already configured; edit it in Pollers or restart the engine")
+			}
+		}
+	}
+	oldCredential := source.CredentialID
+	newCredential := ""
+	if connection.APIKey != "" {
+		newCredential = config.NewID()
+		source.CredentialID = newCredential
+	}
+	if err := config.ValidateSource(source); err != nil {
+		return err
+	}
+	if index < 0 {
+		cfg.Sources = append(cfg.Sources, source)
+	} else {
+		cfg.Sources[index] = source
+	}
+	cfg.ResumeIntake = true
+	if err := config.Validate(cfg); err != nil {
+		return err
+	}
+	if _, err := sourceEngine(cfg.EngineDir); err != nil {
+		return err
+	}
 	if err := s.drainConnection(ctx); err != nil {
 		return err
 	}
-	if err := config.SaveAPIKey(s.Dir, key); err != nil {
+	if newCredential != "" {
+		if err := config.SaveCredential(s.Dir, newCredential, key); err != nil {
+			return err
+		}
+	}
+	if err := config.Save(s.Dir, cfg); err != nil {
+		if newCredential != "" {
+			_ = config.RemoveCredential(s.Dir, newCredential)
+		}
 		return err
 	}
-	cfg.PollURL = connection.URL
-	cfg.ResumeIntake = true
+	if newCredential != "" && oldCredential != "" {
+		_ = config.RemoveCredential(s.Dir, oldCredential)
+	}
+	return s.startSources(ctx, cfg)
+}
+
+func (s *Service) RemoveSource(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock, err := config.LockSettings(s.Dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	cfg, err := config.Load(s.Dir)
+	if err != nil {
+		return err
+	}
+	index := -1
+	for i, source := range cfg.Sources {
+		if source.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return errors.New("source no longer exists")
+	}
+	removed := cfg.Sources[index]
+	next := append([]config.Source{}, cfg.Sources[:index]...)
+	cfg.Sources = append(next, cfg.Sources[index+1:]...)
+	if len(cfg.Sources) == 0 {
+		cfg.ResumeIntake = false
+	}
+	if len(cfg.Sources) > 0 {
+		if _, err := sourceEngine(cfg.EngineDir); err != nil {
+			return err
+		}
+	}
+	if err := s.drainConnection(ctx); err != nil {
+		return err
+	}
 	if err := config.Save(s.Dir, cfg); err != nil {
 		return err
 	}
+	_ = config.RemoveCredential(s.Dir, removed.CredentialID)
+	if len(cfg.Sources) == 0 {
+		return nil
+	}
+	return s.startSources(ctx, cfg)
+}
+
+func savedPollers(cfg config.Config) []backend.Poller {
+	pollers := make([]backend.Poller, 0, len(cfg.Sources))
+	for _, source := range cfg.Sources {
+		pollers = append(pollers, backend.Poller{ID: source.ID, Name: source.Name, Type: "tzudo", Status: "not_connected", URL: source.PollURL})
+	}
+	return pollers
+}
+
+func sameSources(snapshot backend.Snapshot, cfg config.Config) bool {
+	if len(snapshot.Pollers) != len(cfg.Sources) {
+		return false
+	}
+	for _, source := range cfg.Sources {
+		found := false
+		for _, poller := range snapshot.Pollers {
+			if poller.ID == source.ID && poller.URL == source.PollURL {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) startSources(ctx context.Context, cfg config.Config) error {
 	if _, err := os.Stat(filepath.Join(s.Dir, "install-service-on-connect")); err == nil {
-		return s.finishServiceSetup(io.Discard)
+		if err := s.finishServiceSetup(io.Discard); err != nil {
+			return err
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
-	}
-	if err := s.startConsole(ctx, true); err != nil {
+	} else if err := s.startConsole(ctx, true); err != nil {
 		return err
 	}
-	// systemctl returns before the daemon has exposed its bridge. Report
-	// completion only once the replacement has resumed intake.
 	ready, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		if client, err := s.client(); err == nil {
-			if snapshot, err := client.Snapshot(ready); err == nil && !snapshot.IntakePaused && snapshot.Poller.URL == connection.URL {
+			if snapshot, err := client.Snapshot(ready); err == nil && snapshot.IntakePaused == !cfg.ResumeIntake && sameSources(snapshot, cfg) {
 				return nil
 			}
 		}
 		select {
 		case <-ready.Done():
-			return errors.New("connection saved, but restarted engine is not ready; inspect engine or service status")
+			return errors.New("sources saved, but restarted engine is not ready; inspect engine or service status")
 		case <-tick.C:
 		}
 	}

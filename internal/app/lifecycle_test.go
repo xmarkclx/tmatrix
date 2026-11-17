@@ -42,7 +42,7 @@ func TestActualEngineConnectionLifecycle(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	if err := service.Connect(ctx, backend.Connection{URL: "https://tmatrix-test.invalid/api/v1/ai/poll", APIKey: "offline-test-fixture"}); err != nil {
+	if err := service.Connect(ctx, backend.Connection{Name: "Test source", URL: "https://tmatrix-test.invalid/api/v1/ai/poll", APIKey: "offline-test-fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	defer service.Shutdown(context.Background())
@@ -57,17 +57,18 @@ func TestActualEngineConnectionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Saving a replacement key must restart an idle connected engine safely.
-	if err := service.Connect(ctx, backend.Connection{URL: "https://replacement.invalid/api/v1/ai/poll", APIKey: "replacement-test-fixture"}); err != nil {
+	if err := service.Connect(ctx, backend.Connection{SourceID: first.Pollers[0].ID, Name: "Replacement", URL: "https://replacement.invalid/api/v1/ai/poll", APIKey: "replacement-test-fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	reconnected, err := service.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reconnected.IntakePaused || reconnected.Poller.URL != "https://replacement.invalid/api/v1/ai/poll" || reconnected.InstanceID != first.InstanceID {
+	if reconnected.IntakePaused || reconnected.Pollers[0].URL != "https://replacement.invalid/api/v1/ai/poll" || reconnected.InstanceID != first.InstanceID {
 		t.Fatal("connection replacement did not restart safely")
 	}
-	key, err := config.LoadAPIKey(dir)
+	saved, _ := config.Load(dir)
+	key, err := config.LoadSourceKey(dir, saved.Sources[0].CredentialID)
 	if err != nil || key != "replacement-test-fixture" {
 		t.Fatal("replacement credential was not saved")
 	}
@@ -124,7 +125,7 @@ func TestActualEngineConnectionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !restarted.IntakePaused || restarted.Poller.LastPollAt != "" || restarted.PollIntervalMS != interval {
+	if !restarted.IntakePaused || restarted.Pollers[0].LastPollAt != "" || restarted.PollIntervalMS != interval {
 		t.Fatal("restart did not restore safe settings")
 	}
 	if err := service.Shutdown(ctx); err != nil {
@@ -159,7 +160,7 @@ func TestActualForegroundDaemonLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.PollURL = "https://tmatrix-test.invalid/api/v1/ai/poll"
+	cfg.Sources = []config.Source{fixtureSource(cfg, "https://tmatrix-test.invalid/api/v1/ai/poll")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -167,7 +168,7 @@ func TestActualForegroundDaemonLifecycle(t *testing.T) {
 	deadline := time.After(20 * time.Second)
 	for {
 		snapshot, err := service.Snapshot(context.Background())
-		if err == nil && snapshot.Poller.Status == "paused" {
+		if err == nil && len(snapshot.Pollers) == 1 && snapshot.Pollers[0].Status == "paused" {
 			break
 		}
 		select {

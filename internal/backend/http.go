@@ -74,7 +74,7 @@ func NewHTTP(discoveryPath string) (*HTTP, error) {
 func (h *HTTP) Snapshot(ctx context.Context) (Snapshot, error) {
 	var result Snapshot
 	err := h.request(ctx, http.MethodGet, "/v1/snapshot", nil, &result)
-	if err == nil && (result.Version != 1 || result.MaxWorkers < 1 || result.MaxWorkers > 100 || result.RunningWorkers < 0) {
+	if err == nil && ((result.Version != 1 && result.Version != 2) || result.MaxWorkers < 1 || result.MaxWorkers > 100 || result.RunningWorkers < 0) {
 		return Snapshot{}, errors.New("engine returned an unsupported snapshot")
 	}
 	return result, err

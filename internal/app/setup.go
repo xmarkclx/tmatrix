@@ -22,11 +22,11 @@ func (s *Service) SetupService() error {
 	if err := os.WriteFile(filepath.Join(s.Dir, "install-service-on-connect"), []byte("1\n"), 0600); err != nil {
 		return err
 	}
-	key, err := config.LoadAPIKey(s.Dir)
+	cfg, err := config.Load(s.Dir)
 	if err != nil {
 		return err
 	}
-	if key == "" {
+	if len(cfg.Sources) == 0 {
 		fmt.Println("Service setup queued. Authenticate Codex, then open tmatrix and connect with c; the service will be installed automatically.")
 		return nil
 	}

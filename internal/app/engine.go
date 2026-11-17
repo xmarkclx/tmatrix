@@ -57,6 +57,18 @@ func findEngine(configured, executable string) (string, error) {
 	return "", errors.New("compatible TMatrix engine not found; run sh scripts/stage-engine.sh in the tmatrix directory or set TMATRIX_ENGINE_DIR to a release engine")
 }
 
+func sourceEngine(configured string) (string, error) {
+	engine, err := FindEngine(configured)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(filepath.Join(engine, "dist", "source-supervisor.js"))
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("engine update needed for multiple sources; install or build the matching TMatrix engine")
+	}
+	return engine, nil
+}
+
 func StartEngine(ctx context.Context, dir string, cfg config.Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -67,12 +79,8 @@ func StartEngine(ctx context.Context, dir string, cfg config.Config) error {
 	if err := config.Validate(cfg); err != nil {
 		return err
 	}
-	key, err := config.LoadAPIKey(dir)
-	if err != nil {
-		return err
-	}
-	if key == "" {
-		return errors.New("connect Tzu Do in TMatrix first (press c)")
+	if len(cfg.Sources) == 0 {
+		return errors.New("add a source in TMatrix first (press c)")
 	}
 	if client, err := backend.NewHTTP(config.DiscoveryPath(dir)); err == nil {
 		probe, cancel := context.WithTimeout(ctx, time.Second)
@@ -133,6 +141,12 @@ func StartEngine(ctx context.Context, dir string, cfg config.Config) error {
 
 // RunDaemon owns the child until it exits so systemd can supervise the runtime.
 func RunDaemon(ctx context.Context, dir string, cfg config.Config) error {
+	if err := config.Validate(cfg); err != nil {
+		return err
+	}
+	if len(cfg.Sources) == 0 {
+		return nil
+	}
 	return runEngine(ctx, dir, cfg)
 }
 
@@ -178,14 +192,10 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 			return errors.New("cannot remove exited engine discovery record")
 		}
 	}
-	key, err := config.LoadAPIKey(dir)
-	if err != nil {
-		return err
+	if len(cfg.Sources) == 0 {
+		return errors.New("add a source in TMatrix first (press c)")
 	}
-	if key == "" {
-		return errors.New("connect Tzu Do in TMatrix first (press c)")
-	}
-	engineDir, err := FindEngine(cfg.EngineDir)
+	engineDir, err := sourceEngine(cfg.EngineDir)
 	if err != nil {
 		return err
 	}
@@ -207,13 +217,22 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 		return errors.New("engine prerequisites missing; install Node.js 20.19 or 22.12+ and run npm ci --omit=dev in the engine directory")
 	}
 	engineConfig := map[string]any{
-		"poll_url": cfg.PollURL, "instance_id": cfg.InstanceID,
+		"instance_id": cfg.InstanceID, "update_origin": cfg.UpdateOrigin,
 		"max_workers": cfg.MaxWorkers, "poll_interval_ms": cfg.PollIntervalMS,
 		"idle_backoff_max_ms": max(60_000, cfg.PollIntervalMS),
 		"shutdown_grace_ms":   -1, "log_dir": filepath.Join(dir, "logs"),
 		"pretty_logs":     false,
 		"runtime_adapter": cfg.WorkerType,
 	}
+	sources := make([]map[string]string, 0, len(cfg.Sources))
+	for _, source := range cfg.Sources {
+		path, err := config.CredentialPath(dir, source.CredentialID)
+		if err != nil {
+			return err
+		}
+		sources = append(sources, map[string]string{"id": source.ID, "name": source.Name, "poll_url": source.PollURL, "instance_id": source.InstanceID, "credential_file": path, "conversation_namespace": source.ConversationNamespace})
+	}
+	engineConfig["sources"] = sources
 	if cfg.AdapterModule != "" {
 		engineConfig["adapter_module"] = cfg.AdapterModule
 	}
@@ -230,7 +249,7 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	cmd := exec.Command(node, filepath.Join(engineDir, "dist", "index.js"))
 	cmd.Dir = engineDir
 	cmd.Env = engineEnvironment(os.Environ(), map[string]string{
-		"CONFIG_PATH": engineConfigPath, "API_KEY": key,
+		"CONFIG_PATH":          engineConfigPath,
 		"TMATRIX_CONTROL_FILE": path, "TMATRIX_CONTROL_PORT": "0", "TMATRIX_INTAKE_PAUSED": "1",
 	})
 	output := &engineLogOutput{log: log, errors: make(chan error, 1)}

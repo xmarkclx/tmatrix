@@ -35,6 +35,7 @@ fs.writeFileSync(process.env.RECOVERY_TEST_OUTPUT, JSON.stringify(process.argv.s
 		}
 	}
 	cfg := config.Default()
+	cfg.Sources = []config.Source{fixtureSource(cfg, config.DefaultPollURL)}
 	cfg.EngineDir = engine
 	if err := config.Save(dir, cfg); err != nil {
 		t.Fatal(err)
@@ -56,11 +57,11 @@ fs.writeFileSync(process.env.RECOVERY_TEST_OUTPUT, JSON.stringify(process.argv.s
 		if err := json.Unmarshal(data, &args); err != nil {
 			t.Fatal(err)
 		}
-		wantLen := 2
+		wantLen := 4
 		if confirmed {
-			wantLen = 3
+			wantLen = 5
 		}
-		if len(args) != wantLen || args[0] != cfg.PollURL || args[1] != "00000000-0000-4000-8000-000000000000" || (confirmed && args[2] != "--confirm-runtime-stopped") {
+		if len(args) != wantLen || args[0] != cfg.Sources[0].PollURL || args[1] != "00000000-0000-4000-8000-000000000000" || args[2] != "--namespace" || args[3] != cfg.Sources[0].ConversationNamespace || (confirmed && args[4] != "--confirm-runtime-stopped") {
 			t.Fatalf("unexpected recovery args: %v", args)
 		}
 	}

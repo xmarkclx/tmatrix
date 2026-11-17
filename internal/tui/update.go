@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"time"
+	"tmatrix/internal/backend"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -101,11 +102,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.composer.Blur()
 			}
 		case "connect":
-			if len(m.form) > 1 {
-				m.form[1].SetValue("")
+			m.editingSource = ""
+			if len(m.form) > 2 {
+				m.form[2].SetValue("")
 			}
 			m.form = nil
 			m.screen = pollersScreen
+			return m, m.refresh()
+		case "remove-source":
+			m.screen = pollersScreen
+			return m, m.refresh()
 		case "settings":
 			m.form = nil
 			m.screen = workersScreen
@@ -134,7 +140,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Bracketed paste is data, never a navigation or confirmation shortcut.
 	if key.Paste {
 		var cmd tea.Cmd
-		if m.busy || m.confirmation != "" {
+		if m.busy || m.confirmation != "" || m.removingSource != "" {
 			return m, nil
 		}
 		if m.composing {
@@ -176,6 +182,26 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.screen == adapterUpdatesScreen {
 		return m.handleAdapterUpdateKey(name)
+	}
+	if m.removingSource != "" {
+		switch name {
+		case "esc", "n":
+			m.removingSource = ""
+			m.notice = ""
+		case "y":
+			id := m.removingSource
+			m.removingSource = ""
+			manager, ok := m.backend.(backend.SourceManager)
+			if !ok {
+				m.failure = "This backend cannot remove sources."
+				return m, nil
+			}
+			m.busy = true
+			m.failure = ""
+			m.notice = "Waiting for active workers before removing source…"
+			return m, m.operation("remove-source", "", func(ctx context.Context) (string, error) { return "Source removed.", manager.RemoveSource(ctx, id) })
+		}
+		return m, nil
 	}
 	if m.confirmation != "" {
 		switch name {
@@ -312,6 +338,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		return m, m.openForm(settingsScreen)
 	case "c":
+		if m.busy {
+			return m, nil
+		}
+		m.editingSource = ""
 		return m, m.openForm(connectScreen)
 	case "?":
 		m.pageOffset = 0
@@ -323,6 +353,27 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		if m.screen == workersScreen || m.screen == pollersScreen {
 			return m, m.toggleIntake()
+		}
+	}
+	if m.screen == pollersScreen && !m.busy {
+		switch name {
+		case "down", "j":
+			m.selectSource(1)
+			return m, nil
+		case "up", "k":
+			m.selectSource(-1)
+			return m, nil
+		case "e", "enter":
+			if source := m.source(); source != nil {
+				m.editingSource = source.ID
+				return m, m.openForm(connectScreen)
+			}
+		case "d":
+			if source := m.source(); source != nil {
+				m.removingSource = source.ID
+				m.notice = "Remove source " + single(source.Name) + "? Active work finishes before removal."
+			}
+			return m, nil
 		}
 	}
 	if m.screen != workersScreen {

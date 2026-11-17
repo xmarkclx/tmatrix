@@ -23,7 +23,7 @@ export interface LocalControlServer {
 
 /** A bearer-protected, loopback-only bridge; no credentials are logged. */
 export async function startLocalControlServer(options: {
-  supervisor: Supervisor;
+  supervisor: Pick<Supervisor, "runningCount" | "updateLocalSettings" | "queueLocalSteering" | "pinLocalWorker" | "stopLocalWorker"> & { localSnapshot(): object };
   file: string;
   port?: number;
   onShutdown: () => void;

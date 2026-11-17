@@ -42,9 +42,10 @@ func run(args []string) error {
 	color := flags.String("color", "auto", "color capability: auto, 16, 256, truecolor, none (NO_COLOR takes precedence)")
 	configDir := flags.String("config-dir", "", "private TMatrix settings directory")
 	engineDir := flags.String("engine-dir", "", "directory containing the TMatrix engine dist/index.js")
+	sourceID := flags.String("source", "", "source ID for offline conversation recovery")
 	showVersion := flags.Bool("version", false, "print version")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [update [--prefix /absolute/path]|setup|engine start|engine stop|engine restart|daemon|conversation recover <task-id> [--confirm-runtime-stopped]|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nConnect with c. Saving a connection starts task intake automatically. Space pauses/resumes intake; subsequent launches restore the saved preference.")
+		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [update [--prefix /absolute/path]|setup|engine start|engine stop|engine restart|daemon|conversation recover <task-id> [--confirm-runtime-stopped]|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nAdd sources with c; manage them in Pollers. Saving a connection starts task intake automatically. Space pauses/resumes intake; subsequent launches restore the saved preference.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
@@ -107,7 +108,17 @@ func run(args []string) error {
 		if (len(command) == 3 || (len(command) == 4 && command[3] == "--confirm-runtime-stopped")) && command[0] == "conversation" && command[1] == "recover" {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			return app.RecoverConversation(ctx, dir, *engineDir, command[2], len(command) == 4)
+			return app.RecoverConversation(ctx, dir, *engineDir, command[2], len(command) == 4, *sourceID)
+		}
+		if len(command) == 1 && command[0] == "daemon" {
+			cfg, err := config.Load(dir)
+			if err != nil {
+				return err
+			}
+			if *engineDir != "" {
+				cfg.EngineDir = *engineDir
+			}
+			return app.RunDaemon(context.Background(), dir, cfg)
 		}
 		// Guard upgrades before New can persist a replacement engine directory.
 		if (len(command) == 1 && command[0] == "setup") || (len(command) == 2 && ((command[0] == "upgrade" && command[1] == "prepare") || (command[0] == "service" && command[1] == "install"))) {
@@ -131,12 +142,6 @@ func run(args []string) error {
 			switch {
 			case len(command) == 1 && command[0] == "setup":
 				return live.SetupService()
-			case len(command) == 1 && command[0] == "daemon":
-				cfg, err := config.Load(dir)
-				if err != nil {
-					return err
-				}
-				return app.RunDaemon(context.Background(), dir, cfg)
 			case len(command) == 2 && command[0] == "service":
 				return app.ManageService(dir, command[1])
 			case len(command) == 1 && command[0] == "status":
@@ -145,7 +150,7 @@ func run(args []string) error {
 					return err
 				}
 				// Deliberately exclude local transcript text and credentials from status.
-				return json.NewEncoder(os.Stdout).Encode(map[string]any{"workers": snapshot.RunningWorkers, "max_workers": snapshot.MaxWorkers, "intake_paused": snapshot.IntakePaused, "poller": snapshot.Poller.Status})
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{"workers": snapshot.RunningWorkers, "max_workers": snapshot.MaxWorkers, "intake_paused": snapshot.IntakePaused, "pollers": snapshot.Pollers})
 			case len(command) == 2 && command[0] == "engine" && command[1] == "start":
 				if err := live.Start(ctx); err != nil {
 					return err
@@ -172,11 +177,11 @@ func run(args []string) error {
 				return errors.New("unknown command; see tmatrix --help")
 			}
 		}
-		key, err := config.LoadAPIKey(dir)
+		cfg, err := config.Load(dir)
 		if err != nil {
 			return err
 		}
-		if key != "" {
+		if len(cfg.Sources) > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			err := live.StartConsole(ctx)
 			cancel()

@@ -27,7 +27,7 @@ func TestEngineEnvironmentIsolatesQueueIdentity(t *testing.T) {
 func TestStartupWithoutCredentialsCannotLaunch(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
 	err := StartEngine(context.Background(), dir, config.Default())
-	if err == nil || !strings.Contains(err.Error(), "connect Tzu Do") {
+	if err == nil || !strings.Contains(err.Error(), "add a source") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(config.DiscoveryPath(dir)); !os.IsNotExist(err) {
@@ -49,7 +49,7 @@ func TestOfflineServiceSettingsPersistAndNoClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, _ := service.Snapshot(context.Background())
-	if first.InstanceID != second.InstanceID || !first.IntakePaused || first.Poller.Status != "not_connected" {
+	if first.InstanceID != second.InstanceID || !first.IntakePaused || len(first.Pollers) != 0 {
 		t.Fatal("unstable offline identity/state")
 	}
 }
@@ -99,4 +99,8 @@ func TestEngineDiscoveryUsesBundleOrExplicitPath(t *testing.T) {
 	if got, err := findEngine(untrusted, exe); err != nil || got != untrusted {
 		t.Fatalf("explicit development engine not selected: %q, %v", got, err)
 	}
+}
+
+func fixtureSource(cfg config.Config, url string) config.Source {
+	return config.Source{ID: "legacy", Name: "Test source", PollURL: url, InstanceID: cfg.InstanceID, CredentialID: "legacy", ConversationNamespace: config.PollOrigin(url)}
 }

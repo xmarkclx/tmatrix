@@ -3,26 +3,31 @@ import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
 import { loadAdapter, setupAdapter } from "./adapter-loader.js";
 import { sanitizedCodexEnvironment } from "./adapters/codex/environment.js";
-import { loadConfig, safeConfig } from "./config.js";
+import { loadEngineConfig, safeEngineConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
 import { errorContext } from "./errors.js";
 import { createLogger } from "./logger.js";
 import { Metrics } from "./metrics.js";
 import { TicketRunner } from "./runner.js";
 import { Supervisor } from "./supervisor.js";
+import { SourceSupervisor } from "./source-supervisor.js";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
 
 async function main(): Promise<void> {
-  const config = await loadConfig();
+  const config = await loadEngineConfig();
   const { logger, close } = createLogger(config);
-  const metrics = new Metrics();
+  const sourceMetrics: { metrics: Metrics; logger: typeof logger }[] = [];
+  const logMetrics = (reason: Parameters<Metrics["log"]>[1]) => {
+    for (const source of sourceMetrics) source.metrics.log(source.logger, reason);
+    logger.info({ event: "sources.metrics", reason, running_workers: supervisor.runningCount, reserved_slots: supervisor.reservedSlots }, "Source capacity totals");
+  };
 
   logger.info({
     event: "daemon.starting",
-    config: safeConfig(config),
+    config: safeEngineConfig(config),
     pid: process.pid,
     node_version: process.version,
     working_directory: process.cwd()
@@ -31,57 +36,58 @@ async function main(): Promise<void> {
   const adapter = await loadAdapter(config.runtime_adapter, config.adapter_module);
 
   if (process.argv.includes("--check-config")) {
-    logger.info({ event: "config.valid", config: safeConfig(config) }, "Configuration is valid");
+    if (config.sources.some(source => source.kind === "error")) {
+      await close();
+      throw new Error("One or more sources have an unreadable private worker key");
+    }
+    logger.info({ event: "config.valid", config: safeEngineConfig(config) }, "Configuration is valid");
     await close();
     return;
   }
 
-  const api = new ApiClient({ config, logger, metrics });
   const codexEnvironment = sanitizedCodexEnvironment(process.env);
   const { runtimeFactory, updates: adapterUpdates } = await setupAdapter(adapter, {
     environment: codexEnvironment,
     logger,
-    updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.poll_origin, config.instance_id)
+    updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.update_origin, config.instance_id)
   });
-  const conversationStore = new ConversationStore({
-    directory: config.conversation_state_dir
-      ? resolve(config.conversation_state_dir)
-      : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "aiworker", "conversations"),
-    // Canonical task IDs are unique within the API origin. Key rotation and
-    // separate worker instances must retain the same routing and task locks.
-    namespace: config.poll_origin,
-    adapterId: adapter.id,
-    trackRuntime: adapter.id === "codex",
-    runtimeHome: adapter.id === "codex" ? (codexEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex")) : homedir(),
-    referenceKey: config.api_key
-  });
-  const runner = new TicketRunner({ runtimeFactory, api, logger, metrics, conversationStore,
-    alertSecurityWarning: (alert, signal) => api.alertUserEmergency(alert, signal) });
-  let supervisor!: Supervisor;
-  const control = new ControlClient({
+  const supervisor = new SourceSupervisor({
     config,
     logger,
-    metrics,
-    onCancellation: (request) => {
-      supervisor.handleCancellation(request, "push");
+    intakePaused: process.env.TMATRIX_INTAKE_PAUSED === "1",
+    createSupervisor(source, sharedCapacity) {
+      const sourceConfig = source.config;
+      const sourceLogger = logger.child({ source_id: source.metadata.id, source_name: source.metadata.name });
+      const metrics = new Metrics();
+      sourceMetrics.push({ metrics, logger: sourceLogger });
+      const api = new ApiClient({ config: sourceConfig, logger: sourceLogger, metrics });
+      const conversationStore = new ConversationStore({
+        directory: config.conversation_state_dir
+          ? resolve(config.conversation_state_dir)
+          : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "aiworker", "conversations"),
+        namespace: source.metadata.conversation_namespace,
+        adapterId: adapter.id,
+        trackRuntime: adapter.id === "codex",
+        runtimeHome: adapter.id === "codex" ? (codexEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex")) : homedir(),
+        referenceKey: sourceConfig.api_key
+      });
+      const runner = new TicketRunner({ runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
+        alertSecurityWarning: (alert, signal) => api.alertUserEmergency(alert, signal) });
+      let child!: Supervisor;
+      const control = new ControlClient({ config: sourceConfig, logger: sourceLogger, metrics,
+        onCancellation: request => { child.handleCancellation(request, "push"); } });
+      child = new Supervisor({ config: sourceConfig, poller: api, runner, cancellationApi: api,
+        control, logger: sourceLogger, metrics, sharedCapacity,
+        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id) } : {}),
+        intakePaused: process.env.TMATRIX_INTAKE_PAUSED === "1" });
+      return child;
     }
-  });
-  supervisor = new Supervisor({
-    config,
-    poller: api,
-    runner,
-    cancellationApi: api,
-    control,
-    logger,
-    metrics,
-    ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id) } : {}),
-    intakePaused: process.env.TMATRIX_INTAKE_PAUSED === "1"
   });
   let localControl: LocalControlServer | undefined;
 
-  const metricsTimer = setInterval(() => metrics.log(logger, "interval"), config.metrics_interval_ms);
+  const metricsTimer = setInterval(() => logMetrics("interval"), config.metrics_interval_ms);
   metricsTimer.unref();
-  metrics.log(logger, "startup");
+  logMetrics("startup");
 
   let shutdownPromise: Promise<void> | undefined;
   const shutdown = (signal: string, graceMs?: number) => {
@@ -94,7 +100,7 @@ async function main(): Promise<void> {
       await supervisor.shutdown(graceMs);
       await updateClosed;
       await localControl?.close();
-      metrics.log(logger, "shutdown");
+      logMetrics("shutdown");
       await close();
     })();
     return shutdownPromise;
@@ -112,7 +118,7 @@ async function main(): Promise<void> {
 
   process.once("SIGINT", () => void shutdown("SIGINT"));
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
-  process.on("SIGUSR1", () => metrics.log(logger, "signal"));
+  process.on("SIGUSR1", () => logMetrics("signal"));
 
   const fatal = (kind: string, cause: unknown) => {
     logger.fatal({ event: kind, ...errorContext(cause) }, "Fatal process-level failure");

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -47,7 +48,7 @@ func TestAdapterUpdateActionsUseExistingEngineWithoutChangingConfiguration(t *te
 	}
 	after, _ := config.Load(s.Dir)
 	key, err := config.LoadAPIKey(s.Dir)
-	if err != nil || before != after || key != "fictional-original-key" {
+	if err != nil || !reflect.DeepEqual(before, after) || key != "fictional-original-key" {
 		t.Fatal("runtime update changed saved settings or credentials")
 	}
 	if err := os.Remove(config.DiscoveryPath(s.Dir)); err != nil {

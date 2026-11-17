@@ -7,9 +7,12 @@ func (m Model) formContent() layoutBlock {
 	title := "Execution settings"
 	intro := "Max workers limits how many tasks run at once. Lowering it won't stop tasks already running."
 	if m.screen == connectScreen {
-		labels = []string{"Tzu Do server or full poll URL", "Worker API key"}
-		title = "Connect with Tzu Do"
-		intro = "Engine starts paused. Key stays on this machine."
+		labels = []string{"Source name", "Server or full poll URL", "Worker API key"}
+		title = "Add source"
+		if m.editingSource != "" {
+			title = "Edit source"
+		}
+		intro = "Saves after active workers finish. Key stays on this machine."
 		if m.options.Demo {
 			intro = "Simulated setup · no network or settings writes."
 		}

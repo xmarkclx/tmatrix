@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ func TestSettingsRoundTripKeepsCredentialSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err := Load(dir)
-	if err != nil || loaded != c {
+	if err != nil || !reflect.DeepEqual(loaded, c) {
 		t.Fatalf("settings or instance ID changed: %v", err)
 	}
 	key, err := LoadAPIKey(dir)
@@ -62,7 +63,7 @@ func TestRejectUnsafeConnectionAndSettings(t *testing.T) {
 		func(c *Config) { c.PollIntervalMS = 249 },
 		func(c *Config) { c.PollIntervalMS = 300001 },
 		func(c *Config) { c.WorkerType = "claude" },
-		func(c *Config) { c.PollerType = "unknown" },
+		func(c *Config) { c.UpdateOrigin = "http://unsafe.invalid" },
 		func(c *Config) { c.InstanceID = strings.Repeat("x", 36) },
 	} {
 		c := Default()
@@ -186,7 +187,7 @@ func TestCustomAdapterConfigurationRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err := Load(dir)
-	if err != nil || loaded != cfg {
+	if err != nil || !reflect.DeepEqual(loaded, cfg) {
 		t.Fatalf("adapter configuration lost: %v", err)
 	}
 	cfg.AdapterModule = "relative.mjs"

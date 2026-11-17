@@ -20,7 +20,7 @@ func (m Model) workerCardHeight() int {
 func (m Model) workerCards() layoutBlock {
 	height := m.workerCardHeight()
 	if len(m.snapshot.Workers) == 0 {
-		result := controls([]control{{"[c] Connect with Tzu Do", "c"}}, m.width)
+		result := controls([]control{{"[c] Add source", "c"}}, m.width)
 		for len(result.lines) < height {
 			result.lines = append(result.lines, "")
 		}
@@ -73,6 +73,9 @@ func (m Model) workerCards() layoutBlock {
 			}
 		}
 		title := fmt.Sprintf("%d %s %s%s", i+1, marker, pin, single(worker.Title))
+		if worker.SourceName != "" {
+			title = fmt.Sprintf("%d %s %s[%s] %s", i+1, marker, pin, single(worker.SourceName), single(worker.Title))
+		}
 		lines := []string{ellipsis(title, inner)}
 		lines = append(lines, ellipsis(workerRuntimeLabel(worker, m.now), inner))
 		if height == 5 {
@@ -107,7 +110,7 @@ func (m Model) workerContent() layoutBlock {
 			mutedStyle.Render("  ┌───┐    ┌───┐    ┌───┐"),
 			mutedStyle.Render("  │ > │    │ > │    │ > │"),
 			mutedStyle.Render("  └─┬─┘    └─┬─┘    └─┬─┘"), "",
-			textBlock("Connect Tzu Do below, then resume intake(space key)...", m.width-4),
+			textBlock("Add a source with c, then resume intake with Space.", m.width-4),
 		}, "\n"), "\n")}
 	}
 	width := m.width - 4
@@ -116,6 +119,9 @@ func (m Model) workerContent() layoutBlock {
 		runtime = "codex"
 	}
 	meta := workerRuntimeLabel(*worker, m.now) + " · " + runtime
+	if worker.SourceName != "" {
+		meta = single(worker.SourceName) + " · " + meta
+	}
 	if worker.Pinned {
 		meta = "📌 PIN · " + meta
 		if m.options.Portable {

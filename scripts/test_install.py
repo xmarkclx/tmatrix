@@ -386,8 +386,12 @@ if action == "start":
         old = (self.prefix / "bin/tmatrix").resolve()
         config_dir = self.home / ".config/tmatrix"
         config_path = config_dir / "config.json"
-        saved = json.loads(config_path.read_text())
-        saved.update(max_workers=3, resume_intake=False)
+        initial = json.loads(config_path.read_text())
+        saved = {"version": 1, "max_workers": 3, "resume_intake": False,
+                 "poll_interval_ms": initial["poll_interval_ms"],
+                 "engine_dir": initial["engine_dir"], "worker_type": initial["worker_type"],
+                 "poller_type": "tzudo", "poll_url": "https://tzudo.app/api/v1/ai/poll",
+                 "instance_id": initial["instance_id"]}
         config_path.write_text(json.dumps(saved))
         (config_dir / "credentials").write_text("offline-fixture")
         (config_dir / "credentials").chmod(0o600)
@@ -404,7 +408,13 @@ if action == "start":
         self.assertNotEqual(new, old)
         self.assertTrue(old.exists())
         self.assertIn(str(new), unit.read_text())
-        expected = dict(saved, engine_dir=str(new.with_name("engine")))
+        expected = {"version": 2, "max_workers": 3, "resume_intake": False,
+                    "poll_interval_ms": saved["poll_interval_ms"],
+                    "engine_dir": str(new.with_name("engine")), "worker_type": saved["worker_type"],
+                    "instance_id": saved["instance_id"], "update_origin": "https://tzudo.app",
+                    "sources": [{"id": "legacy", "name": "TzuDo", "poll_url": saved["poll_url"],
+                                 "instance_id": saved["instance_id"], "credential_id": "legacy",
+                                 "conversation_namespace": "https://tzudo.app"}]}
         actual = json.loads(config_path.read_text())
         actual.setdefault("resume_intake", False)
         self.assertEqual(actual, expected)

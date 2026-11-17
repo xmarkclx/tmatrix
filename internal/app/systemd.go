@@ -131,11 +131,7 @@ func manageService(dir, action string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	key, err := config.LoadAPIKey(dir)
-	if err != nil {
-		return err
-	}
-	if key == "" {
+	if len(cfg.Sources) == 0 {
 		return errors.New("connect in TMatrix before installing the service")
 	}
 	engine, err := FindEngine(cfg.EngineDir)

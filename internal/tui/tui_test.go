@@ -15,6 +15,7 @@ type fakeBackend struct {
 	snapshot        backend.Snapshot
 	message, worker string
 	stops           int
+	removedSource   string
 	settings        backend.Settings
 	connection      backend.Connection
 	err             error
@@ -51,7 +52,7 @@ func (b *fakeBackend) Connect(_ context.Context, c backend.Connection) error {
 	return b.err
 }
 func testModel() (Model, *fakeBackend) {
-	b := &fakeBackend{snapshot: backend.Snapshot{MaxWorkers: 4, RunningWorkers: 2, PollIntervalMS: 5000, IntakePaused: true, Poller: backend.Poller{Type: "tzudo", Status: "paused", URL: "https://tzudo.app"}, Workers: []backend.Worker{{ID: "a", Title: "Inspect worker activity", Status: "running", WorkerType: "codex", ThreadID: "thread-a", InputRevision: 2, Activity: []backend.Activity{{At: "2026-09-29T10:01:00Z", Kind: "tool", Text: "Inspecting the project."}}}, {ID: "b", Title: "Review keyboard behavior", Status: "running", WorkerType: "codex"}}}}
+	b := &fakeBackend{snapshot: backend.Snapshot{MaxWorkers: 4, RunningWorkers: 2, PollIntervalMS: 5000, IntakePaused: true, Pollers: []backend.Poller{{ID: "test-tzudo", Name: "TzuDo", Type: "tzudo", Status: "paused", URL: "https://tzudo.app"}}, Workers: []backend.Worker{{ID: "a", Title: "Inspect worker activity", Status: "running", WorkerType: "codex", ThreadID: "thread-a", InputRevision: 2, Activity: []backend.Activity{{At: "2026-09-29T10:01:00Z", Kind: "tool", Text: "Inspecting the project."}}}, {ID: "b", Title: "Review keyboard behavior", Status: "running", WorkerType: "codex"}}}}
 	m := New(b, Options{Demo: true})
 	result, _ := m.Update(snapshotMsg{snapshot: b.snapshot})
 	return result.(Model), b
@@ -177,8 +178,9 @@ func TestSettingsValidateThenReachBackend(t *testing.T) {
 func TestCredentialsMaskedAndErrorsRedacted(t *testing.T) {
 	m, b := testModel()
 	m, _ = press(m, "c")
-	m.form[1].SetValue("unit-test-secret")
-	m.form[1].Blur()
+	m.form[0].SetValue("Mindmap")
+	m.form[2].SetValue("unit-test-secret")
+	m.form[2].Blur()
 	if strings.Contains(m.View(), "unit-test-secret") {
 		t.Fatal("credential leaked in form")
 	}
@@ -302,16 +304,32 @@ func TestCompactHelpAndFormsKeepControlsReachable(t *testing.T) {
 func TestConnectNormalizesOriginAndRejectsInsecureURL(t *testing.T) {
 	m, b := testModel()
 	m, _ = press(m, "c")
-	m.form[0].SetValue("http://tzudo.app")
+	m.form[0].SetValue("TzuDo")
+	m.form[2].SetValue("demo-key")
+	m.form[1].SetValue("http://tzudo.app")
 	m, _ = press(m, "ctrl+s")
 	if b.connection.URL != "" || m.failure == "" {
 		t.Fatal("insecure URL submitted")
 	}
-	m.form[0].SetValue("https://tzudo.app")
+	m.form[1].SetValue("https://tzudo.app")
 	var cmd tea.Cmd
 	m, cmd = press(m, "ctrl+s")
 	m = execute(m, cmd)
-	if b.connection.URL != "https://tzudo.app/api/v1/ai/poll" || b.connection.APIKey != "" {
+	if b.connection.URL != "https://tzudo.app/api/v1/ai/poll" || b.connection.APIKey != "demo-key" {
 		t.Fatal("origin/saved key not normalized")
 	}
+}
+
+func (b *fakeBackend) RemoveSource(_ context.Context, id string) error {
+	b.removedSource = id
+	if b.err != nil {
+		return b.err
+	}
+	for i, source := range b.snapshot.Pollers {
+		if source.ID == id {
+			b.snapshot.Pollers = append(b.snapshot.Pollers[:i], b.snapshot.Pollers[i+1:]...)
+			break
+		}
+	}
+	return nil
 }

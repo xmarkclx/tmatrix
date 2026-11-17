@@ -27,8 +27,8 @@ func NewDemo() *Demo {
 // while an injectable clock keeps verification deterministic.
 func newDemo(now func() time.Time) *Demo {
 	demo := &Demo{now: now, snapshot: Snapshot{
-		Version: 1, InstanceID: "demo", MaxWorkers: 4, RunningWorkers: 2, PollIntervalMS: 5000,
-		Poller: Poller{Type: "tzudo", Status: "demo", URL: config.DefaultPollURL, LastPollAt: "2026-09-29T10:04:30Z"},
+		Version: 2, InstanceID: "demo", MaxWorkers: 4, RunningWorkers: 2, PollIntervalMS: 5000,
+		Pollers: []Poller{{ID: "demo-tzudo", Name: "TzuDo", Type: "tzudo", Status: "demo", URL: config.DefaultPollURL, LastPollAt: "2026-09-29T10:04:30Z"}, {ID: "demo-mindmap", Name: "Mindmap", Type: "tzudo", Status: "demo", URL: "https://mindmap.tzudo.app/api/ai-chat/worker/poll", LastPollAt: "2026-09-29T10:04:30Z"}},
 		Workers: []Worker{
 			{ID: "demo-01", TicketID: "TMX-12", Title: "⌨️ Build a keyboard-first command palette", Status: "running", Model: "gpt-6-astra", WorkerType: "codex", ThreadID: "demo-conversation-01", RunKind: "resumed", InputRevision: 3, StartedAt: "2026-09-29T10:00:00Z", InitialPrompt: &InitialPrompt{
 				Text: "Build a keyboard-first command palette.\nKeep every action reachable without a mouse, preserve focus when switching workers, and verify the shortcuts.\nUse fictional sample data only. [sample prompt]", At: "2026-09-29T10:00:00Z", InputRevision: 2,
@@ -59,9 +59,13 @@ func newDemo(now func() time.Time) *Demo {
 		parsed, _ := time.Parse(time.RFC3339, value)
 		return parsed.Add(offset).Format(time.RFC3339Nano)
 	}
-	demo.snapshot.Poller.LastPollAt = shift(demo.snapshot.Poller.LastPollAt)
+	for i := range demo.snapshot.Pollers {
+		demo.snapshot.Pollers[i].LastPollAt = shift(demo.snapshot.Pollers[i].LastPollAt)
+	}
 	for i := range demo.snapshot.Workers {
 		worker := &demo.snapshot.Workers[i]
+		source := demo.snapshot.Pollers[i%len(demo.snapshot.Pollers)]
+		worker.SourceID, worker.SourceName = source.ID, source.Name
 		worker.StartedAt = shift(worker.StartedAt)
 		if worker.InitialPrompt != nil {
 			worker.InitialPrompt.At = shift(worker.InitialPrompt.At)
@@ -83,6 +87,7 @@ func (d *Demo) Snapshot(ctx context.Context) (Snapshot, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	copy := d.snapshot
+	copy.Pollers = append([]Poller(nil), d.snapshot.Pollers...)
 	copy.Workers = append([]Worker(nil), d.snapshot.Workers...)
 	for i := range copy.Workers {
 		if copy.Workers[i].InitialPrompt != nil {
@@ -200,9 +205,40 @@ func (d *Demo) Connect(ctx context.Context, connection Connection) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.snapshot.Poller.URL = connection.URL
-	d.snapshot.Poller.Status = "demo"
+	if connection.Name == "" {
+		return errors.New("enter a source name")
+	}
+	if connection.SourceID != "" {
+		for i := range d.snapshot.Pollers {
+			if d.snapshot.Pollers[i].ID == connection.SourceID {
+				d.snapshot.Pollers[i].Name = connection.Name
+				d.snapshot.Pollers[i].URL = connection.URL
+				return nil
+			}
+		}
+		return errors.New("source no longer exists")
+	}
+	d.nextID++
+	d.snapshot.Pollers = append(d.snapshot.Pollers, Poller{ID: fmt.Sprintf("demo-source-%d", d.nextID), Name: connection.Name, URL: connection.URL, Type: "tzudo", Status: "demo"})
 	return nil
+}
+
+func (d *Demo) RemoveSource(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i, source := range d.snapshot.Pollers {
+		if source.ID == id {
+			d.snapshot.Pollers = append(d.snapshot.Pollers[:i], d.snapshot.Pollers[i+1:]...)
+			if len(d.snapshot.Pollers) == 0 {
+				d.snapshot.IntakePaused = true
+			}
+			return nil
+		}
+	}
+	return errors.New("source no longer exists")
 }
 
 func (d *Demo) worker(id string) *Worker {

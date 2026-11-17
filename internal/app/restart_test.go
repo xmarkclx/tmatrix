@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestRestartWaitsAndCancellationPreservesSettings(t *testing.T) {
 		t.Fatal("cancelled restart still pending")
 	}
 	after, err := config.Load(s.Dir)
-	if err != nil || before != after {
+	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatal("restart changed saved settings")
 	}
 	key, err := config.LoadAPIKey(s.Dir)

@@ -1,8 +1,9 @@
-import { access, readFile } from "node:fs/promises";
+import { access, lstat, open, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import { WorkerError } from "./errors.js";
+import { conversationNamespace } from "./source-namespace.js";
 
 const logLevels = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
 const booleanValue = z.preprocess((value) => {
@@ -174,6 +175,10 @@ export async function loadConfig(options: {
   const fileConfig = await loadFile(configPath, explicitPath !== undefined);
   const candidate = { ...fileConfig, ...environmentOverrides(env) };
 
+  return parseWorkerConfig(candidate);
+}
+
+function parseWorkerConfig(candidate: unknown): WorkerConfig {
   const result = rawConfigSchema.safeParse(candidate);
   if (!result.success) {
     throw new WorkerError({
@@ -230,4 +235,92 @@ export function safeConfig(config: WorkerConfig): Record<string, unknown> {
     log_max_files: config.log_max_files,
     api_key_configured: config.api_key.length > 0
   };
+}
+
+
+const sourceMetadataSchema = z.object({
+  id: z.union([z.literal("legacy"), z.uuid()]),
+  name: z.string().min(1).refine(value => Array.from(value).length <= 120, "must contain at most 120 characters").regex(/^[^\x00-\x1f\x7f-\x9f]+$/),
+  poll_url: z.string().min(1),
+  instance_id: z.string().min(1),
+  conversation_namespace: z.string().min(1).max(8192),
+  credential_file: z.string().refine(isAbsolute, "must be an absolute credential file path")
+}).strict();
+
+export type SourceMetadata = Omit<z.infer<typeof sourceMetadataSchema>, "credential_file">;
+export type EngineSource =
+  | { kind: "ready"; metadata: SourceMetadata; config: WorkerConfig }
+  | { kind: "error"; metadata: SourceMetadata; error: string };
+export type EngineConfig = Omit<WorkerConfig, "poll_url" | "poll_origin" | "api_key"> & {
+  update_origin: string;
+  sources: EngineSource[];
+};
+
+const engineConfigSchema = rawConfigSchema.omit({ poll_url: true, api_key: true }).extend({
+  update_origin: z.url(),
+  sources: z.array(sourceMetadataSchema).max(32)
+});
+
+async function readSourceKey(path: string): Promise<string> {
+  const parent = await lstat(dirname(path));
+  if (!parent.isDirectory() || process.platform !== "win32" && (parent.mode & 0o077) !== 0) throw new Error("Unsafe credential directory");
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 8193 || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Unsafe credential file");
+    const key = (await file.readFile("utf8")).trim();
+    if (!key || key.length > 8192 || /\s|[\x00-\x1f\x7f]/.test(key)) throw new Error("Invalid worker key");
+    return key;
+  } finally {
+    await file.close();
+  }
+}
+
+export async function loadEngineConfig(options: Parameters<typeof loadConfig>[0] = {}): Promise<EngineConfig> {
+  const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? process.env;
+  const explicitPath = options.configPath ?? env.CONFIG_PATH;
+  const file = await loadFile(resolve(cwd, explicitPath ?? "config.json"), explicitPath !== undefined);
+  const candidate = { ...file, ...environmentOverrides(env) };
+  if (!("sources" in candidate)) {
+    const config = parseWorkerConfig(candidate);
+    const { poll_url, poll_origin, api_key, ...common } = config;
+    return { ...common, update_origin: poll_origin, sources: [{ kind: "ready", config,
+      metadata: { id: "legacy", name: "TzuDo", poll_url, instance_id: config.instance_id, conversation_namespace: poll_origin } }] };
+  }
+  if ("poll_url" in candidate || "api_key" in candidate) throw new WorkerError({
+    message: "Configure either named sources or a single legacy connection, not both",
+    code: "CONFIG_SOURCES_AMBIGUOUS", stage: "config.validate"
+  });
+  const parsed = engineConfigSchema.safeParse(candidate);
+  if (!parsed.success) throw new WorkerError({
+    message: "Source configuration is invalid", code: "CONFIG_INVALID", stage: "config.validate",
+    details: { issues: parsed.error.issues.map(issue => ({ path: issue.path.join("."), message: issue.message })) }
+  });
+  const { sources: rawSources, update_origin, ...common } = parsed.data;
+  const origin = validatePollUrl(update_origin).origin;
+  if (common.idle_backoff_max_ms < common.poll_interval_ms) throw new WorkerError({
+    message: "idle_backoff_max_ms must be at least poll_interval_ms", code: "CONFIG_BACKOFF_INVALID", stage: "config.validate"
+  });
+  const ids = new Set<string>();
+  const sources: EngineSource[] = [];
+  for (const raw of rawSources) {
+    if (ids.has(raw.id)) throw new WorkerError({ message: "Source IDs must be unique", code: "CONFIG_SOURCE_DUPLICATE", stage: "config.validate" });
+    ids.add(raw.id);
+    const { credential_file, ...metadata } = raw;
+    validatePollUrl(raw.poll_url);
+    metadata.conversation_namespace = conversationNamespace(metadata.conversation_namespace);
+    try {
+      const api_key = await readSourceKey(credential_file);
+      sources.push({ kind: "ready", metadata, config: parseWorkerConfig({ ...common, ...metadata, api_key }) });
+    } catch {
+      sources.push({ kind: "error", metadata, error: "Could not read this source's private worker key. Edit the source connection to save a key." });
+    }
+  }
+  return { ...common, update_origin: origin, sources };
+}
+
+export function safeEngineConfig(config: EngineConfig): Record<string, unknown> {
+  const { sources, ...common } = config;
+  return { ...common, sources: sources.map(source => ({ ...source.metadata, api_key_configured: source.kind === "ready" })) };
 }

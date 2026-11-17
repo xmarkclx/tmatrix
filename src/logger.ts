@@ -26,7 +26,7 @@ export interface LoggerBundle {
   close: () => Promise<void>;
 }
 
-export function createLogger(config: WorkerConfig): LoggerBundle {
+export function createLogger(config: Omit<WorkerConfig, "poll_url" | "poll_origin" | "api_key">): LoggerBundle {
   let closing = false;
   const streamLevel = config.log_level === "silent" ? "fatal" : config.log_level;
   const streams: StreamEntry[] = [{

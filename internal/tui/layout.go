@@ -95,7 +95,7 @@ func (m Model) renderLayout() (string, []hitTarget) {
 	case !m.loaded:
 		badge = "UNKNOWN - Connecting…"
 		badgeStyle = mutedStyle
-	case m.snapshot.Poller.Status == "stopped":
+	case m.allPollersStopped():
 		badge = "OFF - Engine draining or stopped"
 		badgeStyle = warningStyle
 	case m.snapshot.IntakePaused:
@@ -259,6 +259,9 @@ func (m Model) footerLayout() layoutBlock {
 	if m.screen == settingsScreen {
 		return controls([]control{{"[Ctrl+S] Save", "ctrl+s"}, {"[Esc] Back", "esc"}}, m.width)
 	}
+	if m.removingSource != "" {
+		return controls([]control{{"[y] Remove source", "y"}, {"[n] Cancel", "n"}}, m.width)
+	}
 	if m.confirmation != "" {
 		return controls([]control{{"[y] Request stop", "y"}, {"[n] Cancel", "n"}}, m.width)
 	}
@@ -267,6 +270,9 @@ func (m Model) footerLayout() layoutBlock {
 	}
 	if m.screen == settingsScreen || m.screen == connectScreen {
 		return controls([]control{{"[Ctrl+S] Save", "ctrl+s"}, {"[Esc] Cancel", "esc"}}, m.width)
+	}
+	if m.screen == pollersScreen {
+		return controls([]control{{"[↑] Previous", "up"}, {"[↓] Next", "down"}, {"[e] Edit", "e"}, {"[d] Remove", "d"}, {"[c] Add source", "c"}, {"[Space] Intake", " "}}, m.width)
 	}
 	selection := "[F2] Select text"
 	if m.mouseDisabled {
@@ -277,9 +283,9 @@ func (m Model) footerLayout() layoutBlock {
 		intake = "Resume intake"
 	}
 	if m.width < 65 {
-		return controls([]control{{"[m] Matrix", "m"}, {"[?] Help", "?"}, {"[c] Connect", "c"}, {"[Space] Intake", " "}}, m.width)
+		return controls([]control{{"[m] Matrix", "m"}, {"[?] Help", "?"}, {"[c] Add source", "c"}, {"[Space] Intake", " "}}, m.width)
 	}
-	return controls([]control{{"[m] Matrix", "m"}, {"[?] Help", "?"}, {"[c] Connect", "c"}, {"[Space] " + intake, " "}, {"[q] Detach", "q"}, {selection, "f2"}}, m.width)
+	return controls([]control{{"[m] Matrix", "m"}, {"[?] Help", "?"}, {"[c] Add source", "c"}, {"[Space] " + intake, " "}, {"[q] Detach", "q"}, {selection, "f2"}}, m.width)
 }
 
 func (m Model) screenName() string {
@@ -296,10 +302,25 @@ func (m Model) screenName() string {
 	case settingsScreen:
 		return "Settings"
 	case connectScreen:
-		return "Connect with Tzu Do"
+		if m.editingSource != "" {
+			return "Edit source"
+		}
+		return "Add source"
 	case helpScreen:
 		return "Keyboard guide"
 	default:
 		return "Workers"
 	}
+}
+
+func (m Model) allPollersStopped() bool {
+	if len(m.snapshot.Pollers) == 0 {
+		return false
+	}
+	for _, source := range m.snapshot.Pollers {
+		if source.Status != "stopped" {
+			return false
+		}
+	}
+	return true
 }

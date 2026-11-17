@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 
 func drainingService(t *testing.T) (*Service, <-chan struct{}) {
 	t.Helper()
-	s, err := New(filepath.Join(t.TempDir(), "private"), "")
+	s, err := New(filepath.Join(t.TempDir(), "private"), sourceEngineFixture(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestCancelledConnectionPreservesCredentials(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- s.Connect(ctx, backend.Connection{URL: "https://replacement.invalid/api/v1/ai/poll", APIKey: "replacement-fixture"})
+		done <- s.Connect(ctx, backend.Connection{Name: "Replacement", URL: "https://replacement.invalid/api/v1/ai/poll", APIKey: "replacement-fixture"})
 	}()
 	select {
 	case <-requested:
@@ -91,7 +92,21 @@ func TestCancelledConnectionPreservesCredentials(t *testing.T) {
 	}
 	after, _ := config.Load(s.Dir)
 	key, err = config.LoadAPIKey(s.Dir)
-	if err != nil || key != "original-fixture" || before != after {
+	if err != nil || key != "original-fixture" || !reflect.DeepEqual(before, after) {
 		t.Fatal("cancelled drain changed connection")
 	}
+}
+
+func sourceEngineFixture(t *testing.T) string {
+	t.Helper()
+	engine := filepath.Join(t.TempDir(), "engine")
+	if err := os.MkdirAll(filepath.Join(engine, "dist"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"index.js": "// TMATRIX_CONTROL_FILE TMATRIX_INTAKE_PAUSED", "local-control-server.js": "", "source-supervisor.js": ""} {
+		if err := os.WriteFile(filepath.Join(engine, "dist", name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return engine
 }

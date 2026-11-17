@@ -294,3 +294,14 @@ func TestPinNotFoundExplainsOldEngineOrMissingWorker(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacySnapshotNormalizesSourceAttribution(t *testing.T) {
+	var snapshot Snapshot
+	data := []byte(`{"version":1,"max_workers":2,"running_workers":1,"poller":{"type":"tzudo","url":"https://tzudo.invalid/poll","status":"connected"},"workers":[{"id":"worker-original","title":"Task"}]}`)
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Pollers) != 1 || snapshot.Pollers[0].ID != "legacy" || snapshot.Pollers[0].Name != "TzuDo" || snapshot.Pollers[0].URL != "https://tzudo.invalid/poll" || snapshot.Workers[0].ID != "worker-original" || snapshot.Workers[0].SourceID != "legacy" || snapshot.Workers[0].SourceName != "TzuDo" {
+		t.Fatal("legacy bridge lost connection attribution or worker controls")
+	}
+}

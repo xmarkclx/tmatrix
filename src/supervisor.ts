@@ -60,10 +60,18 @@ const MAX_CANCELLATION_TOMBSTONES = 10_000;
 // Tzu Do caps each poll at 32 new claims, independently of worker capacity.
 const MAX_POLL_SLOTS = 32;
 
+export interface SharedCapacity {
+  freeSlots(): number;
+  pollSlots(): number;
+  changed(): void;
+}
+
 export class Supervisor {
+  private readonly sharedCapacity: SharedCapacity | undefined;
+  private advertisedSlots = 0;
   private readonly config: WorkerConfig;
   private readonly poller: Poller;
-  private readonly runner: TicketRunner;
+  private readonly runner: Pick<TicketRunner, "run">;
   private readonly cancellationApi: CancellationApi | undefined;
   private readonly control: ControlChannel | undefined;
   private readonly logger: Logger;
@@ -96,7 +104,7 @@ export class Supervisor {
   constructor(options: {
     config: WorkerConfig;
     poller: Poller;
-    runner: TicketRunner;
+    runner: Pick<TicketRunner, "run">;
     cancellationApi?: CancellationApi;
     control?: ControlChannel;
     logger: Logger;
@@ -104,8 +112,10 @@ export class Supervisor {
     sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
     localState?: LocalWorkerState;
     intakePaused?: boolean;
+    sharedCapacity?: SharedCapacity;
   }) {
     this.config = options.config;
+    this.sharedCapacity = options.sharedCapacity;
     this.localState = options.localState;
     this.intakePaused = options.intakePaused ?? false;
     this.maxWorkers = options.config.max_workers;
@@ -117,6 +127,18 @@ export class Supervisor {
     this.logger = options.logger.child({ component: "supervisor" });
     this.metrics = options.metrics;
     this.sleep = options.sleep ?? abortableDelay;
+  }
+
+  get admissionAllowed(): boolean { return !this.stopped && !this.intakePaused && !this.pollAuthorizationRevoked; }
+
+  get hasPendingPoll(): boolean { return this.pendingPoll !== undefined; }
+
+  get pendingClaimSlots(): number { return this.pendingPoll?.available_slots ?? 0; }
+
+  get lastPollSlots(): number { return this.advertisedSlots; }
+
+  async reconcileOnce(): Promise<PollCycleResult> {
+    try { return await this.pollOnce(0, true); } finally { this.startupReconciled = true; }
   }
 
   get runningCount(): number {
@@ -254,6 +276,7 @@ export class Supervisor {
       available_slots: availableSlots
     };
     this.pendingPoll = request;
+    this.advertisedSlots = request.available_slots;
     const pollId = request.poll_id;
     availableSlots = request.available_slots;
     const startedAt = Date.now();
@@ -293,6 +316,7 @@ export class Supervisor {
         // Reconcile fresh ownership instead of replaying a pre-rejection poll.
         delete this.pendingPoll;
         this.revokeAllWorkersForPollAuthorization(pollId, status);
+        this.sharedCapacity?.changed();
       }
       throw cause;
     }
@@ -435,6 +459,7 @@ export class Supervisor {
       running_workers: this.running.size
     }, "Poll cycle completed");
 
+    this.sharedCapacity?.changed();
     return {
       newWorkers,
       recoveredWorkers,
@@ -446,11 +471,13 @@ export class Supervisor {
 
   /** Limits new claims per request while allowing earlier claims to keep running. */
   private availableSlots(): number {
+    if (this.pendingPoll) return this.pendingPoll.available_slots;
     if (this.intakePaused || this.pollAuthorizationRevoked) return 0;
     return Math.min(
       Math.max(0, this.maxWorkers - this.running.size),
       this.config.max_tickets_per_poll ?? this.maxWorkers,
-      MAX_POLL_SLOTS
+      MAX_POLL_SLOTS,
+      this.sharedCapacity?.pollSlots() ?? this.maxWorkers
     );
   }
 
@@ -530,7 +557,7 @@ export class Supervisor {
   private start(ticket: Ticket, recovered: boolean, pollId: string): boolean {
     // An abort-aware poll should reject during shutdown, but this guard also
     // protects against implementations that resolve after their signal fires.
-    if (this.stopped || this.pollAuthorizationRevoked || this.localStops.has(`${ticket.ticket_id}:${ticket.worker_id}`)) return false;
+    if (this.stopped || this.pollAuthorizationRevoked || this.localStops.has(`${ticket.ticket_id}:${ticket.worker_id}`) || (this.sharedCapacity && this.sharedCapacity.freeSlots() <= 0)) return false;
     if (this.running.has(ticket.worker_id)) {
       this.logger.warn({
         event: "worker.duplicate_worker_id",
@@ -626,6 +653,7 @@ export class Supervisor {
       if (this.running.get(ticket.worker_id)?.runId === runId) {
         this.running.delete(ticket.worker_id);
         this.metrics.setRunningWorkers(this.running.size);
+        this.sharedCapacity?.changed();
       }
     });
 

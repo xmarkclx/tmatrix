@@ -4,6 +4,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -20,6 +21,10 @@ type Backend interface {
 
 // AdapterUpdater is optional so custom backends and older engines remain usable.
 // These methods acknowledge a background operation, not update completion.
+type SourceManager interface {
+	RemoveSource(context.Context, string) error
+}
+
 type AdapterUpdater interface {
 	CheckAdapterUpdate(context.Context) error
 	RollbackAdapterUpdate(context.Context) error
@@ -49,19 +54,24 @@ type Snapshot struct {
 	RunningWorkers int            `json:"running_workers"`
 	PollIntervalMS int            `json:"poll_interval_ms"`
 	IntakePaused   bool           `json:"intake_paused"`
-	Poller         Poller         `json:"poller"`
+	Pollers        []Poller       `json:"pollers"`
 	Workers        []Worker       `json:"workers"`
 }
 
 type Poller struct {
-	Type       string `json:"type"`
-	Status     string `json:"status"`
-	URL        string `json:"url"`
-	LastPollAt string `json:"last_poll_at,omitempty"`
-	Error      string `json:"error,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ReservedSlots int    `json:"reserved_slots"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	URL           string `json:"url"`
+	LastPollAt    string `json:"last_poll_at,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 type Worker struct {
+	SourceID      string         `json:"source_id"`
+	SourceName    string         `json:"source_name"`
 	Pinned        bool           `json:"pinned"`
 	ID            string         `json:"id"`
 	TicketID      string         `json:"ticket_id"`
@@ -114,8 +124,10 @@ type Settings struct {
 
 // Connection is never included in snapshots or persisted alongside settings.
 type Connection struct {
-	URL    string `json:"url"`
-	APIKey string `json:"-"`
+	SourceID string `json:"source_id"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	APIKey   string `json:"-"`
 }
 
 func ValidateSettings(s Settings) error {
@@ -137,6 +149,29 @@ func ValidateSettings(s Settings) error {
 func validateMessage(message string) error {
 	if strings.TrimSpace(message) == "" || len(message) > 8000 {
 		return errors.New("steering message must contain between 1 and 8000 bytes")
+	}
+	return nil
+}
+
+func (s *Snapshot) UnmarshalJSON(data []byte) error {
+	type snapshot Snapshot
+	var wire struct {
+		snapshot
+		Poller *Poller `json:"poller"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*s = Snapshot(wire.snapshot)
+	if s.Pollers == nil && wire.Poller != nil {
+		poller := *wire.Poller
+		poller.ID = "legacy"
+		poller.Name = "TzuDo"
+		s.Pollers = []Poller{poller}
+		for i := range s.Workers {
+			s.Workers[i].SourceID = poller.ID
+			s.Workers[i].SourceName = poller.Name
+		}
 	}
 	return nil
 }

@@ -36,15 +36,22 @@ func (m *Model) openForm(target screen) tea.Cmd {
 	m.failure = ""
 	m.notice = ""
 	if target == connectScreen {
-		endpoint := m.snapshot.Poller.URL
-		if endpoint == "" {
-			endpoint = "https://tzudo.app"
+		name, endpoint := "", "https://tzudo.app"
+		placeholder := "Paste the source's worker API key"
+		if m.editingSource != "" {
+			for _, source := range m.snapshot.Pollers {
+				if source.ID == m.editingSource {
+					name, endpoint = source.Name, source.URL
+					break
+				}
+			}
+			placeholder = "Leave empty to reuse this source's saved key"
 		}
-		placeholder := "Paste key, or leave empty to reuse saved key"
 		if m.options.Demo {
 			placeholder = "Type any demo key; never use real credentials"
 		}
-		m.form = []textinput.Model{fieldInput(endpoint, "https://tzudo.app", false), fieldInput("", placeholder, true)}
+		m.form = []textinput.Model{fieldInput(name, "Source name", false), fieldInput(endpoint, "Full HTTPS poll URL", false), fieldInput("", placeholder, true)}
+
 	} else {
 		maximum := m.snapshot.MaxWorkers
 		if maximum < 1 {
@@ -96,6 +103,7 @@ func (m *Model) navigateForm(name string) (bool, tea.Cmd) {
 	case "s":
 		return true, m.openForm(settingsScreen)
 	case "c":
+		m.editingSource = ""
 		return true, m.openForm(connectScreen)
 	}
 	return true, nil
@@ -105,8 +113,13 @@ func (m *Model) submitForm() tea.Cmd {
 		return nil
 	}
 	if m.screen == connectScreen {
-		endpoint := strings.TrimRight(strings.TrimSpace(m.form[0].Value()), "/")
-		key := strings.TrimSpace(m.form[1].Value())
+		endpoint := strings.TrimRight(strings.TrimSpace(m.form[1].Value()), "/")
+		key := strings.TrimSpace(m.form[2].Value())
+		name := strings.TrimSpace(m.form[0].Value())
+		if name == "" {
+			m.failure = "Enter a source name."
+			return nil
+		}
 		parsed, err := url.Parse(endpoint)
 		if err != nil || config.ValidatePollURL(endpoint) != nil {
 			m.failure = "Use an HTTPS server or poll URL without credentials, query or fragment."
@@ -120,7 +133,7 @@ func (m *Model) submitForm() tea.Cmd {
 		m.failure = ""
 		m.notice = "Draining active workers, then saving connection and restarting intake…"
 		return m.operation("connect", "", func(ctx context.Context) (string, error) {
-			err := m.backend.Connect(ctx, backend.Connection{URL: endpoint, APIKey: key})
+			err := m.backend.Connect(ctx, backend.Connection{SourceID: m.editingSource, Name: name, URL: endpoint, APIKey: key})
 			if err != nil {
 				if key == "" {
 					return "", err
