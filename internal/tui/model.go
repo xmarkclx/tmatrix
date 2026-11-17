@@ -17,7 +17,8 @@ import (
 )
 
 type Options struct {
-	Demo bool
+	Demo         bool
+	BuildVersion string
 	// NoMouse starts with terminal selection instead of application mouse capture.
 	NoMouse bool
 	// Portable uses stable-width symbols and leaves the terminal's last column free.

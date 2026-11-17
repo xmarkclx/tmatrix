@@ -33,6 +33,8 @@ curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.
 - Open `tmatrix`, press `c`, and add TzuDo using your worker API key from https://tzudo.app/settings.
 - Currently only supports Codex for now. Claude Code Integration is on the roadmap.
 
+Press `s` to open Settings and view the TMatrix version, build number, and commit at the top.
+
 ## Connect multiple sources
 
 One TMatrix instance can poll several supported apps. Existing installations keep their saved connection, key, poller identity, and conversations when the settings upgrade.

@@ -115,8 +115,16 @@ func (m Model) renderLayout() (string, []hitTarget) {
 			count = 3
 		}
 		b.lines = append(b.lines, frameLine(" "+m.screenName(), m.width, accentStyle))
+		var details []string
+		if m.screen == settingsScreen && m.options.BuildVersion != "" {
+			details = strings.Split(textBlock(m.options.BuildVersion, m.width-4), "\n")
+		}
 		for i := 1; i < count; i++ {
-			b.lines = append(b.lines, "")
+			line := ""
+			if i <= len(details) {
+				line = frameLine(" "+details[i-1], m.width, mutedStyle)
+			}
+			b.lines = append(b.lines, line)
 		}
 	}
 	var body layoutBlock

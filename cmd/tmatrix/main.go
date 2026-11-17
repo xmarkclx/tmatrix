@@ -194,6 +194,6 @@ func run(args []string) error {
 	if *mouse && !*noMouse {
 		options = append(options, tea.WithMouseCellMotion())
 	}
-	_, err = tea.NewProgram(tui.New(service, tui.Options{Demo: *demo, Portable: portable, NoMouse: !*mouse || *noMouse}), options...).Run()
+	_, err = tea.NewProgram(tui.New(service, tui.Options{Demo: *demo, BuildVersion: buildVersion(), Portable: portable, NoMouse: !*mouse || *noMouse}), options...).Run()
 	return err
 }
