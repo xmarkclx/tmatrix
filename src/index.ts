@@ -3,7 +3,7 @@ import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
 import { loadAdapter, setupAdapter } from "./adapter-loader.js";
 import { sanitizedCodexEnvironment } from "./adapters/codex/environment.js";
-import { loadEngineConfig, safeEngineConfig } from "./config.js";
+import { loadEngineConfig, loadSavedSource, safeEngineConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
 import { errorContext } from "./errors.js";
 import { createLogger } from "./logger.js";
@@ -12,7 +12,7 @@ import { TicketRunner } from "./runner.js";
 import { Supervisor } from "./supervisor.js";
 import { SourceSupervisor } from "./source-supervisor.js";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
 
@@ -78,8 +78,7 @@ async function main(): Promise<void> {
         onCancellation: request => { child.handleCancellation(request, "push"); } });
       child = new Supervisor({ config: sourceConfig, poller: api, runner, cancellationApi: api,
         control, logger: sourceLogger, metrics, sharedCapacity,
-        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id) } : {}),
-        intakePaused: process.env.TMATRIX_INTAKE_PAUSED === "1" });
+        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id) } : {}) });
       return child;
     }
   });
@@ -107,10 +106,18 @@ async function main(): Promise<void> {
   };
 
   if (process.env.TMATRIX_CONTROL_FILE) {
+    const file = process.env.TMATRIX_CONTROL_FILE;
+    const settingsFile = process.env.TMATRIX_SOURCE_SETTINGS_FILE;
+    const managedSources = settingsFile && isAbsolute(settingsFile) && settingsFile === resolve(dirname(file), "config.json");
     localControl = await startLocalControlServer({
       supervisor,
       ...(adapterUpdates ? { adapterUpdates } : {}),
-      file: process.env.TMATRIX_CONTROL_FILE,
+      ...(managedSources ? { async addSource(id: string) {
+        const source = await loadSavedSource({ file: settingsFile, id, engine: config }).catch(() => undefined);
+        if (!source) return "invalid";
+        return supervisor.addSource(source) ? "applied" : "conflict";
+      } } : {}),
+      file,
       port: Number(process.env.TMATRIX_CONTROL_PORT ?? "0"),
       onShutdown: () => { void shutdown("tmatrix"); }
     });

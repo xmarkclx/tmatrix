@@ -135,6 +135,19 @@ func (h *HTTP) Connect(context.Context, Connection) error {
 	return errors.New("poller connection must be configured by the TMatrix application")
 }
 
+func (h *HTTP) AddSource(ctx context.Context, id string) error {
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := h.request(ctx, http.MethodPost, "/v1/sources/add", map[string]string{"id": id}, &result); err != nil {
+		return err
+	}
+	if result.ID != id {
+		return errors.New("engine did not acknowledge the requested source")
+	}
+	return nil
+}
+
 func (h *HTTP) Shutdown(ctx context.Context) error {
 	return h.request(ctx, http.MethodPost, "/v1/shutdown", struct{}{}, nil)
 }

@@ -2,7 +2,7 @@ import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadEngineConfig, safeEngineConfig } from "../src/config.js";
+import { loadEngineConfig, loadSavedSource, safeEngineConfig } from "../src/config.js";
 import { conversationNamespace } from "../src/source-namespace.js";
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
@@ -52,6 +52,26 @@ describe("engine source configuration", () => {
     expect((await f.save(f.config)).sources[0]?.kind).toBe("error");
     await chmod(f.credential, 0o600);
     expect((await f.save(f.config)).sources[0]?.kind).toBe("ready");
+  });
+  it("loads one saved source from the matching engine's private settings and derived credential file", async () => {
+    const f = await fixture();
+    const engine = await f.save(f.config);
+    const file = join(f.directory, "settings.json");
+    const id = "22222222-2222-4222-8222-222222222222";
+    const credential_id = "33333333-3333-4333-8333-333333333333";
+    const source = { id, credential_id, name: "Mindmap", poll_url: "https://map.test/api/worker/poll",
+      instance_id: "44444444-4444-4444-8444-444444444444", conversation_namespace: JSON.stringify(["https://map.test/api/worker/poll", id]) };
+    const saved = { version: 2, instance_id: engine.instance_id, sources: [source] };
+    await writeFile(file, JSON.stringify(saved), { mode: 0o600 });
+    const credential = join(f.directory, `credentials-${credential_id}`);
+    await writeFile(credential, "fixture-added-key\n", { mode: 0o600 });
+    await expect(loadSavedSource({ file, id, engine })).resolves.toMatchObject({ kind: "ready", metadata: { id, name: "Mindmap" },
+      config: { api_key: "fixture-added-key", poll_url: source.poll_url, instance_id: source.instance_id } });
+    await expect(loadSavedSource({ file, id, engine: { ...engine, instance_id: "other-engine" } })).rejects.toThrow();
+    await chmod(credential, 0o644);
+    await expect(loadSavedSource({ file, id, engine })).rejects.toThrow();
+    await writeFile(file, JSON.stringify({ ...saved, sources: [{ ...source, credential_id: "../outside" }] }));
+    await expect(loadSavedSource({ file, id, engine })).rejects.toThrow();
   });
   it("rejects duplicate source IDs and mixed legacy credentials", async () => {
     const f = await fixture();

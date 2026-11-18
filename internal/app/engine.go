@@ -238,6 +238,10 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	}
 	data, _ := json.MarshalIndent(engineConfig, "", "  ")
 	engineConfigPath := filepath.Join(dir, "engine.json")
+	sourceSettingsFile, err := filepath.Abs(filepath.Join(dir, config.ConfigFilename))
+	if err != nil {
+		return errors.New("cannot locate TMatrix source settings")
+	}
 	if err := privateWrite(engineConfigPath, data); err != nil {
 		return err
 	}
@@ -249,8 +253,9 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	cmd := exec.Command(node, filepath.Join(engineDir, "dist", "index.js"))
 	cmd.Dir = engineDir
 	cmd.Env = engineEnvironment(os.Environ(), map[string]string{
-		"CONFIG_PATH":          engineConfigPath,
-		"TMATRIX_CONTROL_FILE": path, "TMATRIX_CONTROL_PORT": "0", "TMATRIX_INTAKE_PAUSED": "1",
+		"CONFIG_PATH":                  engineConfigPath,
+		"TMATRIX_SOURCE_SETTINGS_FILE": sourceSettingsFile,
+		"TMATRIX_CONTROL_FILE":         path, "TMATRIX_CONTROL_PORT": "0", "TMATRIX_INTAKE_PAUSED": "1",
 	})
 	output := &engineLogOutput{log: log, errors: make(chan error, 1)}
 	cmd.Stdout, cmd.Stderr = output, output
@@ -364,7 +369,7 @@ func privateWrite(path string, data []byte) error {
 func engineEnvironment(parent []string, overrides map[string]string) []string {
 	// A TMatrix instance must not inherit another daemon's queue identity or
 	// credentials. Preserve normal PATH, HOME and Codex account configuration.
-	blocked := strings.Fields("RUNTIME_ADAPTER ADAPTER_MODULE POLL_URL API_KEY INSTANCE_ID SWARM_ID MAX_WORKERS MAX_TICKETS_PER_POLL POLL_INTERVAL_MS IDLE_BACKOFF_MAX_MS REQUEST_TIMEOUT_MS MAX_REQUEST_ATTEMPTS CONTROL_PING_INTERVAL_MS CONTROL_RECONNECT_MAX_MS SHUTDOWN_GRACE_MS METRICS_INTERVAL_MS LOG_LEVEL PRETTY_LOGS LOG_DIR LOG_ROTATE_SIZE LOG_ROTATE_INTERVAL LOG_MAX_FILES CONFIG_PATH TMATRIX_CONTROL_FILE TMATRIX_CONTROL_PORT TMATRIX_INTAKE_PAUSED")
+	blocked := strings.Fields("RUNTIME_ADAPTER ADAPTER_MODULE POLL_URL API_KEY INSTANCE_ID SWARM_ID MAX_WORKERS MAX_TICKETS_PER_POLL POLL_INTERVAL_MS IDLE_BACKOFF_MAX_MS REQUEST_TIMEOUT_MS MAX_REQUEST_ATTEMPTS CONTROL_PING_INTERVAL_MS CONTROL_RECONNECT_MAX_MS SHUTDOWN_GRACE_MS METRICS_INTERVAL_MS LOG_LEVEL PRETTY_LOGS LOG_DIR LOG_ROTATE_SIZE LOG_ROTATE_INTERVAL LOG_MAX_FILES CONFIG_PATH TMATRIX_CONTROL_FILE TMATRIX_CONTROL_PORT TMATRIX_INTAKE_PAUSED TMATRIX_SOURCE_SETTINGS_FILE")
 	deny := map[string]bool{}
 	for _, name := range blocked {
 		deny[name] = true
