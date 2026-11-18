@@ -67,15 +67,12 @@ func TestConnectionDrainWaitsForWorkers(t *testing.T) {
 
 func TestCancelledConnectionPreservesCredentials(t *testing.T) {
 	s, requested := drainingService(t)
-	if err := config.SaveAPIKey(s.Dir, "original-fixture"); err != nil {
-		t.Fatal(err)
-	}
-	before, _ := config.Load(s.Dir)
+	before := saveFixtureSource(t, s, "https://original.invalid/poll", "original-fixture")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- s.Connect(ctx, backend.Connection{Name: "Replacement", URL: "https://replacement.invalid/api/v1/ai/poll", APIKey: "replacement-fixture"})
+		done <- s.Connect(ctx, backend.Connection{SourceID: "legacy", Name: "Replacement", URL: "https://replacement.invalid/api/v1/ai/poll", APIKey: "replacement-fixture"})
 	}()
 	select {
 	case <-requested:

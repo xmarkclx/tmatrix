@@ -131,8 +131,13 @@ func (m *Model) submitForm() tea.Cmd {
 		}
 		m.busy = true
 		m.failure = ""
-		m.notice = "Draining active workers, then saving connection and restarting intake…"
-		return m.operation("connect", "", func(ctx context.Context) (string, error) {
+		kind := "add-source"
+		m.notice = "Adding source…"
+		if m.editingSource != "" {
+			kind = "connect"
+			m.notice = "Draining active workers, then saving connection and restarting intake…"
+		}
+		return m.operation(kind, "", func(ctx context.Context) (string, error) {
 			err := m.backend.Connect(ctx, backend.Connection{SourceID: m.editingSource, Name: name, URL: endpoint, APIKey: key})
 			if err != nil {
 				if key == "" {
@@ -142,6 +147,9 @@ func (m *Model) submitForm() tea.Cmd {
 			}
 			if m.options.Demo {
 				return "Simulated connection saved in memory.", nil
+			}
+			if kind == "add-source" {
+				return "Source added. Check Pollers for connection status.", nil
 			}
 			return "Engine ready, intake started. Check Pollers for connection status.", nil
 		})

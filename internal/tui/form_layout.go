@@ -9,10 +9,11 @@ func (m Model) formContent() layoutBlock {
 	if m.screen == connectScreen {
 		labels = []string{"Source name", "Server or full poll URL", "Worker API key"}
 		title = "Add source"
+		intro = "Adds a source while existing workers keep running. Key stays on this machine."
 		if m.editingSource != "" {
 			title = "Edit source"
+			intro = "Saves after active workers finish. Key stays on this machine."
 		}
-		intro = "Saves after active workers finish. Key stays on this machine."
 		if m.options.Demo {
 			intro = "Simulated setup · no network or settings writes."
 		}

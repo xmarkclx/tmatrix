@@ -101,7 +101,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.composing = false
 				m.composer.Blur()
 			}
-		case "connect":
+		case "connect", "add-source":
 			m.editingSource = ""
 			if len(m.form) > 2 {
 				m.form[2].SetValue("")

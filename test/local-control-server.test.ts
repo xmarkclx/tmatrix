@@ -13,12 +13,13 @@ import { deferred, makeConfig, makeTicket } from "./helpers.js";
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
 
-async function connect(supervisor: Supervisor, adapterUpdates?: import("../src/runtime-adapter.js").AdapterUpdateControl) {
+async function connect(supervisor: Supervisor, adapterUpdates?: import("../src/runtime-adapter.js").AdapterUpdateControl,
+  addSource?: NonNullable<Parameters<typeof startLocalControlServer>[0]["addSource"]>) {
   const dir = await mkdtemp(join(tmpdir(), "tmatrix-control-test-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "control.json");
   const onShutdown = vi.fn();
-  const bridge = await startLocalControlServer({ supervisor, file, onShutdown, ...(adapterUpdates ? { adapterUpdates } : {}) });
+  const bridge = await startLocalControlServer({ supervisor, file, onShutdown, ...(adapterUpdates ? { adapterUpdates } : {}), ...(addSource ? { addSource } : {}) });
   cleanup.push(() => bridge.close());
   const discovery = JSON.parse(await readFile(file, "utf8"));
   return { file, bridge, onShutdown, discovery, request: (path: string, body?: unknown) => fetch(discovery.url + path, {
@@ -38,6 +39,26 @@ function pausedSupervisor() {
 }
 
 describe("local console bridge", () => {
+  it("advertises live addition only when configured and accepts just a source UUID from the local console", async () => {
+    const { supervisor } = pausedSupervisor();
+    const id = "22222222-2222-4222-8222-222222222222";
+    const legacy = await connect(supervisor);
+    expect(await (await legacy.request("/v1/snapshot")).json()).not.toHaveProperty("live_source_add");
+    expect((await legacy.request("/v1/sources/add", { id })).status).toBe(404);
+
+    const addSource = vi.fn(async () => "applied" as const);
+    const live = await connect(supervisor, undefined, addSource);
+    expect(await (await live.request("/v1/snapshot")).json()).toMatchObject({ live_source_add: true });
+    expect((await live.request("/v1/sources/add", { id, credential_file: "../private" })).status).toBe(400);
+    expect((await fetch(live.discovery.url + "/v1/sources/add", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id })
+    })).status).toBe(401);
+    const applied = await live.request("/v1/sources/add", { id });
+    expect(applied.status).toBe(200);
+    expect(await applied.json()).toEqual({ id });
+    expect(addSource.mock.calls).toEqual([[id]]);
+  });
+
   it("defers an idle-only upgrade without pausing or stopping active workers", async () => {
     const pending = deferred<RunOutcome>();
     const ticket = makeTicket();

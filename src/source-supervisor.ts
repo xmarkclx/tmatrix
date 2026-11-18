@@ -1,12 +1,13 @@
 import { Buffer } from "node:buffer";
+import { isDeepStrictEqual } from "node:util";
 import type { Logger } from "pino";
 import { z } from "zod";
-import type { EngineConfig, EngineSource, SourceMetadata } from "./config.js";
+import type { EngineConfig, EngineSource, ReadySource, SourceMetadata } from "./config.js";
 import { errorContext } from "./errors.js";
 import { Supervisor, type PollCycleResult, type SharedCapacity } from "./supervisor.js";
 
-type ReadySource = Extract<EngineSource, { kind: "ready" }>;
 type Settings = Parameters<Supervisor["updateLocalSettings"]>[0];
+type CreateSupervisor = (source: ReadySource, capacity: SharedCapacity) => Supervisor;
 interface SourceSession {
   source: ReadySource;
   supervisor: Supervisor;
@@ -28,6 +29,7 @@ export class SourceSupervisor {
   private readonly order: string[];
   private readonly config: EngineConfig;
   private readonly logger: Logger;
+  private readonly createSupervisor: CreateSupervisor;
   private maxWorkers: number;
   private pollIntervalMs: number;
   private intakePaused: boolean;
@@ -40,26 +42,51 @@ export class SourceSupervisor {
     config: EngineConfig;
     logger: Logger;
     intakePaused?: boolean;
-    createSupervisor(source: ReadySource, capacity: SharedCapacity): Supervisor;
+    createSupervisor: CreateSupervisor;
   }) {
     this.config = options.config;
-    this.sources = options.config.sources;
+    this.sources = [...options.config.sources];
     this.logger = options.logger.child({ component: "sources" });
+    this.createSupervisor = options.createSupervisor;
     this.maxWorkers = options.config.max_workers;
     this.pollIntervalMs = options.config.poll_interval_ms;
     this.intakePaused = options.intakePaused ?? false;
-    this.sessions = this.sources.flatMap(source => source.kind === "ready" ? [{
+    this.sessions = this.sources.flatMap(source => source.kind === "ready" ? [this.createSession(source)] : []);
+    this.order = this.sessions.map(session => session.source.metadata.id);
+  }
+
+  private createSession(source: ReadySource): SourceSession {
+    const supervisor = this.createSupervisor(source, {
+      freeSlots: () => this.freeSlots(),
+      pollSlots: () => this.pollSlots(source.metadata.id),
+      changed: () => this.capacityChanged()
+    });
+    supervisor.updateLocalSettings({
+      max_workers: this.maxWorkers,
+      poll_interval_ms: this.pollIntervalMs,
+      intake_paused: this.intakePaused
+    });
+    return {
       source,
-      supervisor: options.createSupervisor(source, {
-        freeSlots: () => this.freeSlots(),
-        pollSlots: () => this.pollSlots(source.metadata.id),
-        changed: () => this.capacityChanged()
-      }),
+      supervisor,
       nextPollAt: 0,
       idleCycles: 0,
       waitingForCapacity: false
-    }] : []);
-    this.order = this.sessions.map(session => session.source.metadata.id);
+    };
+  }
+
+  addSource(source: ReadySource): boolean {
+    if (this.stopped) return false;
+    const existing = this.sources.find(entry => entry.metadata.id === source.metadata.id);
+    if (existing) return existing.kind === "ready" && isDeepStrictEqual(existing.metadata, source.metadata) &&
+      existing.config.api_key === source.config.api_key;
+    if (this.sources.length >= 32) return false;
+    const session = this.createSession(source);
+    this.sessions.push(session);
+    this.sources.push(source);
+    this.order.push(source.metadata.id);
+    this.wakeController?.abort();
+    return true;
   }
 
   get runningCount(): number {

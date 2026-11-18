@@ -48,6 +48,7 @@ type Snapshot struct {
 	AdapterUpdate  *AdapterUpdate `json:"adapter_update,omitempty"`
 	RuntimeAdapter string         `json:"runtime_adapter"`
 	RestartPending bool           `json:"restart_pending,omitempty"`
+	LiveSourceAdd  bool           `json:"live_source_add,omitempty"`
 	Version        int            `json:"version"`
 	InstanceID     string         `json:"instance_id"`
 	MaxWorkers     int            `json:"max_workers"`

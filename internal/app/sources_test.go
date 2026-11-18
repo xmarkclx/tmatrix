@@ -215,9 +215,20 @@ func TestActualMultipleSourceLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	defer service.Shutdown(context.Background())
+	if err := service.StartConsole(ctx); err != nil {
+		t.Fatal(err)
+	}
+	bridgeBefore, err := os.ReadFile(config.DiscoveryPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
 	url := "https://mindmap-fixture.invalid/api/ai-chat/worker/poll"
 	if err := service.Connect(ctx, backend.Connection{Name: "Mindmap", URL: url, APIKey: "mindmap-fixture-key"}); err != nil {
 		t.Fatal(err)
+	}
+	bridgeAfter, err := os.ReadFile(config.DiscoveryPath(dir))
+	if err != nil || string(bridgeBefore) != string(bridgeAfter) {
+		t.Fatal("adding a source replaced the running engine")
 	}
 	snapshot, err := service.Snapshot(ctx)
 	if err != nil || len(snapshot.Pollers) != 2 || snapshot.Version != 2 || snapshot.IntakePaused || snapshot.MaxWorkers != 2 {
@@ -272,9 +283,24 @@ func TestActualMultipleSourceLifecycle(t *testing.T) {
 }
 
 func TestRepeatedAddDoesNotDuplicateExistingConnection(t *testing.T) {
-	s, requested := drainingService(t)
+	s, err := New(filepath.Join(t.TempDir(), "private"), sourceEngineFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := saveFixtureSource(t, s, "https://original.invalid/api/poll", "original-fixture")
-	err := s.Connect(context.Background(), backend.Connection{Name: "Repeated source", URL: "https://original.invalid/api/poll", APIKey: "original-fixture"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/snapshot" {
+			t.Errorf("duplicate add attempted %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(409)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(backend.Snapshot{Version: 2, MaxWorkers: 3, Pollers: []backend.Poller{
+			{ID: "legacy", URL: before.Sources[0].PollURL, Status: "connected"},
+		}})
+	}))
+	defer server.Close()
+	writeUpgradeDiscovery(t, s.Dir, server.URL)
+	err = s.Connect(context.Background(), backend.Connection{Name: "Repeated source", URL: "https://original.invalid/api/poll", APIKey: "original-fixture"})
 	after, _ := config.Load(s.Dir)
 	if err == nil || !strings.Contains(err.Error(), "already configured") || !reflect.DeepEqual(before, after) {
 		t.Fatal("repeated add duplicated or replaced an existing source")
@@ -282,11 +308,6 @@ func TestRepeatedAddDoesNotDuplicateExistingConnection(t *testing.T) {
 	key, _ := config.LoadSourceKey(s.Dir, "legacy")
 	if key != "original-fixture" {
 		t.Fatal("duplicate add changed the original credential")
-	}
-	select {
-	case <-requested:
-		t.Fatal("duplicate add drained the existing connection")
-	default:
 	}
 }
 

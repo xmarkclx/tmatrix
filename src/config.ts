@@ -1,6 +1,6 @@
 import { access, lstat, open, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { WorkerError } from "./errors.js";
 import { conversationNamespace } from "./source-namespace.js";
@@ -251,6 +251,7 @@ export type SourceMetadata = Omit<z.infer<typeof sourceMetadataSchema>, "credent
 export type EngineSource =
   | { kind: "ready"; metadata: SourceMetadata; config: WorkerConfig }
   | { kind: "error"; metadata: SourceMetadata; error: string };
+export type ReadySource = Extract<EngineSource, { kind: "ready" }>;
 export type EngineConfig = Omit<WorkerConfig, "poll_url" | "poll_origin" | "api_key"> & {
   update_origin: string;
   sources: EngineSource[];
@@ -261,19 +262,66 @@ const engineConfigSchema = rawConfigSchema.omit({ poll_url: true, api_key: true 
   sources: z.array(sourceMetadataSchema).max(32)
 });
 
-async function readSourceKey(path: string): Promise<string> {
+const savedSourcesSchema = z.object({
+  version: z.literal(2),
+  instance_id: z.string(),
+  sources: z.array(sourceMetadataSchema.omit({ credential_file: true }).extend({
+    instance_id: z.string().min(1),
+    credential_id: z.union([z.literal("legacy"), z.uuid()])
+  })).max(32)
+});
+
+async function readPrivateSourceFile(path: string, limit: number): Promise<string> {
   const parent = await lstat(dirname(path));
-  if (!parent.isDirectory() || process.platform !== "win32" && (parent.mode & 0o077) !== 0) throw new Error("Unsafe credential directory");
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  if (!parent.isDirectory() || process.platform !== "win32" && (parent.mode & 0o077) !== 0) throw new Error("Unsafe source directory");
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.size > 8193 || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Unsafe credential file");
-    const key = (await file.readFile("utf8")).trim();
-    if (!key || key.length > 8192 || /\s|[\x00-\x1f\x7f]/.test(key)) throw new Error("Invalid worker key");
-    return key;
+    if (!stat.isFile() || stat.size > limit || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Unsafe source file");
+    const buffer = Buffer.alloc(limit + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const { bytesRead } = await file.read(buffer, total, buffer.length - total, total);
+      if (!bytesRead) return buffer.toString("utf8", 0, total);
+      total += bytesRead;
+    }
+    throw new Error("Source file exceeds size limit");
   } finally {
     await file.close();
   }
+}
+
+async function readSourceKey(path: string): Promise<string> {
+  const key = (await readPrivateSourceFile(path, 8193)).trim();
+  if (!key || key.length > 8192 || /\s|[\x00-\x1f\x7f]/.test(key)) throw new Error("Invalid worker key");
+  return key;
+}
+
+async function loadReadySource({ metadata, credentialFile, common }: {
+  metadata: SourceMetadata; credentialFile: string; common: Omit<EngineConfig, "sources" | "update_origin">;
+}): Promise<ReadySource> {
+  const api_key = await readSourceKey(credentialFile);
+  return { kind: "ready", metadata, config: parseWorkerConfig({ ...common, ...metadata, api_key }) };
+}
+
+export async function loadSavedSource({ file, id, engine }: {
+  file: string; id: string; engine: EngineConfig;
+}): Promise<ReadySource> {
+  const candidate: unknown = JSON.parse(await readPrivateSourceFile(file, 64 * 1024));
+  const saved = savedSourcesSchema.parse(candidate);
+  if (saved.instance_id !== engine.instance_id) throw new Error("Source settings belong to a different engine");
+  const requested = saved.sources.filter(source => source.id === id);
+  const source = requested[0];
+  if (requested.length !== 1 || !source || source.id === "legacy" || source.credential_id === "legacy") {
+    throw new Error("Could not find a saved source with a private credential");
+  }
+  z.uuid().parse(source.instance_id);
+  const { credential_id, ...metadata } = source;
+  const url = validatePollUrl(metadata.poll_url);
+  if (url.search || url.hash) throw new Error("Invalid source poll URL");
+  metadata.conversation_namespace = conversationNamespace(metadata.conversation_namespace);
+  const { sources: _sources, update_origin: _updateOrigin, ...common } = engine;
+  return loadReadySource({ metadata, credentialFile: join(dirname(file), `credentials-${credential_id}`), common });
 }
 
 export async function loadEngineConfig(options: Parameters<typeof loadConfig>[0] = {}): Promise<EngineConfig> {
@@ -311,8 +359,7 @@ export async function loadEngineConfig(options: Parameters<typeof loadConfig>[0]
     validatePollUrl(raw.poll_url);
     metadata.conversation_namespace = conversationNamespace(metadata.conversation_namespace);
     try {
-      const api_key = await readSourceKey(credential_file);
-      sources.push({ kind: "ready", metadata, config: parseWorkerConfig({ ...common, ...metadata, api_key }) });
+      sources.push(await loadReadySource({ metadata, credentialFile: credential_file, common }));
     } catch {
       sources.push({ kind: "error", metadata, error: "Could not read this source's private worker key. Edit the source connection to save a key." });
     }

@@ -16,6 +16,7 @@ const steerSchema = z.object({
   message: z.string().trim().min(1).max(8_000),
   request_id: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/).optional()
 }).strict();
+const sourceAddSchema = z.object({ id: z.uuid() }).strict();
 
 export interface LocalControlServer {
   close(): Promise<void>;
@@ -28,6 +29,7 @@ export async function startLocalControlServer(options: {
   port?: number;
   onShutdown: () => void;
   adapterUpdates?: AdapterUpdateControl;
+  addSource?(id: string): Promise<"applied" | "invalid" | "conflict">;
 }): Promise<LocalControlServer> {
   if (!isAbsolute(options.file)) throw new Error("TMATRIX_CONTROL_FILE must be an absolute path");
   const port = options.port ?? 0;
@@ -44,6 +46,12 @@ export async function startLocalControlServer(options: {
   server.headersTimeout = 5_000;
   server.keepAliveTimeout = 1_000;
 
+  const snapshot = () => ({
+    ...options.supervisor.localSnapshot(),
+    ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}),
+    ...(options.addSource ? { live_source_add: true } : {})
+  });
+
   async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const supplied = Buffer.from(request.headers.authorization ?? "");
     // Browsers cannot use this API through cross-origin forms, fetch, or DNS
@@ -57,7 +65,7 @@ export async function startLocalControlServer(options: {
       return;
     }
     if (request.method === "GET" && request.url === "/v1/snapshot") {
-      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}) });
+      respond(response, 200, snapshot());
       return;
     }
     if (request.method !== "POST") {
@@ -71,6 +79,16 @@ export async function startLocalControlServer(options: {
     let body: unknown;
     try { body = await readBody(request); } catch {
       respond(response, 400, { error: "Expected a JSON object of at most 16 KiB" });
+      return;
+    }
+    if (request.url === "/v1/sources/add" && options.addSource) {
+      const parsed = sourceAddSchema.safeParse(body);
+      if (!parsed.success) { respond(response, 400, { error: "Expected a source UUID" }); return; }
+      const { id } = parsed.data;
+      const result = await options.addSource(id);
+      if (result === "invalid") { respond(response, 422, { error: "Could not read the saved source and its private key" }); return; }
+      if (result === "conflict") { respond(response, 409, { error: "The engine cannot add this source in its current state" }); return; }
+      respond(response, 200, { id });
       return;
     }
     if (request.url === "/v1/adapter/check-now" || request.url === "/v1/adapter/rollback") {
@@ -97,7 +115,7 @@ export async function startLocalControlServer(options: {
         ...(parsed.data.intake_paused !== undefined ? { intake_paused: parsed.data.intake_paused } : {}),
         ...(parsed.data.poll_interval_ms !== undefined ? { poll_interval_ms: parsed.data.poll_interval_ms } : {})
       });
-      respond(response, 200, { ...options.supervisor.localSnapshot(), ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}) });
+      respond(response, 200, snapshot());
       return;
     }
     if (request.url === "/v1/shutdown") {

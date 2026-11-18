@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import type { EngineConfig, EngineSource } from "../src/config.js";
+import { describe, expect, it, vi } from "vitest";
+import type { EngineConfig, ReadySource } from "../src/config.js";
 import { WorkerError } from "../src/errors.js";
 import { LocalWorkerState } from "../src/local-worker-state.js";
 import { nullLogger } from "../src/logger.js";
@@ -15,14 +15,14 @@ const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 const response = (changes: Partial<PollResponse> = {}): PollResponse => ({ new_tickets: [], owned_in_progress: [], steering_events: [], cancellation_requests: [], ...changes });
 
 type Run = { source: number; signal: AbortSignal | undefined; pending: ReturnType<typeof deferred<RunOutcome>>; steering: SteeringMailbox | undefined };
-function harness(maxWorkers = 2, intercept?: (source: number, request: PollRequest, calls: number) => Promise<PollResponse | void>) {
+function harness(maxWorkers = 2, intercept?: (source: number, request: PollRequest, calls: number) => Promise<PollResponse | void>, initialSources = 2) {
   const configs = ids.map((id, source) => makeConfig({ instance_id: id, max_workers: maxWorkers, poll_interval_ms: 250, idle_backoff_max_ms: 250, api_key: `fixture-${source}` }));
   const first = configs[0]!;
   const { api_key: _key, poll_url: _url, poll_origin, ...common } = first;
-  const sources: EngineSource[] = configs.map((config, source) => ({ kind: "ready", config,
+  const sources: ReadySource[] = configs.map((config, source) => ({ kind: "ready", config,
     metadata: { id: ids[source]!, name: source === 0 ? "TzuDo" : "Mindmap", instance_id: config.instance_id,
       poll_url: config.poll_url, conversation_namespace: JSON.stringify([config.poll_url, ids[source]]) } }));
-  const config: EngineConfig = { ...common, update_origin: poll_origin, sources };
+  const config: EngineConfig = { ...common, update_origin: poll_origin, sources: sources.slice(0, initialSources) };
   const requests: PollRequest[][] = [[], []];
   const runs: Run[] = [];
   const children: Supervisor[] = [];
@@ -52,13 +52,41 @@ function harness(maxWorkers = 2, intercept?: (source: number, request: PollReque
     children.push(child);
     return child;
   } });
-  return { supervisor, requests, runs, children, active, config, async close() {
+  return { supervisor, requests, runs, children, active, config, sources, async close() {
     for (const run of runs) run.pending.resolve({ status: "completed" });
     await supervisor.shutdown(0);
   } };
 }
 
 describe("named sources", () => {
+  it("adds a source to the running engine without replacing active work or changing pause and capacity", async () => {
+    const h = harness(2, undefined, 1);
+    const loop = h.supervisor.run();
+    try {
+      await vi.waitFor(() => expect(h.runs.map(run => run.source)).toEqual([0]));
+      const previous = h.supervisor.localSnapshot().workers[0];
+      h.supervisor.updateLocalSettings({ max_workers: 1, poll_interval_ms: 300_000, intake_paused: true });
+      const source = h.sources[1]!;
+      expect(h.supervisor.addSource(source)).toBe(true);
+      expect(h.supervisor.addSource(source)).toBe(true);
+      expect(h.supervisor.addSource({ ...source, metadata: { ...source.metadata, name: "Different" } })).toBe(false);
+      const snapshot = h.supervisor.localSnapshot();
+      expect(snapshot).toMatchObject({ running_workers: 1, intake_paused: true, max_workers: 1, poll_interval_ms: 300_000,
+        workers: [{ id: previous?.id, status: "running" }] });
+      expect(snapshot.pollers.map(poller => poller.name)).toEqual(["TzuDo", "Mindmap"]);
+      expect(h.runs[0]?.signal?.aborted).toBe(false);
+      await flush();
+      expect(h.requests[1]).toEqual([]);
+
+      h.supervisor.updateLocalSettings({ intake_paused: false });
+      await vi.waitFor(() => expect(h.requests[1]?.map(request => request.available_slots)).toEqual([0]));
+      expect(h.runs.map(run => run.source)).toEqual([0]);
+      h.runs[0]?.pending.resolve({ status: "completed" });
+      await vi.waitFor(() => expect(h.runs.map(run => run.source)).toEqual([0, 1]));
+      expect(h.supervisor.localSnapshot().running_workers).toBe(1);
+    } finally { await h.close(); await loop; }
+  });
+
   it("reconciles every source before intake and runs colliding IDs under one cap", async () => {
     const seen: { source: number; slots: number }[] = [];
     const h = harness(2, async (source, request) => { seen.push({ source, slots: request.available_slots }); });

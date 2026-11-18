@@ -185,25 +185,21 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	if err != nil {
 		return err
 	}
+	if connection.SourceID == "" {
+		return s.addSource(ctx, cfg, connection)
+	}
 	cfg.Sources = append([]config.Source{}, cfg.Sources...)
 	index := -1
 	var source config.Source
-	if connection.SourceID != "" {
-		for i, candidate := range cfg.Sources {
-			if candidate.ID == connection.SourceID {
-				index = i
-				source = candidate
-				break
-			}
+	for i, candidate := range cfg.Sources {
+		if candidate.ID == connection.SourceID {
+			index = i
+			source = candidate
+			break
 		}
-		if index < 0 {
-			return errors.New("source no longer exists")
-		}
-	} else {
-		if len(cfg.Sources) >= 32 {
-			return errors.New("at most 32 sources are supported")
-		}
-		source = config.NewSource(connection.Name, connection.URL)
+	}
+	if index < 0 {
+		return errors.New("source no longer exists")
 	}
 	source.Name = strings.TrimSpace(connection.Name)
 	if source.PollURL != connection.URL {
@@ -211,7 +207,7 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	}
 	source.PollURL = connection.URL
 	key := connection.APIKey
-	if key == "" && index >= 0 {
+	if key == "" {
 		key, err = config.LoadSourceKey(s.Dir, source.CredentialID)
 	}
 	if err != nil {
@@ -219,17 +215,6 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	}
 	if err := config.ValidateAPIKey(key); err != nil {
 		return err
-	}
-	if index < 0 {
-		for _, existing := range cfg.Sources {
-			if existing.PollURL != connection.URL {
-				continue
-			}
-			existingKey, loadErr := config.LoadSourceKey(s.Dir, existing.CredentialID)
-			if loadErr == nil && existingKey == key {
-				return errors.New("this source connection is already configured; edit it in Pollers or restart the engine")
-			}
-		}
 	}
 	oldCredential := source.CredentialID
 	newCredential := ""
@@ -240,11 +225,7 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	if err := config.ValidateSource(source); err != nil {
 		return err
 	}
-	if index < 0 {
-		cfg.Sources = append(cfg.Sources, source)
-	} else {
-		cfg.Sources[index] = source
-	}
+	cfg.Sources[index] = source
 	cfg.ResumeIntake = true
 	if err := config.Validate(cfg); err != nil {
 		return err
@@ -269,7 +250,7 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	if newCredential != "" && oldCredential != "" {
 		_ = config.RemoveCredential(s.Dir, oldCredential)
 	}
-	return s.startSources(ctx, cfg)
+	return s.startSources(ctx, cfg, true)
 }
 
 func (s *Service) RemoveSource(ctx context.Context, id string) error {
@@ -316,7 +297,7 @@ func (s *Service) RemoveSource(ctx context.Context, id string) error {
 	if len(cfg.Sources) == 0 {
 		return nil
 	}
-	return s.startSources(ctx, cfg)
+	return s.startSources(ctx, cfg, true)
 }
 
 func savedPollers(cfg config.Config) []backend.Poller {
@@ -346,14 +327,14 @@ func sameSources(snapshot backend.Snapshot, cfg config.Config) bool {
 	return true
 }
 
-func (s *Service) startSources(ctx context.Context, cfg config.Config) error {
+func (s *Service) startSources(ctx context.Context, cfg config.Config, restart bool) error {
 	if _, err := os.Stat(filepath.Join(s.Dir, "install-service-on-connect")); err == nil {
 		if err := s.finishServiceSetup(io.Discard); err != nil {
 			return err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
-	} else if err := s.startConsole(ctx, true); err != nil {
+	} else if err := s.startConsole(ctx, restart); err != nil {
 		return err
 	}
 	ready, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -368,7 +349,7 @@ func (s *Service) startSources(ctx context.Context, cfg config.Config) error {
 		}
 		select {
 		case <-ready.Done():
-			return errors.New("sources saved, but restarted engine is not ready; inspect engine or service status")
+			return errors.New("sources saved, but engine is not ready; inspect engine or service status")
 		case <-tick.C:
 		}
 	}

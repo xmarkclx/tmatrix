@@ -23,6 +23,7 @@ const (
 	CredentialFilename = "credentials"
 	DiscoveryFilename  = "bridge.json"
 	DefaultPollURL     = "https://tzudo.app/api/v1/ai/poll"
+	maxPrivateFileSize = 64 * 1024
 )
 
 type Source struct {
@@ -247,7 +248,11 @@ func Save(dir string, c Config) error {
 	if err != nil {
 		return errors.New("cannot encode settings")
 	}
-	return writePrivate(dir, ConfigFilename, append(data, '\n'))
+	data = append(data, '\n')
+	if len(data) > maxPrivateFileSize {
+		return errors.New("TMatrix configuration file is too large")
+	}
+	return writePrivate(dir, ConfigFilename, data)
 }
 
 func LoadAPIKey(dir string) (string, error) { return LoadSourceKey(dir, "legacy") }
@@ -330,7 +335,7 @@ func readPrivate(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return nil, errors.New("TMatrix settings and credential files must be regular files accessible only to their owner")
 	}
-	if info.Size() > 64*1024 {
+	if info.Size() > maxPrivateFileSize {
 		return nil, errors.New("TMatrix configuration file is too large")
 	}
 	return os.ReadFile(path)

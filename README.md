@@ -41,9 +41,9 @@ One TMatrix instance can poll several supported apps. Existing installations kee
 
 1. Press `c` to add a source.
 2. Enter a name, the complete HTTPS poll URL, and that source's worker API key.
-3. Press `Ctrl+S` to save. TMatrix waits for active work to finish, then restarts its engine with all saved sources.
+3. Press `Ctrl+S` to save. TMatrix starts the new poller while existing workers continue. If intake is paused, the new source also waits for you to resume.
 
-For Mindmap chat, use this complete poll URL and the dedicated key from **Chat → TMatrix → TMatrix connection**:
+For Mindmap chat, use this complete poll URL and the dedicated key from **Settings → Integrations → Set up TMatrix**:
 
 ```text
 https://mindmap.tzudo.app/api/ai-chat/worker/poll
@@ -51,7 +51,7 @@ https://mindmap.tzudo.app/api/ai-chat/worker/poll
 
 One Mindmap connection serves your account's maps in that team, including LifeCCC. It uses a different key from the team graph API. Entering only a server domain selects the default TzuDo `/api/v1/ai/poll` endpoint.
 
-Press `p` to inspect each source's status. Use Up and Down to select a source, `e` to edit it, or `d` to request removal and `y` to confirm. A blank key while editing reuses only the selected source's saved key. Adding a source always requires its own key. Editing and removal also wait for active work before restarting. Removing the last source leaves the console disconnected.
+Press `p` to inspect each source's status. Use Up and Down to select a source, `e` to edit it, or `d` to request removal and `y` to confirm. A blank key while editing reuses only the selected source's saved key. Adding a source always requires its own key. Editing or removing a source waits for active work before restarting. Removing the last source leaves the console disconnected.
 
 The maximum worker count limits all sources together. Space pauses or resumes new intake across every source. Worker cards identify the source that owns each task. Source credentials stay in separate private files on this machine.
 
