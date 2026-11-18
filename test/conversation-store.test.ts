@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, unlink,
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as cgroups from "../src/conversation-cgroup.js";
 import * as recovery from "../src/conversation-recovery.js";
 import { ConversationStore } from "../src/conversation-store.js";
 import { makeTicket } from "./helpers.js";
@@ -166,6 +167,52 @@ describe("ConversationStore", () => {
       expect(await readlink(path)).toBe(encoded);
       expect(teardown).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000000", undefined, "42");
     } finally { teardown.mockRestore(); }
+  });
+
+  it("retains a cgroup lease when kernel teardown fails", async () => {
+    const token = "00000000-0000-4000-8000-000000000000";
+    const group = `/sys/fs/cgroup/fictional.service/tmatrix-lease-${token}`;
+    const { store, path, encoded } = await locked({ identity: currentBoot, tracking: 2, start: "42", cgroup: group });
+    const teardown = vi.spyOn(cgroups, "stopLeaseCgroup").mockResolvedValue(false);
+    try {
+      await expect(store.acquire(ticket)).rejects.toMatchObject({ code: "CONVERSATION_OWNER_LOST" });
+      expect(await readlink(path)).toBe(encoded);
+      expect(teardown).toHaveBeenCalledWith(group, token, undefined);
+    } finally { teardown.mockRestore(); }
+  });
+
+  it.skipIf(process.platform !== "linux")("retries failed lease cleanup before releasing ownership", async () => {
+    const { directory } = await setup();
+    const allocation = vi.spyOn(cgroups, "createLeaseCgroup").mockImplementation(async token => `/sys/fs/cgroup/fictional.service/tmatrix-lease-${token}`);
+    const teardown = vi.spyOn(cgroups, "stopLeaseCgroup").mockResolvedValue(false);
+    try {
+      const store = new ConversationStore({ directory, namespace, trackRuntime: true, bootIdentity: async () => currentBoot });
+      const release = await store.acquire(ticket);
+      const path = join(directory, hash(namespace), `${hash(String(ticket.task_id))}.json.lock`);
+      await expect(release()).rejects.toMatchObject({ code: "CONVERSATION_OWNER_LOST" });
+      expect(JSON.parse(await readlink(path)).tracking).toBe(2);
+      teardown.mockResolvedValue(true);
+      await release();
+      await expect(readlink(path)).rejects.toMatchObject({ code: "ENOENT" });
+      await release();
+      expect(teardown).toHaveBeenCalledTimes(2);
+    } finally { allocation.mockRestore(); teardown.mockRestore(); }
+  });
+
+  it.skipIf(process.platform !== "linux")("removes an unused allocation when acquisition fails", async () => {
+    const { store, directory } = await setup();
+    const held = await store.acquire(ticket);
+    const allocation = vi.spyOn(cgroups, "createLeaseCgroup").mockImplementation(async token => `/sys/fs/cgroup/fictional.service/tmatrix-lease-${token}`);
+    const teardown = vi.spyOn(cgroups, "stopLeaseCgroup").mockResolvedValue(true);
+    try {
+      const contender = new ConversationStore({ directory, namespace, trackRuntime: true, bootIdentity: async () => currentBoot });
+      const abort = new AbortController();
+      const pending = contender.acquire(ticket, abort.signal);
+      await vi.waitFor(() => expect(allocation).toHaveBeenCalled());
+      abort.abort();
+      await expect(pending).rejects.toBeDefined();
+      expect(teardown).toHaveBeenCalledTimes(1);
+    } finally { allocation.mockRestore(); teardown.mockRestore(); await held(); }
   });
 
   it("automatically recovers after a verified reboot even when the old PID is reused", async () => {

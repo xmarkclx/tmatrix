@@ -14,7 +14,7 @@ func TestServiceUnitEscaping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`ExecStart="/home/a b/tmatrix" --config-dir "/home/a%%/cfg$$test" daemon`, `Environment="PATH=/bin:/with space"`, "KillMode=mixed", "TimeoutStopSec=infinity", "Restart=on-failure"} {
+	for _, want := range []string{`ExecStart="/home/a b/tmatrix" --config-dir "/home/a%%/cfg$$test" daemon`, `Environment="PATH=/bin:/with space"`, "KillMode=mixed", "Delegate=yes", "TimeoutStopSec=infinity", "Restart=on-failure"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("missing %q", want)
 		}
