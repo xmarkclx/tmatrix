@@ -6,6 +6,7 @@ import { mkdtemp, readdir, readlink, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as cgroups from "../src/conversation-cgroup.js";
 import { ConversationStore } from "../src/conversation-store.js";
 import { LEASE_ENV, processStart } from "../src/conversation-recovery.js";
 import { makeTicket } from "./helpers.js";
@@ -30,7 +31,8 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== "linux")("real orphan runtime recovery", () => {
-  it("stops tagged orphan descendants, leaves other runs alive, and preserves conversation routing", async () => {
+  it("recovers legacy process-tracked leases without stopping unrelated runs", async () => {
+    vi.spyOn(cgroups, "createLeaseCgroup").mockResolvedValue(undefined);
     const directory = await mkdtemp(join(tmpdir(), "tmatrix-recovery-process-"));
     directories.push(directory);
     const store = new ConversationStore({ directory, namespace: "https://fictional.example.test", trackRuntime: true });
