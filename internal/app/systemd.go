@@ -50,6 +50,7 @@ Environment=%s
 Restart=on-failure
 RestartSec=5
 KillMode=mixed
+Delegate=yes
 TimeoutStopSec=infinity
 UMask=0077
 

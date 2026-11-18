@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { LEASE_ENV, legacyLockPredatesBoot, processStart, stopLeaseProcesses } from "./conversation-recovery.js";
+import { CGROUP_ENV, createLeaseCgroup, stopLeaseCgroup, validLeaseCgroup } from "./conversation-cgroup.js";
 import { WorkerError } from "./errors.js";
 import { conversationReferenceSchema, type Ticket, type ConversationReference } from "./types.js";
 
@@ -189,57 +190,66 @@ export class ConversationStore {
     const start = this.trackRuntime ? await processStart(process.pid) : undefined;
     const tracked = this.trackRuntime && identity !== undefined && start !== undefined;
     const token = randomUUID();
+    const cgroup = tracked ? await createLeaseCgroup(token) : undefined;
     const owner = JSON.stringify({ pid: process.pid, host: hostname(), token, identity,
-      ...(tracked ? { tracking: 1, start } : {}) });
-    let recovered = false;
-    for (;;) {
-      signal?.throwIfAborted();
-      try {
-        // A symlink publishes the entire owner atomically, without a partially
-        // written owner file that can become stranded after a crash.
-        await symlink(owner, path);
-        if (signal?.aborted) {
-          await unlink(path);
-          signal.throwIfAborted();
+      ...(tracked ? { tracking: cgroup ? 2 : 1, start, ...(cgroup ? { cgroup } : {}) } : {}) });
+    let acquired = false;
+    try {
+      let recovered = false;
+      for (;;) {
+        signal?.throwIfAborted();
+        try {
+          // A symlink publishes the entire owner atomically, without a partially
+          // written owner file that can become stranded after a crash.
+          await symlink(owner, path);
+          if (signal?.aborted) {
+            if (cgroup && !await stopLeaseCgroup(cgroup, token)) throw this.ownerLost();
+            await unlink(path);
+            signal.throwIfAborted();
+          }
+          let released = false;
+          const release: ConversationLease = async () => {
+            if (released) return;
+            if (cgroup && !await stopLeaseCgroup(cgroup, token)) throw this.ownerLost();
+            if (await readlink(path).catch(() => undefined) === owner) await unlink(path);
+            released = true;
+          };
+          if (tracked) release.environment = { [LEASE_ENV]: token, ...(cgroup ? { [CGROUP_ENV]: cgroup } : {}) };
+          acquired = true;
+          release.recovered = recovered;
+          return release;
+        } catch (error) {
+          if (!this.isCode(error, "EEXIST")) throw error;
         }
-        let released = false;
-        const release: ConversationLease = async () => {
-          if (released) return;
-          released = true;
-          if (await readlink(path).catch(() => undefined) === owner) await unlink(path);
-        };
-        if (tracked) release.environment = { [LEASE_ENV]: token };
-        release.recovered = recovered;
-        return release;
-      } catch (error) {
-        if (!this.isCode(error, "EEXIST")) throw error;
-      }
 
-      let stale: string;
-      try { stale = await readlink(path); } catch (error) {
-        // The holder may release between our EEXIST and this read.
-        if (this.isCode(error, "ENOENT")) continue;
-        throw this.busy();
+        let stale: string;
+        try { stale = await readlink(path); } catch (error) {
+          // The holder may release between our EEXIST and this read.
+          if (this.isCode(error, "ENOENT")) continue;
+          throw this.busy();
+        }
+        const previous = this.lockOwner(stale);
+        if (this.fromPreviousBoot(previous, identity) ||
+            (previous.identity === undefined && await legacyLockPredatesBoot(path))) {
+          await this.removeStaleLock(path, stale);
+          recovered = true;
+          continue;
+        }
+        if (await this.ownerAlive(previous)) {
+          await delay(250, undefined, signal ? { signal } : {});
+          continue;
+        }
+        if (this.canTrack(previous, identity)) {
+          await this.removeStaleLock(path, stale, async () => {
+            if (!await this.stopOwner(previous, signal)) throw this.ownerLost();
+          });
+          recovered = true;
+          continue;
+        }
+        throw this.ownerLost();
       }
-      const previous = this.lockOwner(stale);
-      if (this.fromPreviousBoot(previous, identity) ||
-          (previous.identity === undefined && await legacyLockPredatesBoot(path))) {
-        await this.removeStaleLock(path, stale);
-        recovered = true;
-        continue;
-      }
-      if (await this.ownerAlive(previous)) {
-        await delay(250, undefined, signal ? { signal } : {});
-        continue;
-      }
-      if (this.canTrack(previous, identity)) {
-        await this.removeStaleLock(path, stale, async () => {
-          if (!await stopLeaseProcesses(String(previous.token), signal, String(previous.start))) throw this.ownerLost();
-        });
-        recovered = true;
-        continue;
-      }
-      throw this.ownerLost();
+    } finally {
+      if (!acquired && cgroup && !await stopLeaseCgroup(cgroup, token)) throw this.ownerLost();
     }
   }
 
@@ -260,7 +270,7 @@ export class ConversationStore {
       if (!confirmRuntimeStopped) {
         if (!this.canTrack(previous, identity)) throw this.ownerLost();
         await this.removeStaleLock(path, stale, async () => {
-          if (!await stopLeaseProcesses(String(previous.token), undefined, String(previous.start))) throw this.ownerLost();
+          if (!await this.stopOwner(previous)) throw this.ownerLost();
         });
         return true;
       }
@@ -285,7 +295,14 @@ export class ConversationStore {
 
   private canTrack(owner: Record<string, unknown>, current: BootIdentity | undefined): boolean {
     const saved = this.object(owner.identity);
-    return owner.tracking === 1 && typeof owner.start === "string" && /^\d+$/.test(owner.start) && !!current && saved?.machine === current.machine && saved.boot === current.boot;
+    return (owner.tracking === 1 || (owner.tracking === 2 && typeof owner.cgroup === "string" &&
+      validLeaseCgroup(owner.cgroup, String(owner.token)))) && typeof owner.start === "string" && /^\d+$/.test(owner.start) && !!current && saved?.machine === current.machine && saved.boot === current.boot;
+  }
+
+  private stopOwner(owner: Record<string, unknown>, signal?: AbortSignal): Promise<boolean> {
+    return owner.tracking === 2
+      ? stopLeaseCgroup(String(owner.cgroup), String(owner.token), signal)
+      : stopLeaseProcesses(String(owner.token), signal, String(owner.start));
   }
 
   private async ownerAlive(owner: Record<string, unknown>): Promise<boolean> {

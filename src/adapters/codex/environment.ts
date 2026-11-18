@@ -7,6 +7,7 @@ export function sanitizedCodexEnvironment(env: NodeJS.ProcessEnv): Record<string
   delete sanitized.TMATRIX_SECURITY_OPENAI_API_KEY;
   // Each run receives its own lease tag; never inherit an ancestor run's tag.
   delete sanitized.TMATRIX_CONVERSATION_LEASE;
+  delete sanitized.TMATRIX_CONVERSATION_CGROUP;
   // App Server receives an honest public clientInfo identity. Never inherit a
   // private originator override from a shell, desktop app, or parent process.
   delete sanitized.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;

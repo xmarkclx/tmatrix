@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Logger } from "pino";
+import { CGROUP_ENV, stopLeaseCgroup, validLeaseCgroup } from "../../conversation-cgroup.js";
+import { LEASE_ENV } from "../../conversation-recovery.js";
 import type { Input } from "../../runtime-adapter.js";
 import { startSecurityWarningMcp, type SecurityWarningMcpServer } from "../../security-warning-mcp.js";
 import type { ReportSecurityWarning } from "../../security-warning.js";
@@ -150,6 +152,10 @@ export class AppServerCodex implements RuntimeLike {
       try { await (await this.warningServerPromise)?.close(); }
       catch { this.logger?.warn({ event: "security.warning_action_shutdown_unconfirmed" }, "Warning action shutdown unconfirmed"); }
       delete this.warningServerPromise;
+      const cgroup = this.environment[CGROUP_ENV];
+      if (cgroup && !await stopLeaseCgroup(cgroup, this.environment[LEASE_ENV] ?? "")) {
+        throw new Error("Runtime cgroup shutdown could not be confirmed");
+      }
     }
   }
 
@@ -888,8 +894,14 @@ export function spawnCodexAppServer(
   if (toolDirectories.length > 0) {
     childEnvironment.PATH = [...toolDirectories, environment.PATH ?? ""].filter(Boolean).join(delimiter);
   }
-  return spawn(launcher ? process.execPath : executablePath,
-    launcher ? [executablePath, ...arguments_] : [...arguments_], {
+  const command = launcher ? process.execPath : executablePath;
+  const args = launcher ? [executablePath, ...arguments_] : [...arguments_];
+  const cgroup = childEnvironment[CGROUP_ENV];
+  if (cgroup && !validLeaseCgroup(cgroup, childEnvironment[LEASE_ENV] ?? "")) {
+    throw new Error("Invalid runtime cgroup");
+  }
+  return spawn(cgroup ? "/bin/sh" : command,
+    cgroup ? ["-c", 'printf %s "$$" > "$1/cgroup.procs" && shift && exec "$@"', "tmatrix-runtime", cgroup, command, ...args] : args, {
     env: childEnvironment,
     ...(workingDirectory ? { cwd: workingDirectory } : {}),
     stdio: ["pipe", "pipe", "pipe"],
