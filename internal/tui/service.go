@@ -105,7 +105,7 @@ func (m Model) serviceContent() layoutBlock {
 		add(m.notice)
 		add("Keep this app open until the operation finishes.")
 		if m.restarting {
-			add(fmt.Sprintf("Active workers: %d. No forced stop or drain timeout.", m.snapshot.RunningWorkers))
+			add(fmt.Sprintf("Active workers: %d.", m.snapshot.RunningWorkers))
 		}
 		return b
 	}

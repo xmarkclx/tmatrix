@@ -73,6 +73,8 @@ type Model struct {
 	confirmation        string
 	busy                bool
 	restarting          bool
+	forceStop           forceStopPhase
+	canForceStop        bool
 	notice, failure     string
 	connectionError     string
 	loaded              bool
@@ -89,7 +91,9 @@ func New(service backend.Backend, options Options) Model {
 	input.PlaceholderStyle = mutedStyle
 	input.Cursor.Style = cursorStyle
 	input.Cursor.TextStyle = bodyStyle
-	return Model{mouseDisabled: options.NoMouse, now: time.Now(), backend: service, options: options, width: 100, height: 30, viewport: viewport.New(96, 18), following: true, composer: input, drafts: map[string]string{}, reading: map[string]readingPosition{}}
+	m := Model{mouseDisabled: options.NoMouse, now: time.Now(), backend: service, options: options, width: 100, height: 30, viewport: viewport.New(96, 18), following: true, composer: input, drafts: map[string]string{}, reading: map[string]readingPosition{}}
+	m.canForceStop = m.forceStopAvailable()
+	return m
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(tea.SetWindowTitle("TMatrix"), m.refresh()) }

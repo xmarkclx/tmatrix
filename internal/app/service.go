@@ -59,9 +59,13 @@ func (s *Service) Snapshot(ctx context.Context) (snapshot backend.Snapshot, snap
 	defer func() { snapshot.RestartPending = s.restartPending() }()
 	client, err := s.client()
 	if err == nil {
-		return client.Snapshot(ctx)
+		snapshot, err = client.Snapshot(ctx)
+		if err == nil {
+			return snapshot, nil
+		}
 	}
-	if _, statErr := os.Stat(config.DiscoveryPath(s.Dir)); !errors.Is(statErr, os.ErrNotExist) {
+	pid, pidErr := engineDiscoveryPID(config.DiscoveryPath(s.Dir))
+	if !errors.Is(pidErr, os.ErrNotExist) && (pidErr != nil || processExists(pid)) {
 		return backend.Snapshot{}, err
 	}
 	cfg, err := config.Load(s.Dir)
@@ -358,7 +362,9 @@ func (s *Service) startSources(ctx context.Context, cfg config.Config, restart b
 // drainConnection leaves the old credentials in place until all admitted work
 // finishes. Shutdown pauses intake and drains workers without interrupting them.
 func (s *Service) drainConnection(ctx context.Context) error {
-	if _, err := os.Lstat(config.DiscoveryPath(s.Dir)); errors.Is(err, os.ErrNotExist) {
+	path := config.DiscoveryPath(s.Dir)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
 		return ctx.Err()
 	} else if err != nil {
 		return errors.New("cannot inspect engine shutdown state")
@@ -366,6 +372,13 @@ func (s *Service) drainConnection(ctx context.Context) error {
 	client, err := s.client()
 	if err != nil {
 		return err
+	}
+	pid, err := engineDiscoveryPID(path)
+	if err != nil {
+		return err
+	}
+	if !processExists(pid) {
+		return ctx.Err()
 	}
 	if err := client.Shutdown(ctx); err != nil {
 		return err
@@ -376,10 +389,14 @@ func (s *Service) drainConnection(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := os.Lstat(config.DiscoveryPath(s.Dir)); errors.Is(err, os.ErrNotExist) {
+		latest, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		} else if err != nil {
 			return errors.New("cannot inspect engine shutdown state")
+		}
+		if !os.SameFile(info, latest) || !processExists(pid) {
+			return backend.ErrDrainInterrupted
 		}
 		select {
 		case <-ctx.Done():

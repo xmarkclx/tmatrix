@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"tmatrix/internal/backend"
@@ -78,11 +79,33 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncActivity()
 		}
 		return m, nextRefresh()
+	case forceStopMsg:
+		m.forceStop = forceStopClosed
+		if msg.err != nil {
+			m.failure = single(msg.err.Error())
+			return m, m.refresh()
+		}
+		m.failure = ""
+		m.matrix = matrixPlayback{generation: m.matrix.generation}
+		if m.busy {
+			m.forceStop = forceStopSettling
+		}
+		m.notice = "Engine stopped. Restart from Settings."
+		return m, m.refresh()
 	case resultMsg:
 		m.busy = false
+		if msg.kind == "service" {
+			m.canForceStop = m.forceStopAvailable()
+		}
 		if msg.kind == "service" || msg.kind == "restart" {
 			m.restarting = false
 			m.screen = settingsScreen
+		}
+		if m.forceStop == forceStopSettling {
+			m.forceStop = forceStopClosed
+			if errors.Is(msg.err, backend.ErrDrainInterrupted) {
+				return m, nil
+			}
 		}
 		if msg.err != nil {
 			m.failure = single(msg.err.Error())
@@ -118,7 +141,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseMsg:
-		if m.mouseDisabled || m.matrix.active {
+		if m.mouseDisabled || m.matrix.active && !m.forceStop.modal() {
 			return m, nil
 		}
 		return m.handleMouse(msg)
@@ -140,7 +163,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Bracketed paste is data, never a navigation or confirmation shortcut.
 	if key.Paste {
 		var cmd tea.Cmd
-		if m.busy || m.confirmation != "" || m.removingSource != "" {
+		if m.busy || m.forceStop.modal() || m.confirmation != "" || m.removingSource != "" {
 			return m, nil
 		}
 		if m.composing {
@@ -152,6 +175,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	name := key.String()
+	if m.forceStop.modal() || (m.canForceStop && name == "f8") {
+		return m.handleForceStopKey(name)
+	}
 	if m.matrix.active {
 		switch name {
 		case "esc", "m":

@@ -35,6 +35,8 @@ curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.
 
 Press `s` to open Settings and view the TMatrix version, build number, and commit at the top.
 
+If the installed systemd service on Linux or WSL is stuck waiting for workers, press `F8` in the console and confirm with `y`. This interrupts workers and leaves the engine stopped. In Settings, press `r` and confirm to restart with the saved intake preference. See [conversation recovery](docs/conversation-recovery.md) for how TMatrix resumes interrupted tasks.
+
 ## Connect multiple sources
 
 One TMatrix instance can poll several supported apps. Existing installations keep their saved connection, key, poller identity, and conversations when the settings upgrade.

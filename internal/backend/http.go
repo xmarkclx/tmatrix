@@ -23,6 +23,7 @@ var errActionConflict = errors.New("worker cannot accept this action in its curr
 var errActionValues = errors.New("engine rejected the requested values")
 
 var ErrUpgradeBusy = errors.New("upgrade deferred while workers are active; retry after they finish")
+var ErrDrainInterrupted = errors.New("TMatrix engine stopped before the drain completed")
 
 type discovery struct {
 	Version int    `json:"version"`

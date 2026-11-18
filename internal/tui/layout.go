@@ -49,7 +49,7 @@ func (m Model) activityHeight() int {
 
 func (m Model) View() string {
 	frame := ""
-	if m.matrix.active {
+	if m.matrix.active && !m.forceStop.modal() {
 		frame = m.matrixView()
 	} else {
 		frame, _ = m.renderLayout()
@@ -128,14 +128,16 @@ func (m Model) renderLayout() (string, []hitTarget) {
 		}
 	}
 	var body layoutBlock
-	switch m.screen {
-	case workersScreen:
+	switch {
+	case m.forceStop.modal():
+		body = m.forceStopContent()
+	case m.screen == workersScreen:
 		body = m.workerContent()
-	case serviceScreen:
+	case m.screen == serviceScreen:
 		body = m.serviceContent()
-	case adapterUpdatesScreen:
+	case m.screen == adapterUpdatesScreen:
 		body = m.adapterUpdateContent()
-	case settingsScreen, connectScreen:
+	case m.screen == settingsScreen || m.screen == connectScreen:
 		body = m.formContent()
 	default:
 		content := m.helpView()
@@ -252,6 +254,15 @@ func controls(items []control, width int) layoutBlock {
 }
 
 func (m Model) footerLayout() layoutBlock {
+	switch m.forceStop {
+	case forceStopConfirm:
+		return controls([]control{{"[y] Force stop", "y"}, {"[n] Cancel", "n"}}, m.width)
+	case forceStopRunning:
+		return controls([]control{{"Force stopping…", ""}}, m.width)
+	}
+	if m.busy && m.canForceStop {
+		return controls([]control{{"[F8] Force stop", "f8"}}, m.width)
+	}
 	if m.screen == adapterUpdatesScreen {
 		return controls([]control{{"[Esc] Settings", "esc"}, {"[↑/↓] Scroll", ""}}, m.width)
 	}

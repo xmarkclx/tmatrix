@@ -44,7 +44,15 @@ func (m Model) formContent() layoutBlock {
 	prefix := layoutBlock{}
 	if m.screen == settingsScreen {
 		prefix.append(controls([]control{{"[o] Runtime updates", "o"}}, m.width-4))
-		prefix.append(controls([]control{{"[r] Restart engine", "r"}}, m.width-4))
+		restartLabel := "[r] Restart engine"
+		if m.canForceStop && m.width < 42 {
+			restartLabel = "[r] Restart"
+		}
+		engineControls := []control{{restartLabel, "r"}}
+		if m.canForceStop {
+			engineControls = append(engineControls, control{"[F8] Force stop", "f8"})
+		}
+		prefix.append(controls(engineControls, m.width-4))
 		prefix.append(controls([]control{{"[i] Install service", "i"}}, m.width-4))
 		prefix.append(controls([]control{{"[u] Uninstall service", "u"}}, m.width-4))
 	}

@@ -140,7 +140,7 @@ func (m *Model) submitForm() tea.Cmd {
 		return m.operation(kind, "", func(ctx context.Context) (string, error) {
 			err := m.backend.Connect(ctx, backend.Connection{SourceID: m.editingSource, Name: name, URL: endpoint, APIKey: key})
 			if err != nil {
-				if key == "" {
+				if key == "" || errors.Is(err, backend.ErrDrainInterrupted) {
 					return "", err
 				}
 				return "", errors.New(strings.ReplaceAll(err.Error(), key, "[redacted]"))

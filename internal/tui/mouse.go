@@ -39,6 +39,15 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) activateTarget(target hitTarget) (tea.Model, tea.Cmd) {
+	if m.forceStop.modal() {
+		if target.action == "key" && (target.key == "y" || target.key == "n") {
+			return m.handleKey(mouseKey(target.key))
+		}
+		return m, nil
+	}
+	if target.action == "key" && target.key == "f8" {
+		return m.handleKey(mouseKey(target.key))
+	}
 	if m.busy {
 		return m, nil
 	}
@@ -132,7 +141,7 @@ func (m Model) scrollMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func mouseKey(name string) tea.KeyMsg {
 	special := map[string]tea.KeyType{
-		"f2": tea.KeyF2, "enter": tea.KeyEnter, "esc": tea.KeyEsc, "ctrl+s": tea.KeyCtrlS,
+		"f2": tea.KeyF2, "f8": tea.KeyF8, "enter": tea.KeyEnter, "esc": tea.KeyEsc, "ctrl+s": tea.KeyCtrlS,
 		"left": tea.KeyLeft, "right": tea.KeyRight,
 		"up": tea.KeyUp, "down": tea.KeyDown,
 	}
