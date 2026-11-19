@@ -41,8 +41,12 @@ export const conversationReferenceSchema = z.object({
 });
 export type ConversationReference = z.infer<typeof conversationReferenceSchema>;
 
+export const conversationModeSchema = z.enum(["task", "work_item"]);
+
 const ticketContextShape = {
   conversation: conversationReferenceSchema.nullable().optional(),
+  /** work_item resumes only this ticket. task or omission retains task-wide continuity. */
+  conversation_mode: conversationModeSchema.optional(),
   task_id: externalIdSchema.optional(),
   input_revision: z.number().int().nonnegative().optional(),
   project_path: z.string().optional(),

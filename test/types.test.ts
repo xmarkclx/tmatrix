@@ -91,4 +91,15 @@ describe("ticket execution profile", () => {
       thread_anchor_comment_id: 0
     })).success).toBe(false);
   });
+
+  it("preserves conversation mode on new and recovered tickets and rejects unknown modes", () => {
+    const isolated = makeTicket({ conversation_mode: "work_item" });
+    expect(ticketSchema.parse(isolated).conversation_mode).toBe("work_item");
+    expect(ownedTicketSchema.parse(isolated).conversation_mode).toBe("work_item");
+    expect(ticketSchema.parse(makeTicket({ conversation_mode: "task" })).conversation_mode).toBe("task");
+    expect(ticketSchema.parse(makeTicket()).conversation_mode).toBeUndefined();
+    for (const schema of [ticketSchema, ownedTicketSchema]) {
+      expect(schema.safeParse({ ...isolated, conversation_mode: "unknown" }).success).toBe(false);
+    }
+  });
 });
