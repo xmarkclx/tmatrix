@@ -79,12 +79,14 @@ function handoffText(
 
 describe("TicketRunner", () => {
   it.each([
-    ["FAST", "low", "priority"],
-    ["NORMAL", "medium", "default"],
-    ["HIGH", "ultra", "default"]
+    ["FAST", "gpt-5.6-sol", "low", "priority"],
+    ["NORMAL", "gpt-5.6-sol", "medium", "default"],
+    ["HIGH", "gpt-5.6-sol", "ultra", "default"],
+    ["URGENT", "gpt-6-astra", "max", "priority"],
+    ["HIGH", "gpt-6-astra", "max", "priority"]
   ] as const)(
-    "passes the %s execution snapshot to Codex as gpt-5.6-sol/%s/%s",
-    async (executionMode, reasoningEffort, serviceTier) => {
+    "passes the %s execution snapshot to Codex as %s/%s/%s",
+    async (executionMode, model, reasoningEffort, serviceTier) => {
       const api = apiMock();
       const capture: CodexCapture = {};
       const codex = codexMock([
@@ -112,19 +114,19 @@ describe("TicketRunner", () => {
 
       await runner.run(makeTicket({
         execution_mode: executionMode,
-        model: "gpt-5.6-sol",
+        model,
         reasoning_effort: reasoningEffort,
         service_tier: serviceTier
       }), { runId: `run-${executionMode}`, recovered: false });
 
       expect(capture.profiles).toEqual([{
         execution_mode: executionMode,
-        model: "gpt-5.6-sol",
+        model,
         reasoning_effort: reasoningEffort,
         service_tier: serviceTier
       }]);
       expect(capture.threadOptions).toMatchObject({
-        model: "gpt-5.6-sol",
+        model,
         modelReasoningEffort: reasoningEffort,
         serviceTier
       });

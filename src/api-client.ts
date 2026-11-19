@@ -294,6 +294,7 @@ export class ApiClient implements TicketApi {
           method: options.method,
           headers: {
             ...IDENTITY_CONTRACT_HEADERS,
+            "x-tzudo-ai-execution-version": "2",
             authorization: `Bearer ${this.config.api_key}`,
             accept: "application/json",
             "content-type": "application/json",
