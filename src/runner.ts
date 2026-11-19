@@ -2,6 +2,7 @@ import { createSecurityWarningReporter, type AlertSecurityWarning } from "./secu
 import { LiveSteering, NotSentError } from "./helpers/live-steering.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
+import { serializePromptHistory } from "./helpers/serialize-prompt-history.js";
 import { workerTitle } from "./helpers/worker-title.js";
 import type { ConversationStore } from "./conversation-store.js";
 import type { WorkerObservation } from "./local-worker-state.js";
@@ -770,9 +771,7 @@ function runtimeThreadOptions(
 
 
 function buildPrompt(ticket: Ticket, history: unknown): string {
-  const serializedHistory = typeof history === "string"
-    ? history
-    : JSON.stringify(history ?? null, null, 2);
+  const serializedHistory = serializePromptHistory(ticket.instructions, history);
   const ticketContext = Object.fromEntries(
     Object.entries(ticket).filter(([key]) => !["ticket_id", "worker_id", "instructions", "endpoints"].includes(key))
   );

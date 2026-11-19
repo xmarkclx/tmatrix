@@ -290,7 +290,7 @@ describe("conversation continuity across worker tickets", () => {
     expect(run.calls).toEqual([{ kind: "start", id: "conversation-root" }]);
     expect(run.results[0]).toMatchObject({ status: "completed", thread_id: "conversation-root" });
     expect(run.prompts[0]).toContain(legacy.instructions);
-    expect(run.prompts[0]).toContain(JSON.stringify(history, null, 2));
+    expect(run.prompts[0]).toContain(JSON.stringify(history));
     expect(events).toContainEqual(expect.objectContaining({ kind: "conversation.unlinked" }));
     expect(await store().resolve(legacy, {})).toBe("conversation-root");
     const reply = harness(store());
