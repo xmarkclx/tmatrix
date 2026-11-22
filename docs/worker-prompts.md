@@ -1,42 +1,25 @@
 # Worker prompt history
 
-TzuDo's ticket instructions already contain the task body, project guidance and public comments. TMatrix still fetches full durable history for conversation routing, context changes and recovery. Fresh model input uses a separate projection of that response.
+TMatrix fetches durable history once per ticket. It uses the full response to find the conversation and detect changes to task context. Only the prompt and the history tool determine which parts the model sees.
 
-`serializePromptHistory` replaces long duplicate task, global, project and comment text with references to its source in the ticket instructions. The remaining JSON uses compact formatting. The original instructions and history response stay intact.
+A resumed conversation receives the latest triggering comment and changed task context. Codex can call `read_ticket_history` when it needs an older comment. Call it without arguments to list recent comment IDs, with `before_comment_id` to page backward, or with `comment_id` to read a single comment. The tool serves the active ticket's history from memory and can return the private continuation selected for this reply.
 
-The helper requires exact coverage in ordered instruction sections. A task body must match its canonical task and project IDs. Comments must match the entire rendered comment history, including authors and reply targets. Changed text, ambiguous headings, unknown fields, private `inherited_context`, legacy progress and opaque string history remain available. Empty values also remain available so a fresh session can see cleared settings. Short text stays literal when a reference would be longer.
+A fresh conversation, including recovery when a saved conversation is missing, receives the task instructions and current request. When the worker can prove that the full comment section matches the fetched history, it replaces that section with lookup instructions. If a saved continuation exists, the prompt gives its comment ID and asks the model to read it before acting on prior work. The latest human instructions still take precedence. The tool stays available for the life of the runtime.
 
-Resumed comment turns still receive the trigger and changed context. Missing conversations use the same compact recovery prompt as a fresh run. No database schema, API response, admin screen or runtime ownership rule changes.
+The worker sends the complete comment section and continuation when it cannot validate the snapshot or prepare the lookup. It also uses the full prompt for history containing image links so images can still be attached to the turn. Live human edits still carry TzuDo's authoritative conversation snapshot. The `serializePromptHistory` helper removes proven duplicate copies in the JSON supplement on both paths.
 
-## Measured input size
+## Measured initial input size
 
-The committed synthetic fixture exercises the actual `TicketRunner` and captures the input at the runtime boundary. The runtime response is simulated; no task API or paid model call runs. These measurements are prompt characters and UTF-8 bytes, not billed token counts. Both fixtures contain ASCII text, so their character and byte counts match.
+The synthetic fixture captures the input `TicketRunner` hands to its runtime. The table measures UTF-8 bytes before the model reads any comments. It excludes provider overhead and follow-up tool calls.
 
-| Synthetic ticket | Before | After | Reduction |
-| --- | ---: | ---: | ---: |
-| Initial task, no comments | 20,962 | 12,107 | 42.2% |
-| Task with 12 comments and private checkpoint | 38,392 | 22,823 | 40.6% |
+| Synthetic ticket | Full history | On-demand history |
+| --- | ---: | ---: |
+| No comments | 12,173 | 12,173 |
+| 12 comments and a saved continuation | 23,310 | 12,564 |
+| 100 comments and a saved continuation | 104,933 | 12,564 |
 
-The task description appears once after projection. The private checkpoint remains in the 12-comment input. The baseline is commit `6656b5259d525a87ff3c1090eee9bcbf5206ce96`.
-
-Run the measurement from this checkout after `npm ci`:
-
-```sh
-node --import tsx scripts/measure-worker-prompt.mjs
-```
-
-To measure a base checkout using the same fixture, install its dependencies and pass its absolute path:
-
-```sh
-node --import tsx scripts/measure-worker-prompt.mjs /absolute/path/to/base-checkout
-```
-
-Run the preservation and missing-conversation checks with:
-
-```sh
-npm test -- test/prompt-context.test.ts test/conversation-runner.test.ts
-```
+Run the measurement with `node --import tsx scripts/measure-worker-prompt.mjs` after `npm ci`.
 
 ## Terminal display limit
 
-The local initial-prompt preview stores at most 200 lines and 16 KiB of JSON-encoded UTF-8. Its display warning does not indicate model-input truncation. Long authoritative instructions can still exceed that preview size. This change does not impose a model-input budget or summarize human requirements.
+The local initial-prompt preview stores at most 200 lines and 16 KiB of JSON-encoded UTF-8. The terminal displays a notice when it shows an excerpt. Long task instructions can still exceed the display limit.

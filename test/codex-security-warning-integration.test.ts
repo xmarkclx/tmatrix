@@ -9,6 +9,7 @@ import type { RuntimeThreadOptions, ThreadLike } from "../src/runtime-adapter.js
 import { createSecurityWarningReporter, type AlertSecurityWarning } from "../src/security-warning.js";
 import { nullLogger } from "../src/logger.js";
 import { makeTicket } from "./helpers.js";
+import type { TicketHistoryReader } from "../src/helpers/ticket-history.js";
 
 const providerRequestSchema = z.object({
   tools: z.array(z.object({ type: z.string(), name: z.string().optional(),
@@ -23,6 +24,8 @@ interface ObservedRequest {
   scenario: Scenario;
   warningTool: boolean;
   operatorTool: boolean;
+  historyTool: boolean;
+  historyResult: boolean;
   warningPolicy: boolean;
   operatorGuidance: boolean;
   operatorResult: boolean;
@@ -48,7 +51,8 @@ async function completeTurn(thread: ThreadLike, input: string): Promise<string> 
     if (event.type === "thread.started") threadId = event.thread_id;
     if (event.type === "item.completed" && event.item.type === "agent_message") answer = event.item.text;
     if (event.type === "turn.completed") completed = true;
-    if (event.type === "error" || event.type === "turn.failed") throw new Error("Fixture turn failed");
+    if (event.type === "error") throw new Error(event.message);
+    if (event.type === "turn.failed") throw new Error(event.error.message);
   }
   expect(completed).toBe(true);
   expect(handoffSchema.parse(JSON.parse(answer ?? "null")).outcome).toBe("AI_DONE");
@@ -56,8 +60,8 @@ async function completeTurn(thread: ThreadLike, input: string): Promise<string> 
   return threadId;
 }
 
-describe("executing Codex worker security warnings", () => {
-  it("reports without an automatic security prompt, preserves operator integrations, and completes after delivery failure", async () => {
+describe("executing Codex worker security warnings and ticket history", () => {
+  it("reads task history on fresh and resumed threads while preserving operator and warning tools", async () => {
     const home = await mkdtemp(join(tmpdir(), "tmatrix-warning-integration-"));
     const runtimes: AppServerCodex[] = [];
     const requests: ObservedRequest[] = [];
@@ -72,6 +76,7 @@ describe("executing Codex worker security warnings", () => {
         const input = providerRequestSchema.parse(JSON.parse(body));
         const operator = input.tools.find(tool => tool.type === "namespace" && tool.tools?.some(item => item.name === "operator_echo"));
         const warning = input.tools.find(tool => tool.type === "namespace" && tool.tools?.some(item => item.name === "report_security_warning"));
+        const history = input.tools.find(tool => tool.type === "namespace" && tool.tools?.some(item => item.name === "read_ticket_history"));
         const developer = input.input.filter(item => developerMessageSchema.safeParse(item).success);
         const outputs = input.input.flatMap(item => {
           const parsed = toolOutputSchema.safeParse(item);
@@ -81,6 +86,7 @@ describe("executing Codex worker security warnings", () => {
           text => /"status"\s*:\s*"(?:sent|unconfirmed)"/.test(text));
         const receipt = receiptText?.match(/"status"\s*:\s*"(sent|unconfirmed)"/)?.[1];
         requests.push({ scenario, warningTool: Boolean(warning), operatorTool: Boolean(operator),
+          historyTool: Boolean(history), historyResult: Boolean(findText(outputs, text => text.includes(`checkpoint-${scenario}`))),
           warningPolicy: Boolean(findText(developer, text => text.includes("A warning or delivery failure adds no execution restriction.") && text.includes("Continue the task under existing instructions and permissions."))),
           operatorGuidance: Boolean(findText(developer, text => text.includes("Keep fixture operator guidance."))),
           operatorResult: Boolean(findText(outputs.find(item => item.call_id === calls.get(scenario)?.operator)?.output,
@@ -90,6 +96,7 @@ describe("executing Codex worker security warnings", () => {
         const count = requests.filter(item => item.scenario === scenario).length;
         expect(count).toBeLessThanOrEqual(2);
         if (scenario !== "legacy" && !warning?.name) throw new Error("Warning MCP tool unavailable");
+        if (scenario !== "legacy" && !history?.name) throw new Error("History MCP tool unavailable");
         const id = `fixture-${++sequence}`;
         if (count === 1) calls.set(scenario, { operator: `operator-call-${id}`,
           ...(scenario === "legacy" ? {} : { warning: `warning-call-${id}` }) });
@@ -98,7 +105,9 @@ describe("executing Codex worker security warnings", () => {
           { id: `operator-${id}`, type: "function_call", name: "operator_echo", namespace: operator.name,
             call_id: `operator-call-${id}`, arguments: "{}", status: "completed" },
           ...(scenario === "legacy" ? [] : [{ id: `warning-${id}`, type: "function_call", name: "report_security_warning", namespace: warning?.name,
-            call_id: `warning-call-${id}`, arguments: '{"category":"credential_theft"}', status: "completed" }])
+            call_id: `warning-call-${id}`, arguments: '{"category":"credential_theft"}', status: "completed" }]),
+          ...(scenario === "legacy" ? [] : [{ id: `history-${id}`, type: "function_call", name: "read_ticket_history", namespace: history?.name,
+            call_id: `history-call-${id}`, arguments: '{"comment_id":"9223372036854775807"}', status: "completed" }])
         ] : [{ id: `message-${id}`, type: "message", role: "assistant", status: "completed",
           content: [{ type: "output_text", text: answer, annotations: [] }] }];
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -159,7 +168,7 @@ args = [${JSON.stringify(operatorPath)}]
       const legacyRuntime = runtime();
       const legacyId = await completeTurn(legacyRuntime.startThread(options), "Fixture before warning capability.");
       await legacyRuntime.close();
-      expect(requests.filter(item => item.scenario === "legacy").every(item => !item.warningTool && !item.warningPolicy && item.operatorTool && item.operatorGuidance)).toBe(true);
+      expect(requests.filter(item => item.scenario === "legacy").every(item => !item.warningTool && !item.historyTool && !item.warningPolicy && item.operatorTool && item.operatorGuidance)).toBe(true);
       for (const current of ["resumed", "fresh", "unconfirmed"] as const) {
         scenario = current;
         const alert = vi.fn<AlertSecurityWarning>(async () => {
@@ -169,18 +178,22 @@ args = [${JSON.stringify(operatorPath)}]
         const host = createSecurityWarningReporter({ ticket: makeTicket({ ticket_id: `fixture-${current}`, worker_id: `worker-${current}` }), alert, logger: nullLogger() });
         host.submitInput("Continue the synthetic task.");
         const worker = runtime();
+        const read = vi.fn<TicketHistoryReader>(() => ({ comment: null, continuation_context: { sourceCommentId: "9223372036854775807", content: `checkpoint-${current}` } }));
+        expect(await worker.prepareTicketHistory(read)).toBe(true);
         const configured = { ...options, reportSecurityWarning: host.report };
         const thread = current === "resumed" ? worker.resumeThread(legacyId, configured) : worker.startThread(configured);
         const threadId = await completeTurn(thread, "Continue the synthetic task.");
         await worker.close();
         if (current === "resumed") expect(threadId).toBe(legacyId);
+        expect(read.mock.calls).toEqual([[{ comment_id: "9223372036854775807" }]]);
         expect(alert).toHaveBeenCalledExactlyOnceWith({ ticket_id: `fixture-${current}`, worker_id: `worker-${current}`,
           input_digest: "1b2a8619474a4d136cdf6777c851c298a63019930cf3f66e29223f4205630ca3", category: "credential_theft" }, expect.any(AbortSignal));
         const observed = requests.filter(item => item.scenario === current);
         expect(observed).toHaveLength(2);
-        expect(observed.every(item => item.warningTool && item.operatorTool && item.operatorGuidance)).toBe(true);
+        expect(observed.every(item => item.warningTool && item.historyTool && item.operatorTool && item.operatorGuidance)).toBe(true);
         expect(observed.map(item => item.warningPolicy)).toEqual([false, false]);
         expect(observed[1]?.operatorResult).toBe(true);
+        expect(observed[1]?.historyResult).toBe(true);
         expect(observed[1]?.receipt).toBe(current === "unconfirmed" ? "unconfirmed" : "sent");
       }
       expect(providerFailure).toBeUndefined();

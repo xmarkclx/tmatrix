@@ -2,7 +2,7 @@ import type { Ticket } from "../../src/types.js";
 
 export function promptFixture(commentCount: number) {
   const task = {
-    id: 'task-synthetic', projectId: 'project-synthetic', parentId: null,
+    id: '01a1323b-377b-7a34-9abe-c68728fe1000', projectId: 'project-synthetic', parentId: null,
     title: 'Reduce repeated worker context', displayPrefix: 'RELEASE', displayNumber: '465',
     description: 'TASK_DESCRIPTION: ' + 'Preserve the task requirements and links when preparing the worker prompt.\n'.repeat(80),
     hiddenContext: 'Keep the private task requirements.',
@@ -14,10 +14,10 @@ export function promptFixture(commentCount: number) {
   const ancestorProject = { id: 'ancestor-synthetic', name: 'Engineering', description: '', context: 'ANCESTOR_CONTEXT: Preserve human requirements and recovery evidence.\n'.repeat(12), projectPath: '' };
   const ancestor_projects = [ancestorProject];
   const comments = Array.from({ length: commentCount }, (_, index) => ({
-    id: `comment-${index}`, authorName: index % 2 ? 'AI worker' : 'Reviewer',
+    id: String(index + 1), taskId: task.id, authorName: index % 2 ? 'AI worker' : 'Reviewer',
     content: `COMMENT_${index}: ` + 'This review request and its supporting evidence must remain available. '.repeat(8),
-    isAI: index % 2 === 1, replyToCommentId: index ? `comment-${index - 1}` : null,
-    createdAt: '2026-10-13T00:00:00Z', continuationContext: null
+    isAI: index % 2 === 1, replyToCommentId: index ? String(index) : null,
+    createdAt: '2026-10-13T00:00:00Z', updatedAt: '2026-10-13T00:00:00Z', apiKeyName: null
   }));
   const ticket = {
     ticket_id: 'ticket-synthetic', worker_id: 'worker-synthetic', task_id: task.id,
@@ -38,7 +38,7 @@ export function promptFixture(commentCount: number) {
     execution_mode: ticket.execution_mode, model: ticket.model, reasoning_effort: ticket.reasoning_effort, service_tier: ticket.service_tier,
     task, task_project: context_project, context_project, ancestor_projects, ancestor_tasks: [], global_context,
     project_path: '/tmp', thread_anchor_comment_id: null, trigger_comment: null, comments,
-    inherited_context: commentCount ? { sourceCommentId: 'comment-1', content: 'SAVED_HANDOFF: The branch exists. Do not repeat the external write.' } : null,
+    inherited_context: commentCount ? { sourceCommentId: '2', content: 'SAVED_HANDOFF: The branch exists. Do not repeat the external write.' } : null,
     progress: null
   };
   return { ticket, history };
