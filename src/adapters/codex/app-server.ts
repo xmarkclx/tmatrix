@@ -8,8 +8,11 @@ import type { Logger } from "pino";
 import { CGROUP_ENV, stopLeaseCgroup, validLeaseCgroup } from "../../conversation-cgroup.js";
 import { LEASE_ENV } from "../../conversation-recovery.js";
 import type { Input } from "../../runtime-adapter.js";
+import type { TicketHistoryReader } from "../../helpers/ticket-history.js";
+import type { LocalMcpServer } from "../../local-mcp.js";
 import { startSecurityWarningMcp, type SecurityWarningMcpServer } from "../../security-warning-mcp.js";
 import type { ReportSecurityWarning } from "../../security-warning.js";
+import { startTicketHistoryMcp } from "../../ticket-history-mcp.js";
 import type {
   RuntimeLike,
   RuntimeThreadOptions,
@@ -80,6 +83,7 @@ export class AppServerCodex implements RuntimeLike {
   private threadStarted = false;
   private threadId?: string;
   private warningServerPromise?: Promise<SecurityWarningMcpServer | undefined>;
+  private historyServerPromise?: Promise<LocalMcpServer | undefined>;
 
   constructor(options: AppServerCodexOptions) {
     this.environment = options.environment;
@@ -99,13 +103,31 @@ export class AppServerCodex implements RuntimeLike {
     return this.ownThread(options, threadId);
   }
 
-  /** Keeps the warning capability private to this runtime and valid across its resumed turns. */
-  async securityWarningServer(report: ReportSecurityWarning): Promise<SecurityWarningMcpServer | undefined> {
-    this.warningServerPromise ??= startSecurityWarningMcp(report).catch(() => {
+  async prepareTicketHistory(read: TicketHistoryReader): Promise<boolean> {
+    this.historyServerPromise ??= startTicketHistoryMcp(read).catch(() => {
+      this.logger?.warn({ event: "ticket.history_action_unavailable" }, "Ticket history lookup unavailable; retaining full input");
+      return undefined;
+    });
+    return await this.historyServerPromise !== undefined;
+  }
+
+  async mcpServers(report?: ReportSecurityWarning): Promise<Record<string, {
+    url: string; http_headers: { Authorization: string }; enabled: boolean; required?: boolean;
+  }>> {
+    if (report) this.warningServerPromise ??= startSecurityWarningMcp(report).catch(() => {
       this.logger?.warn({ event: "security.warning_action_unavailable" }, "Worker warning action unavailable; execution continues");
       return undefined;
     });
-    return this.warningServerPromise;
+    const warning = await this.warningServerPromise;
+    const history = await this.historyServerPromise;
+    return {
+      ...(warning ? { tmatrix_security_warning: {
+        url: warning.url, http_headers: warning.headers, enabled: true
+      } } : {}),
+      ...(history ? { tmatrix_ticket_history: {
+        url: history.url, http_headers: history.headers, enabled: true, required: true
+      } } : {})
+    };
   }
 
   private ownThread(options: RuntimeThreadOptions, threadId?: string): ThreadLike {
@@ -152,6 +174,9 @@ export class AppServerCodex implements RuntimeLike {
       try { await (await this.warningServerPromise)?.close(); }
       catch { this.logger?.warn({ event: "security.warning_action_shutdown_unconfirmed" }, "Warning action shutdown unconfirmed"); }
       delete this.warningServerPromise;
+      try { await (await this.historyServerPromise)?.close(); }
+      catch { this.logger?.warn({ event: "ticket.history_action_shutdown_unconfirmed" }, "Ticket history shutdown unconfirmed"); }
+      delete this.historyServerPromise;
       const cgroup = this.environment[CGROUP_ENV];
       if (cgroup && !await stopLeaseCgroup(cgroup, this.environment[LEASE_ENV] ?? "")) {
         throw new Error("Runtime cgroup shutdown could not be confirmed");
@@ -390,8 +415,7 @@ class AppServerThread implements ThreadLike {
     signal?: AbortSignal
   ): Promise<string> {
     if (this.threadId) return this.threadId;
-    const warning = this.options.reportSecurityWarning
-      ? await this.codex.securityWarningServer(this.options.reportSecurityWarning) : undefined;
+    const mcpServers = await this.codex.mcpServers(this.options.reportSecurityWarning);
     const configuration = {
       model: this.options.model,
       serviceTier: this.options.serviceTier,
@@ -403,9 +427,7 @@ class AppServerThread implements ThreadLike {
         sandbox_workspace_write: {
           network_access: this.options.networkAccessEnabled
         },
-        ...(warning ? { mcp_servers: { tmatrix_security_warning: {
-          url: warning.url, http_headers: warning.headers, enabled: true
-        } } } : {})
+        ...(Object.keys(mcpServers).length ? { mcp_servers: mcpServers } : {})
       }
     };
     let response: ProtocolRecord;

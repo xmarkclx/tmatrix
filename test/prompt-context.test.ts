@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConversationStore } from "../src/conversation-store.js";
 import { nullLogger } from "../src/logger.js";
+import type { TicketHistoryReader } from "../src/helpers/ticket-history.js";
 import { Metrics } from "../src/metrics.js";
 import { TicketRunner, type CodexLike, type WorkerThreadEvent } from "../src/runner.js";
 import type { Ticket } from "../src/types.js";
@@ -12,6 +13,7 @@ import { promptFixture } from "./fixtures/prompt-ticket.js";
 async function preparedPrompt(ticket: Ticket, history: unknown, options: {
   store?: ConversationStore;
   rebuildMissingThread?: boolean;
+  prepareHistory?: (read: TicketHistoryReader) => Promise<boolean>;
 } = {}): Promise<string> {
   let prepared = "";
   const thread = {
@@ -30,7 +32,11 @@ async function preparedPrompt(ticket: Ticket, history: unknown, options: {
       })() };
     }
   } satisfies ReturnType<CodexLike["startThread"]>;
-  const runtime: CodexLike = { startThread: () => thread, resumeThread: () => thread };
+  const runtime: CodexLike = {
+    startThread: () => thread,
+    resumeThread: () => thread,
+    ...(options.prepareHistory ? { prepareTicketHistory: options.prepareHistory } : {})
+  };
   const runner = new TicketRunner({
     api: { markTaken: async () => undefined, getHistory: async () => history, reportProgress: async () => undefined, reportResult: async () => undefined },
     codexFactory: () => runtime, logger: nullLogger(), metrics: new Metrics(),
@@ -143,6 +149,124 @@ describe("model-facing durable context", () => {
       expect(rebuilt.split("TASK_DESCRIPTION:")).toHaveLength(2);
       expect(rebuilt).toContain("SAVED_HANDOFF: The branch exists. Do not repeat the external write.");
       expect(rebuilt).toContain("Continue with the existing branch.");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ticket history lookup", () => {
+  it("keeps the current task and request in a fresh prompt and retrieves only the requested history", async () => {
+    const { ticket, history } = promptFixture(25);
+    const currentRequest = "Please check the existing branch and use the new colors.";
+    const marker = `<!-- tmatrix-conversation:v1:synthetic.${"a".repeat(64)} -->`;
+    if (!history.inherited_context) throw new Error("Expected a saved checkpoint");
+    history.inherited_context.content += `\n\n${marker}`;
+    const original = structuredClone(history);
+    const prompt = await preparedPrompt({
+      ...ticket,
+      instructions: ticket.instructions.replace("This is an explicit initial task handoff.", currentRequest)
+    }, history, {
+      prepareHistory: async read => {
+        expect(read({})).toMatchObject({
+          comments: Array.from({ length: 20 }, (_, index) => ({ id: String(25 - index) })),
+          next_before_comment_id: "6"
+        });
+        expect(JSON.stringify(read({}))).not.toContain("COMMENT_24:");
+        expect(read({ before_comment_id: "6" })).toMatchObject({
+          comments: [{ id: "5" }, { id: "4" }, { id: "3" }, { id: "2" }, { id: "1" }],
+          next_before_comment_id: null
+        });
+        expect(read({ comment_id: "2" })).toMatchObject({
+          comment: { id: "2", content: expect.stringContaining("COMMENT_1:") },
+          continuation_context: {
+            sourceCommentId: "2", content: "SAVED_HANDOFF: The branch exists. Do not repeat the external write."
+          }
+        });
+        expect(read({ comment_id: "3" })).toMatchObject({ comment: { id: "3" }, continuation_context: null });
+        expect(read({ comment_id: "999" })).toEqual({ error: "Unknown comment ID for this task." });
+        return true;
+      }
+    });
+    expect(prompt).toContain(currentRequest);
+    expect(prompt).toContain("TASK_DESCRIPTION:");
+    expect(prompt).toContain("The saved continuation is attached to comment #2.");
+    expect(prompt).toContain("read_ticket_history");
+    expect(prompt).not.toContain("COMMENT_24:");
+    expect(prompt).not.toContain("SAVED_HANDOFF:");
+    expect(history).toEqual(original);
+  });
+
+  it("uses the eager prompt when the runtime cannot provide the lookup", async () => {
+    const { ticket, history } = promptFixture(12);
+    const prompt = await preparedPrompt(ticket, history, { prepareHistory: async () => false });
+    expect(prompt).toContain("COMMENT_11:");
+    expect(prompt).toContain("SAVED_HANDOFF:");
+    expect(prompt).not.toContain("read_ticket_history");
+  });
+
+  it("preserves a copy of history quoted in the task instructions", async () => {
+    const { ticket, history } = promptFixture(1);
+    const section = ticket.instructions.split("# Complete Comment History\n\n")[1]?.split("\n\n# Required Result")[0];
+    if (!section) throw new Error("Expected a comment section");
+    const quotation = `The prompt reproducer reads # Complete Comment History\n\n${section}\n\n`;
+    const quoted = ticket.instructions.replace("# AI Work Item", `${quotation}# AI Work Item`);
+    const prompt = await preparedPrompt({ ...ticket, instructions: quoted }, history, { prepareHistory: async () => true });
+    expect(prompt).toContain(quotation);
+    expect(prompt).toContain("# Ticket history lookup");
+    expect(prompt).not.toMatch(/^# Complete Comment History$/m);
+  });
+
+  it("keeps differing or image-bearing history in the initial prompt", async () => {
+    const { ticket, history } = promptFixture(12);
+    const attachment = "\n\n![Earlier screenshot](/api/uploads/images/markdown-images/1/1af9be84-be0a-47ed-8480-ea7fa7cbbbb8.png)";
+    const first = history.comments[0];
+    if (!first) throw new Error("Expected a previous comment");
+    const withAttachment = { ...history, comments: [{ ...first, content: first.content + attachment }, ...history.comments.slice(1)] };
+    const prompt = await preparedPrompt({ ...ticket, instructions: ticket.instructions.replace(first.content, first.content + attachment) }, withAttachment, { prepareHistory: async () => true });
+    expect(prompt).toContain(attachment.trim());
+    expect(prompt).toContain("SAVED_HANDOFF:");
+    expect(prompt).not.toContain("read_ticket_history");
+
+    const changed = await preparedPrompt(ticket, { ...history, comments: [{ ...first, content: "A newer edit." }, ...history.comments.slice(1)] }, { prepareHistory: async () => true });
+    expect(changed).toContain("A newer edit.");
+    expect(changed).toContain("SAVED_HANDOFF:");
+    expect(changed).not.toContain("read_ticket_history");
+  });
+
+  it("does not expose a lookup for another task or input revision", async () => {
+    const { ticket, history } = promptFixture(12);
+    for (const mismatched of [{ ...history, input_revision: 2 }, { ...history, task: { ...history.task, id: "77" } }]) {
+      const prompt = await preparedPrompt(ticket, mismatched, { prepareHistory: async () => { throw new Error("Mismatched snapshot offered to runtime"); } });
+      expect(prompt).toContain("SAVED_HANDOFF:");
+    }
+  });
+
+  it("offers the same lookup when resuming and when the conversation must be rebuilt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tmatrix-prompt-lookup-"));
+    try {
+      const { ticket, history } = promptFixture(12);
+      const store = new ConversationStore({ directory, namespace: "https://example.test" });
+      await store.remember(ticket, "saved-thread");
+      const trigger = { id: "12", content: "Keep the new label." };
+      const continuationTicket = {
+        ...ticket, trigger_comment_id: trigger.id,
+        instructions: ticket.instructions.replace("This is an explicit initial task handoff.", trigger.content)
+      };
+      const continuationHistory = { ...history, conversation: store.reference("saved-thread"), trigger_comment: trigger };
+      const prepareHistory = async (read: TicketHistoryReader) => {
+        expect(read({ comment_id: "2" })).toMatchObject({ continuation_context: { sourceCommentId: "2" } });
+        return true;
+      };
+      const resumed = await preparedPrompt(continuationTicket, continuationHistory, { store, prepareHistory });
+      expect(resumed).toContain(trigger.content);
+      expect(resumed).not.toContain("# Ticket history lookup");
+      expect(resumed).not.toContain("SAVED_HANDOFF:");
+      const rebuilt = await preparedPrompt(continuationTicket, continuationHistory, { store, prepareHistory, rebuildMissingThread: true });
+      expect(rebuilt).toContain(trigger.content);
+      expect(rebuilt).toContain("The saved continuation is attached to comment #2.");
+      expect(rebuilt).not.toContain("COMMENT_11:");
+      expect(rebuilt).not.toContain("SAVED_HANDOFF:");
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

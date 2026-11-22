@@ -6,6 +6,17 @@ const sectionNames = [
   "AI Work Item", "Complete Comment History", "Required Result"
 ];
 
+export function replaceCommentHistory(instructions: string, { rendered, replacement }: {
+  rendered: string;
+  replacement: string;
+}): string | undefined {
+  if (instructionSections(instructions)?.get("Complete Comment History") !== rendered) return undefined;
+  const section = `# Complete Comment History\n\n${rendered}\n\n`;
+  const start = instructions.search(/^# Complete Comment History\n\n/m);
+  if (start < 0 || !instructions.startsWith(section, start)) return undefined;
+  return instructions.slice(0, start) + `${replacement}\n\n` + instructions.slice(start + section.length);
+}
+
 export function serializePromptHistory(instructions: string, history: unknown): string {
   if (typeof history === "string") return history;
   const source = historyRecord(history);
@@ -107,7 +118,7 @@ function projectContext(value: unknown, section: string): unknown {
   return value;
 }
 
-function commentBlock(comment: Record<string, unknown>): string | undefined {
+export function commentBlock(comment: Record<string, unknown>): string | undefined {
   if (typeof comment.id !== "string" || typeof comment.authorName !== "string" ||
       typeof comment.content !== "string" ||
       (comment.replyToCommentId != null && typeof comment.replyToCommentId !== "string")) return undefined;
@@ -115,7 +126,7 @@ function commentBlock(comment: Record<string, unknown>): string | undefined {
   return `## Comment #${comment.id} by ${comment.authorName}${reply}\n\n${comment.content}`;
 }
 
-function historyRecord(value: unknown): Record<string, unknown> | undefined {
+export function historyRecord(value: unknown): Record<string, unknown> | undefined {
   if (!recordSchema.safeParse(value).success || typeof value !== "object" || value === null) return undefined;
   return Object.fromEntries(Object.entries(value));
 }

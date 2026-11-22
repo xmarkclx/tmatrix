@@ -2,6 +2,7 @@ import { createSecurityWarningReporter, type AlertSecurityWarning } from "./secu
 import { LiveSteering, NotSentError } from "./helpers/live-steering.js";
 import { conversationContext } from "./helpers/conversation-context.js";
 import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
+import { prepareTicketHistory } from "./helpers/ticket-history.js";
 import { serializePromptHistory } from "./helpers/serialize-prompt-history.js";
 import { workerTitle } from "./helpers/worker-title.js";
 import type { ConversationStore } from "./conversation-store.js";
@@ -229,12 +230,15 @@ export class TicketRunner {
         if (this.conversationStore && !resumeId && hasReplyAncestry(ticket, history)) {
           options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
         }
-        const fullPrompt = buildPrompt(ticket, history);
         const workingDirectory = await resolveWorkingDirectory(
           ticket.project_path,
           this.fallbackWorkingDirectory
         );
         runtime = this.runtimeFactory(profile, releaseConversation?.environment);
+        const ticketHistory = runtime.prepareTicketHistory ? prepareTicketHistory(ticket, history) : undefined;
+        const deferred = ticketHistory && await runtime.prepareTicketHistory?.(ticketHistory.read)
+          ? ticketHistory.deferred : undefined;
+        const fullPrompt = buildPrompt(ticket, deferred?.history ?? history, deferred?.instructions);
         const commentPrompt = resumeId && runtime.resumeThread ? buildCommentPrompt(ticket, history) : undefined;
         const context = conversationContext(history);
         const changes = commentPrompt !== undefined && resumeId
@@ -770,7 +774,7 @@ function runtimeThreadOptions(
 }
 
 
-function buildPrompt(ticket: Ticket, history: unknown): string {
+function buildPrompt(ticket: Ticket, history: unknown, instructions = ticket.instructions): string {
   const serializedHistory = serializePromptHistory(ticket.instructions, history);
   const ticketContext = Object.fromEntries(
     Object.entries(ticket).filter(([key]) => !["ticket_id", "worker_id", "instructions", "endpoints"].includes(key))
@@ -786,7 +790,7 @@ function buildPrompt(ticket: Ticket, history: unknown): string {
     "Follow the ticket instructions exactly. The ticket decides how and where to deliver the work. Continue from the durable history when it shows prior progress; do not repeat completed side effects.",
     "",
     "## Ticket instructions",
-    ticket.instructions,
+    instructions,
     ...contextSection,
     "",
     "## Durable ticket history",

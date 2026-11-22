@@ -9,6 +9,10 @@ import { CGROUP_ENV, createLeaseCgroup, stopLeaseCgroup, validLeaseCgroup } from
 import { WorkerError } from "./errors.js";
 import { conversationReferenceSchema, type Ticket, type ConversationReference } from "./types.js";
 
+export function stripConversationReference(summary: string): string {
+  return summary.replace(/\n?<!-- tmatrix-conversation:v1:[A-Za-z0-9_-]+\.[a-f0-9]{64} -->/g, "").trim();
+}
+
 export type BootIdentity = { machine: string; boot: string };
 
 /** Linux/WSL boot identity: unavailable platforms deliberately fail closed. */
@@ -71,7 +75,7 @@ export class ConversationStore {
     threadId.parse(conversationId);
     const payload = Buffer.from(JSON.stringify({ version: 1, namespace: this.namespace, task: this.task(ticket), ticket: ticket.ticket_id, thread: conversationId })).toString("base64url");
     const signature = createHmac("sha256", this.referenceKey).update(payload).digest("hex");
-    const clean = summary.replace(/\n?<!-- tmatrix-conversation:v1:[A-Za-z0-9_-]+\.[a-f0-9]{64} -->/g, "").trim();
+    const clean = stripConversationReference(summary);
     const marker = `<!-- tmatrix-conversation:v1:${payload}.${signature} -->`;
     const bounded = clean.slice(0, Math.max(0, 100_000 - marker.length - 2)).replace(/[\uD800-\uDBFF]$/, "");
     return `${bounded}\n\n${marker}`;

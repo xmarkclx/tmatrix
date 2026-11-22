@@ -1,5 +1,6 @@
 /** TMatrix adapter API v1. No provider SDK is required to implement this contract. */
 import type { Logger } from "pino";
+import type { TicketHistoryReader } from "./helpers/ticket-history.js";
 import type { ReportSecurityWarning } from "./security-warning.js";
 import type { ExecutionProfile, ReasoningEffort, ServiceTier } from "./types.js";
 
@@ -61,6 +62,7 @@ export interface RuntimeThreadOptions {
   rebuildOnResumeRejection?: boolean;
 }
 export interface RuntimeLike {
+  prepareTicketHistory?(read: TicketHistoryReader): Promise<boolean>;
   startThread(options: RuntimeThreadOptions): ThreadLike;
   resumeThread?(threadId: string, options: RuntimeThreadOptions): ThreadLike;
   close?(): Promise<void>;
