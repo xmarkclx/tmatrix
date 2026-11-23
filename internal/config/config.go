@@ -35,21 +35,51 @@ type Source struct {
 	ConversationNamespace string `json:"conversation_namespace"`
 }
 
+type RuntimePolicy string
+
+const (
+	SubscriptionsFirst RuntimePolicy = "subscriptions-first"
+	ClaudeFirst        RuntimePolicy = "claude-first"
+	SubscriptionsOnly  RuntimePolicy = "subscriptions-only"
+	CodexOnly          RuntimePolicy = "codex-only"
+	ClaudeOnly         RuntimePolicy = "claude-only"
+)
+
+func (p RuntimePolicy) Validate() error {
+	switch p {
+	case SubscriptionsFirst, ClaudeFirst, SubscriptionsOnly, CodexOnly, ClaudeOnly:
+		return nil
+	default:
+		return errors.New("invalid runtime routing policy")
+	}
+}
+
 type Config struct {
-	AdapterModule  string   `json:"adapter_module,omitempty"`
-	ResumeIntake   bool     `json:"resume_intake,omitempty"`
-	Version        int      `json:"version"`
-	MaxWorkers     int      `json:"max_workers"`
-	PollIntervalMS int      `json:"poll_interval_ms"`
-	EngineDir      string   `json:"engine_dir"`
-	WorkerType     string   `json:"worker_type"`
-	InstanceID     string   `json:"instance_id"`
-	UpdateOrigin   string   `json:"update_origin"`
-	Sources        []Source `json:"sources"`
+	AdapterModule  string        `json:"adapter_module,omitempty"`
+	ResumeIntake   bool          `json:"resume_intake,omitempty"`
+	Version        int           `json:"version"`
+	MaxWorkers     int           `json:"max_workers"`
+	PollIntervalMS int           `json:"poll_interval_ms"`
+	EngineDir      string        `json:"engine_dir"`
+	WorkerType     string        `json:"worker_type"`
+	RuntimePolicy  RuntimePolicy `json:"runtime_policy,omitempty"`
+	InstanceID     string        `json:"instance_id"`
+	UpdateOrigin   string        `json:"update_origin"`
+	Sources        []Source      `json:"sources"`
 }
 
 func Default() Config {
 	return Config{Version: 2, MaxWorkers: 10, PollIntervalMS: 5000, WorkerType: "codex", InstanceID: NewID(), UpdateOrigin: "https://tzudo.app", Sources: []Source{}}
+}
+
+func (c Config) EffectiveRuntimePolicy() RuntimePolicy {
+	if c.WorkerType != "codex" {
+		return ""
+	}
+	if c.RuntimePolicy == "" {
+		return SubscriptionsFirst
+	}
+	return c.RuntimePolicy
 }
 
 func NewSource(name, pollURL string) Source {
@@ -143,11 +173,20 @@ func Validate(c Config) error {
 	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`).MatchString(c.WorkerType) {
 		return errors.New("invalid worker adapter ID")
 	}
-	if c.WorkerType == "codex" && c.AdapterModule != "" {
-		return errors.New("the bundled codex adapter cannot be overridden")
+	if c.RuntimePolicy != "" {
+		if err := c.RuntimePolicy.Validate(); err != nil {
+			return err
+		}
 	}
-	if c.WorkerType != "codex" && (!filepath.IsAbs(c.AdapterModule) || len(c.AdapterModule) > 4096 || strings.ContainsRune(c.AdapterModule, '\x00')) {
-		return errors.New("custom workers require an absolute adapter_module path in config.json")
+	switch c.WorkerType {
+	case "codex", "claude":
+		if c.AdapterModule != "" {
+			return fmt.Errorf("the bundled %s adapter cannot be overridden", c.WorkerType)
+		}
+	default:
+		if !filepath.IsAbs(c.AdapterModule) || len(c.AdapterModule) > 4096 || strings.ContainsRune(c.AdapterModule, '\x00') {
+			return errors.New("custom workers require an absolute adapter_module path in config.json")
+		}
 	}
 	if !validID(c.InstanceID) {
 		return errors.New("invalid instance ID")

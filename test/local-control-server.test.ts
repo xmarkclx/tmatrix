@@ -7,6 +7,7 @@ import { LocalWorkerState } from "../src/local-worker-state.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
 import { Supervisor } from "../src/supervisor.js";
+import type { RuntimePolicy } from "../src/runtime-routing.js";
 import type { RunOutcome, TicketRunner } from "../src/runner.js";
 import { deferred, makeConfig, makeTicket } from "./helpers.js";
 
@@ -14,12 +15,13 @@ const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
 
 async function connect(supervisor: Supervisor, adapterUpdates?: import("../src/runtime-adapter.js").AdapterUpdateControl,
-  addSource?: NonNullable<Parameters<typeof startLocalControlServer>[0]["addSource"]>) {
+  addSource?: NonNullable<Parameters<typeof startLocalControlServer>[0]["addSource"]>,
+  extras: Pick<Parameters<typeof startLocalControlServer>[0], "additionalAdapterUpdates" | "routing"> = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tmatrix-control-test-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "control.json");
   const onShutdown = vi.fn();
-  const bridge = await startLocalControlServer({ supervisor, file, onShutdown, ...(adapterUpdates ? { adapterUpdates } : {}), ...(addSource ? { addSource } : {}) });
+  const bridge = await startLocalControlServer({ supervisor, file, onShutdown, ...extras, ...(adapterUpdates ? { adapterUpdates } : {}), ...(addSource ? { addSource } : {}) });
   cleanup.push(() => bridge.close());
   const discovery = JSON.parse(await readFile(file, "utf8"));
   return { file, bridge, onShutdown, discovery, request: (path: string, body?: unknown) => fetch(discovery.url + path, {
@@ -157,6 +159,54 @@ describe("local console bridge", () => {
     expect((await client.request("/v1/adapter/check-now", {})).status).toBe(202);
     expect(updates.checkNow).toHaveBeenCalledOnce();
     expect((await client.request("/v1/adapter/rollback", {})).status).toBe(409);
+  });
+
+  it("applies the routing policy locally and targets the selected provider's updater", async () => {
+    const { supervisor } = pausedSupervisor();
+    let policy: RuntimePolicy = "subscriptions-first";
+    let updated = "";
+    const updater = (id: string) => ({
+      snapshot: () => ({ status: "idle" as const, adapter_id: id, display_name: id, can_rollback: false, current_version: "1.0.0" }),
+      async checkNow() { updated = id; }
+    });
+    const client = await connect(supervisor, updater("codex"), undefined, {
+      additionalAdapterUpdates: [updater("claude")],
+      routing: { get: () => policy, set: (next) => { policy = next; } }
+    });
+    expect((await (await client.request("/v1/snapshot")).json())).toMatchObject({
+      runtime_policy: "subscriptions-first", adapter_update: { adapter_id: "codex" },
+      adapter_updates: [{ adapter_id: "codex" }, { adapter_id: "claude" }]
+    });
+    expect((await client.request("/v1/settings", { runtime_policy: "claude-first" })).status).toBe(200);
+    expect(await (await client.request("/v1/snapshot")).json()).toMatchObject({ runtime_policy: "claude-first" });
+    expect((await client.request("/v1/settings", { runtime_policy: "arbitrary" })).status).toBe(400);
+    expect((await client.request("/v1/adapter/check-now", { adapter_id: "claude" })).status).toBe(202);
+    expect(updated).toBe("claude");
+    expect((await client.request("/v1/adapter/check-now", {})).status).toBe(202);
+    expect(updated).toBe("codex");
+    expect((await client.request("/v1/adapter/check-now", { adapter_id: "unknown" })).status).toBe(409);
+    expect((await (await connect(supervisor)).request("/v1/settings", { runtime_policy: "claude-first" })).status).toBe(409);
+  });
+
+  it("lists an additional updater without advertising it as the primary", async () => {
+    const { supervisor } = pausedSupervisor();
+    let status: "idle" | "up_to_date" = "idle";
+    const client = await connect(supervisor, undefined, undefined, {
+      additionalAdapterUpdates: [{
+        snapshot: () => ({ status, adapter_id: "claude", display_name: "Claude Code", can_rollback: false, current_version: "2.1.220" }),
+        async checkNow() { status = "up_to_date"; }
+      }]
+    });
+    const snapshot = await (await client.request("/v1/snapshot")).json();
+    expect(snapshot).not.toHaveProperty("adapter_update");
+    expect(snapshot.adapter_updates).toMatchObject([{ adapter_id: "claude", status: "idle" }]);
+    expect((await client.request("/v1/adapter/check-now", {})).status).toBe(409);
+    expect((await client.request("/v1/adapter/rollback", {})).status).toBe(409);
+    expect(status).toBe("idle");
+    expect((await client.request("/v1/adapter/check-now", { adapter_id: "claude" })).status).toBe(202);
+    expect(await (await client.request("/v1/snapshot")).json()).toMatchObject({
+      adapter_updates: [{ adapter_id: "claude", status: "up_to_date" }]
+    });
   });
 
   it("refuses existing discovery files instead of replacing a running daemon", async () => {

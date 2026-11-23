@@ -57,14 +57,26 @@ func findEngine(configured, executable string) (string, error) {
 	return "", errors.New("compatible TMatrix engine not found; run sh scripts/stage-engine.sh in the tmatrix directory or set TMATRIX_ENGINE_DIR to a release engine")
 }
 
-func sourceEngine(configured string) (string, error) {
-	engine, err := FindEngine(configured)
+func sourceEngine(cfg config.Config) (string, error) {
+	engine, err := FindEngine(cfg.EngineDir)
 	if err != nil {
 		return "", err
 	}
 	info, err := os.Stat(filepath.Join(engine, "dist", "source-supervisor.js"))
 	if err != nil || !info.Mode().IsRegular() {
 		return "", errors.New("engine update needed for multiple sources; install or build the matching TMatrix engine")
+	}
+	if cfg.WorkerType == "claude" {
+		info, err := os.Stat(filepath.Join(engine, "dist", "adapters", "claude", "index.js"))
+		if err != nil || !info.Mode().IsRegular() {
+			return "", errors.New("engine update needed for Claude. Install or build a TMatrix engine with the Claude adapter")
+		}
+	}
+	if cfg.EffectiveRuntimePolicy() != "" {
+		info, err := os.Stat(filepath.Join(engine, "dist", "runtime-routing.js"))
+		if err != nil || !info.Mode().IsRegular() {
+			return "", errors.New("engine update needed for runtime routing. Install or build the matching TMatrix engine")
+		}
 	}
 	return engine, nil
 }
@@ -195,7 +207,7 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	if len(cfg.Sources) == 0 {
 		return errors.New("add a source in TMatrix first (press c)")
 	}
-	engineDir, err := sourceEngine(cfg.EngineDir)
+	engineDir, err := sourceEngine(cfg)
 	if err != nil {
 		return err
 	}
@@ -235,6 +247,9 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	engineConfig["sources"] = sources
 	if cfg.AdapterModule != "" {
 		engineConfig["adapter_module"] = cfg.AdapterModule
+	}
+	if cfg.EffectiveRuntimePolicy() != "" {
+		engineConfig["runtime_policy"] = cfg.EffectiveRuntimePolicy()
 	}
 	data, _ := json.MarshalIndent(engineConfig, "", "  ")
 	engineConfigPath := filepath.Join(dir, "engine.json")
@@ -369,7 +384,7 @@ func privateWrite(path string, data []byte) error {
 func engineEnvironment(parent []string, overrides map[string]string) []string {
 	// A TMatrix instance must not inherit another daemon's queue identity or
 	// credentials. Preserve normal PATH, HOME and Codex account configuration.
-	blocked := strings.Fields("RUNTIME_ADAPTER ADAPTER_MODULE POLL_URL API_KEY INSTANCE_ID SWARM_ID MAX_WORKERS MAX_TICKETS_PER_POLL POLL_INTERVAL_MS IDLE_BACKOFF_MAX_MS REQUEST_TIMEOUT_MS MAX_REQUEST_ATTEMPTS CONTROL_PING_INTERVAL_MS CONTROL_RECONNECT_MAX_MS SHUTDOWN_GRACE_MS METRICS_INTERVAL_MS LOG_LEVEL PRETTY_LOGS LOG_DIR LOG_ROTATE_SIZE LOG_ROTATE_INTERVAL LOG_MAX_FILES CONFIG_PATH TMATRIX_CONTROL_FILE TMATRIX_CONTROL_PORT TMATRIX_INTAKE_PAUSED TMATRIX_SOURCE_SETTINGS_FILE")
+	blocked := strings.Fields("RUNTIME_ADAPTER RUNTIME_POLICY ADAPTER_MODULE POLL_URL API_KEY INSTANCE_ID SWARM_ID MAX_WORKERS MAX_TICKETS_PER_POLL POLL_INTERVAL_MS IDLE_BACKOFF_MAX_MS REQUEST_TIMEOUT_MS MAX_REQUEST_ATTEMPTS CONTROL_PING_INTERVAL_MS CONTROL_RECONNECT_MAX_MS SHUTDOWN_GRACE_MS METRICS_INTERVAL_MS LOG_LEVEL PRETTY_LOGS LOG_DIR LOG_ROTATE_SIZE LOG_ROTATE_INTERVAL LOG_MAX_FILES CONFIG_PATH TMATRIX_CONTROL_FILE TMATRIX_CONTROL_PORT TMATRIX_INTAKE_PAUSED TMATRIX_SOURCE_SETTINGS_FILE")
 	deny := map[string]bool{}
 	for _, name := range blocked {
 		deny[name] = true

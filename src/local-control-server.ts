@@ -4,19 +4,22 @@ import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
+import { runtimePolicySchema, type RuntimePolicy } from "./runtime-routing.js";
 import type { AdapterUpdateControl } from "./runtime-adapter.js";
 import type { Supervisor } from "./supervisor.js";
 
 const settingsSchema = z.object({
   max_workers: z.number().int().min(1).max(100).optional(),
   intake_paused: z.boolean().optional(),
-  poll_interval_ms: z.number().int().min(250).max(300_000).optional()
+  poll_interval_ms: z.number().int().min(250).max(300_000).optional(),
+  runtime_policy: runtimePolicySchema.optional()
 }).strict();
 const steerSchema = z.object({
   message: z.string().trim().min(1).max(8_000),
   request_id: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/).optional()
 }).strict();
 const sourceAddSchema = z.object({ id: z.uuid() }).strict();
+const updateActionSchema = z.object({ adapter_id: z.string().min(1).max(64).optional() }).strict();
 
 export interface LocalControlServer {
   close(): Promise<void>;
@@ -29,6 +32,8 @@ export async function startLocalControlServer(options: {
   port?: number;
   onShutdown: () => void;
   adapterUpdates?: AdapterUpdateControl;
+  additionalAdapterUpdates?: readonly AdapterUpdateControl[];
+  routing?: { get(): RuntimePolicy; set(policy: RuntimePolicy): void };
   addSource?(id: string): Promise<"applied" | "invalid" | "conflict">;
 }): Promise<LocalControlServer> {
   if (!isAbsolute(options.file)) throw new Error("TMATRIX_CONTROL_FILE must be an absolute path");
@@ -46,11 +51,19 @@ export async function startLocalControlServer(options: {
   server.headersTimeout = 5_000;
   server.keepAliveTimeout = 1_000;
 
-  const snapshot = () => ({
-    ...options.supervisor.localSnapshot(),
-    ...(options.adapterUpdates ? { adapter_update: options.adapterUpdates.snapshot() } : {}),
-    ...(options.addSource ? { live_source_add: true } : {})
-  });
+  const primaryUpdater = options.adapterUpdates;
+  const additionalUpdaters = options.additionalAdapterUpdates ?? [];
+  const adapterUpdaters = primaryUpdater ? [primaryUpdater, ...additionalUpdaters] : additionalUpdaters;
+  const snapshot = () => {
+    const updates = adapterUpdaters.map(updater => updater.snapshot());
+    return {
+      ...options.supervisor.localSnapshot(),
+      ...(primaryUpdater ? { adapter_update: updates[0] } : {}),
+      ...(additionalUpdaters.length > 0 ? { adapter_updates: updates } : {}),
+      ...(options.routing ? { runtime_policy: options.routing.get() } : {}),
+      ...(options.addSource ? { live_source_add: true } : {})
+    };
+  };
 
   async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const supplied = Buffer.from(request.headers.authorization ?? "");
@@ -92,24 +105,35 @@ export async function startLocalControlServer(options: {
       return;
     }
     if (request.url === "/v1/adapter/check-now" || request.url === "/v1/adapter/rollback") {
-      if (!z.object({}).strict().safeParse(body).success) { respond(response, 400, { error: "Expected an empty object" }); return; }
-      if (!options.adapterUpdates || options.adapterUpdates.snapshot().status === "disabled") {
+      const parsed = updateActionSchema.safeParse(body);
+      if (!parsed.success) { respond(response, 400, { error: "Invalid runtime update request" }); return; }
+      const id = parsed.data.adapter_id;
+      const updater = id ? adapterUpdaters.find(candidate => candidate.snapshot().adapter_id === id) : primaryUpdater;
+      const current = updater?.snapshot();
+      if (!updater || !current || current.status === "disabled") {
         respond(response, 409, { error: "Runtime updates are unavailable for this engine" }); return;
       }
-      if (request.url === "/v1/adapter/rollback" && ["checking", "installing", "verifying"].includes(options.adapterUpdates.snapshot().status)) {
-        respond(response, 409, { error: "Runtime update already in progress; retry rollback after it finishes" }); return;
+      if (request.url === "/v1/adapter/rollback") {
+        if (["checking", "installing", "verifying"].includes(current.status)) {
+          respond(response, 409, { error: "Runtime update already in progress; retry rollback after it finishes" }); return;
+        }
+        if (!updater.rollback || !current.can_rollback) {
+          respond(response, 409, { error: "No runtime rollback is available" }); return;
+        }
+        void updater.rollback().catch(() => undefined);
+      } else {
+        void updater.checkNow().catch(() => undefined);
       }
-      if (request.url === "/v1/adapter/rollback" && (!options.adapterUpdates.rollback || !options.adapterUpdates.snapshot().can_rollback)) {
-        respond(response, 409, { error: "No runtime rollback is available" }); return;
-      }
-      if (request.url === "/v1/adapter/check-now") void options.adapterUpdates.checkNow().catch(() => undefined);
-      else void options.adapterUpdates.rollback!().catch(() => undefined);
       respond(response, 202, { ok: true });
       return;
     }
     if (request.url === "/v1/settings") {
       const parsed = settingsSchema.safeParse(body);
       if (!parsed.success) { respond(response, 400, { error: "Invalid settings" }); return; }
+      if (parsed.data.runtime_policy !== undefined) {
+        if (!options.routing) { respond(response, 409, { error: "This engine uses a fixed runtime adapter" }); return; }
+        options.routing.set(parsed.data.runtime_policy);
+      }
       options.supervisor.updateLocalSettings({
         ...(parsed.data.max_workers !== undefined ? { max_workers: parsed.data.max_workers } : {}),
         ...(parsed.data.intake_paused !== undefined ? { intake_paused: parsed.data.intake_paused } : {}),

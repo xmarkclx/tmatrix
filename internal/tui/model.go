@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"tmatrix/internal/backend"
+	"tmatrix/internal/config"
 )
 
 type Options struct {
@@ -69,6 +70,8 @@ type Model struct {
 	drafts              map[string]string
 	form                []textinput.Model
 	field               int
+	runtimePolicyAtOpen config.RuntimePolicy
+	updateAdapterID     string
 	serviceConfirmation string
 	confirmation        string
 	busy                bool

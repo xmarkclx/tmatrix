@@ -222,3 +222,49 @@ func TestAdapterUpdateRollbackUsesCapability(t *testing.T) {
 		}
 	}
 }
+
+type fakeRuntimeUpdater struct {
+	fakeAdapterUpdater
+	checked    string
+	rolledBack string
+}
+
+func (b *fakeRuntimeUpdater) CheckRuntimeUpdate(_ context.Context, id string) error {
+	b.checked = id
+	return nil
+}
+
+func (b *fakeRuntimeUpdater) RollbackRuntimeUpdate(_ context.Context, id string) error {
+	b.rolledBack = id
+	return nil
+}
+
+func TestRuntimeUpdatesTargetsSelectedProvider(t *testing.T) {
+	m, old := adapterUpdateModel()
+	b := &fakeRuntimeUpdater{fakeAdapterUpdater: *old}
+	m.backend = b
+	m.width, m.height = 40, 16
+	m.snapshot.AdapterUpdates = []backend.AdapterUpdate{
+		{AdapterID: "codex", DisplayName: "Codex CLI", CanRollback: true, Status: "idle", CurrentVersion: "0.158.0"},
+		{AdapterID: "claude", DisplayName: "Claude Code", Status: "idle", CurrentVersion: "2.1.220"},
+	}
+	m, _ = press(m, "o")
+	if view := m.View(); !strings.Contains(view, "Switch runtime") || !strings.Contains(view, "0.158.0") {
+		t.Fatalf("missing Codex update controls: %s", view)
+	}
+	m, _ = clickTarget(t, m, "key", "right", "", 0)
+	if view := m.View(); !strings.Contains(view, "Claude Code updates") || !strings.Contains(view, "2.1.220") || strings.Contains(view, "Roll back") {
+		t.Fatalf("incorrect Claude update controls: %s", view)
+	}
+	m, cmd := press(m, "c")
+	m = execute(m, cmd)
+	if b.checked != "claude" || b.checks != 0 {
+		t.Fatalf("update check went to the wrong provider: %q", b.checked)
+	}
+	m, _ = press(m, "right")
+	m, cmd = press(m, "b")
+	_ = execute(m, cmd)
+	if b.rolledBack != "codex" || b.rollbacks != 0 {
+		t.Fatalf("rollback went to the wrong provider: %q", b.rolledBack)
+	}
+}

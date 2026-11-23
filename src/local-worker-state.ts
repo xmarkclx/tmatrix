@@ -10,6 +10,8 @@ export interface WorkerObservation {
   run_kind?: "initial" | "resumed";
   input_revision?: number;
   steering_id?: string;
+  runtime_adapter?: string;
+  model?: string;
 }
 
 export interface LocalWorkerView {
@@ -32,7 +34,7 @@ export interface LocalWorkerView {
 
 /** Opt-in, bounded memory for the local console. Never sent to the task API. */
 export class LocalWorkerState {
-  constructor(private readonly adapterId = "codex") {}
+  constructor(private readonly adapterId = "codex", private readonly runtimeModel?: (model: string) => string) {}
 
   private readonly workers = new Map<string, LocalWorkerView>();
   private sequence = 0;
@@ -44,7 +46,7 @@ export class LocalWorkerState {
       // Instructions may contain credentials and are not a display title.
       title: cleanText(workerTitle(ticket)).slice(0, 4096),
       worker_type: this.adapterId,
-      model: ticket.model,
+      model: this.runtimeModel?.(ticket.model) ?? ticket.model,
       status: "running",
       pinned: false,
       input_revision: ticket.input_revision ?? 0,
@@ -68,6 +70,12 @@ export class LocalWorkerState {
       };
       return;
     }
+    if (event.runtime_adapter !== undefined && event.runtime_adapter !== worker.worker_type) {
+      worker.worker_type = event.runtime_adapter;
+      delete worker.thread_id;
+      delete worker.run_kind;
+    }
+    if (event.model !== undefined) worker.model = event.model;
     if (event.thread_id !== undefined) worker.thread_id = event.thread_id;
     if (event.run_kind !== undefined) worker.run_kind = event.run_kind;
     if (event.input_revision !== undefined) worker.input_revision = event.input_revision;

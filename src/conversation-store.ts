@@ -13,6 +13,12 @@ export function stripConversationReference(summary: string): string {
   return summary.replace(/\n?<!-- tmatrix-conversation:v1:[A-Za-z0-9_-]+\.[a-f0-9]{64} -->/g, "").trim();
 }
 
+export function boundContext(summary: string, note?: string): string {
+  if (!note) return summary;
+  const bounded = summary.slice(0, Math.max(0, 100_000 - note.length - 2)).replace(/[\uD800-\uDBFF]$/, "");
+  return `${bounded}\n\n${note}`;
+}
+
 export type BootIdentity = { machine: string; boot: string };
 
 /** Linux/WSL boot identity: unavailable platforms deliberately fail closed. */
@@ -35,11 +41,24 @@ const recordSchema = z.object({
   replacements: z.record(z.string(), threadId),
   contextHashes: z.record(z.string(), z.record(z.string(), z.string())).default({})
 });
-export type ConversationLease = (() => Promise<void>) & { environment?: Record<string, string>; recovered?: boolean };
+const runtimeAttemptSchema = z.object({
+  ticket: z.string().regex(/^[a-f0-9]{64}$/),
+  runtime: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  conversation: conversationReferenceSchema.optional().catch(undefined)
+});
+type RuntimeAttempt = z.infer<typeof runtimeAttemptSchema>;
+
+export type ConversationLease = (() => Promise<void>) & {
+  environment?: Record<string, string>;
+  recovered?: boolean;
+  recoveredAttempt?: RuntimeAttempt;
+  rememberRuntime?(runtime: string, conversation?: ConversationReference): Promise<void>;
+  prepareRuntimeReplacement?(): Promise<void>;
+};
 
 type ConversationRecord = z.infer<typeof recordSchema>;
 
-/** Private IDs only: task/comment ancestry points to Codex's own local history. */
+/** Private IDs link task and comment ancestry to a provider's local history. */
 export class ConversationStore {
   private readonly directory: string;
   private readonly runtime: string;
@@ -70,15 +89,14 @@ export class ConversationStore {
   }
 
   /** The private handoff carries authenticated IDs, never credentials or logs. */
-  attachContext(ticket: Ticket, conversationId: string, summary: string): string {
-    if (!this.referenceKey || ticket.task_id === undefined) return summary;
+  attachContext(ticket: Ticket, conversationId: string, summary: string, note?: string): string {
+    if (!this.referenceKey || ticket.task_id === undefined) return boundContext(summary, note);
     threadId.parse(conversationId);
     const payload = Buffer.from(JSON.stringify({ version: 1, namespace: this.namespace, task: this.task(ticket), ticket: ticket.ticket_id, thread: conversationId })).toString("base64url");
     const signature = createHmac("sha256", this.referenceKey).update(payload).digest("hex");
     const clean = stripConversationReference(summary);
     const marker = `<!-- tmatrix-conversation:v1:${payload}.${signature} -->`;
-    const bounded = clean.slice(0, Math.max(0, 100_000 - marker.length - 2)).replace(/[\uD800-\uDBFF]$/, "");
-    return `${bounded}\n\n${marker}`;
+    return boundContext(clean, note ? `${note}\n\n${marker}` : marker);
   }
 
   /** Prefer the explicit task route, then the local task route, then legacy reply links. */
@@ -190,21 +208,25 @@ export class ConversationStore {
     await this.prepare();
     await mkdir(this.lockDirectory, { recursive: true, mode: 0o700 });
     const path = join(this.lockDirectory, `${this.hash(this.task(ticket))}.json.lock`);
+    const ticketKey = this.hash(ticket.ticket_id);
     const identity = await this.getBootIdentity();
     const start = this.trackRuntime ? await processStart(process.pid) : undefined;
     const tracked = this.trackRuntime && identity !== undefined && start !== undefined;
     const token = randomUUID();
     const cgroup = tracked ? await createLeaseCgroup(token) : undefined;
-    const owner = JSON.stringify({ pid: process.pid, host: hostname(), token, identity,
-      ...(tracked ? { tracking: cgroup ? 2 : 1, start, ...(cgroup ? { cgroup } : {}) } : {}) });
+    const ownerDetails = { pid: process.pid, host: hostname(), token, identity,
+      ...(tracked ? { tracking: cgroup ? 2 : 1, start, ...(cgroup ? { cgroup } : {}) } : {}) };
+    let owner = JSON.stringify(ownerDetails);
     let acquired = false;
     try {
       let recovered = false;
+      let recoveredAttempt: RuntimeAttempt | undefined;
       for (;;) {
         signal?.throwIfAborted();
         try {
           // A symlink publishes the entire owner atomically, without a partially
           // written owner file that can become stranded after a crash.
+          owner = JSON.stringify({ ...ownerDetails, ...recoveredAttempt });
           await symlink(owner, path);
           if (signal?.aborted) {
             if (cgroup && !await stopLeaseCgroup(cgroup, token)) throw this.ownerLost();
@@ -218,9 +240,35 @@ export class ConversationStore {
             if (await readlink(path).catch(() => undefined) === owner) await unlink(path);
             released = true;
           };
-          if (tracked) release.environment = { [LEASE_ENV]: token, ...(cgroup ? { [CGROUP_ENV]: cgroup } : {}) };
+          if (tracked) {
+            release.environment = { [LEASE_ENV]: token, ...(cgroup ? { [CGROUP_ENV]: cgroup } : {}) };
+            release.prepareRuntimeReplacement = async () => {
+              if (released || await readlink(path) !== owner) throw this.busy();
+              const stopped = cgroup ? await stopLeaseCgroup(cgroup, token) : await stopLeaseProcesses(token, undefined, start);
+              if (!stopped) throw this.ownerLost();
+              if (cgroup && !await createLeaseCgroup(token, cgroup)) throw new WorkerError({
+                message: "Could not create the replacement runtime's process group.",
+                code: "CONVERSATION_GROUP_UNAVAILABLE", stage: "conversation.lock"
+              });
+            };
+          }
+          release.rememberRuntime = async (runtime, conversation) => {
+            if (released || await readlink(path) !== owner) throw this.busy();
+            const updated = JSON.stringify({ ...ownerDetails, ticket: ticketKey, runtime, conversation });
+            if (updated === owner) return;
+            const replacement = `${path}.${token}.runtime`;
+            await symlink(updated, replacement);
+            try {
+              await rename(replacement, path);
+              owner = updated;
+            } catch (error) {
+              await unlink(replacement).catch(() => undefined);
+              throw error;
+            }
+          };
           acquired = true;
           release.recovered = recovered;
+          if (recoveredAttempt !== undefined) release.recoveredAttempt = recoveredAttempt;
           return release;
         } catch (error) {
           if (!this.isCode(error, "EEXIST")) throw error;
@@ -237,6 +285,7 @@ export class ConversationStore {
             (previous.identity === undefined && await legacyLockPredatesBoot(path))) {
           await this.removeStaleLock(path, stale);
           recovered = true;
+          if (previous.ticket === ticketKey) recoveredAttempt = runtimeAttemptSchema.safeParse(previous).data;
           continue;
         }
         if (await this.ownerAlive(previous)) {
@@ -248,6 +297,7 @@ export class ConversationStore {
             if (!await this.stopOwner(previous, signal)) throw this.ownerLost();
           });
           recovered = true;
+          if (previous.ticket === ticketKey) recoveredAttempt = runtimeAttemptSchema.safeParse(previous).data;
           continue;
         }
         throw this.ownerLost();

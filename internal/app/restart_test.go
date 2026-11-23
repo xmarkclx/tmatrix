@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,25 @@ func TestRestartRefusesUnverifiedEngine(t *testing.T) {
 	}
 	if err := s.Restart(context.Background()); err == nil {
 		t.Fatal("restart accepted unverified engine")
+	}
+}
+
+func TestRestartKeepsCurrentEngineWhenBundleLacksClaude(t *testing.T) {
+	s, requested := drainingService(t)
+	cfg := saveFixtureSource(t, s, "https://original.invalid/poll", "original-fixture")
+	cfg.WorkerType = "claude"
+	if err := config.Save(s.Dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.Restart(ctx); err == nil || !strings.Contains(err.Error(), "engine update needed for Claude") {
+		t.Fatalf("expected Claude bundle error: %v", err)
+	}
+	select {
+	case <-requested:
+		t.Fatal("requested shutdown without a compatible replacement")
+	default:
 	}
 }
 

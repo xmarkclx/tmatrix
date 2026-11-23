@@ -1,21 +1,27 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AdapterUpdateService } from "./adapter-updates.js";
-import type { AdapterContext, AdapterSetup, AdapterSetupContext, RuntimeAdapter, RuntimeFactory } from "./runtime-adapter.js";
+import type { AdapterContext, AdapterSetup, AdapterSetupContext, ReadRuntimeQuota, RuntimeAdapter, RuntimeFactory } from "./runtime-adapter.js";
+
+const bundledAdapters = new Map<string, () => Promise<{ default: RuntimeAdapter }>>([
+  ["codex", () => import("./adapters/codex/index.js")],
+  ["claude", () => import("./adapters/claude/index.js")]
+]);
 
 export const adapterIdPattern = /^[a-z][a-z0-9-]{0,63}$/;
 
 /** Explicit local modules only: no network imports or implicit package installs. */
 export async function loadAdapter(id: string, modulePath?: string): Promise<RuntimeAdapter> {
   if (!adapterIdPattern.test(id)) throw new Error("Invalid runtime adapter ID");
-  if (id === "codex" && modulePath) throw new Error("The bundled codex adapter cannot be overridden");
-  if (id !== "codex" && (!modulePath || !isAbsolute(modulePath))) {
+  const bundled = bundledAdapters.get(id);
+  if (bundled && modulePath) throw new Error(`The bundled ${id} adapter cannot be overridden`);
+  if (!bundled && (!modulePath || !isAbsolute(modulePath))) {
     throw new Error("Custom adapters require an absolute adapter_module path");
   }
   let adapter: unknown;
   try {
-    adapter = (id === "codex"
-      ? await import("./adapters/codex/index.js")
+    adapter = (bundled
+      ? await bundled()
       : await import(pathToFileURL(modulePath!).href)).default;
   } catch {
     // Import errors can contain arbitrary module source or credentials.
@@ -35,6 +41,7 @@ export async function loadAdapter(id: string, modulePath?: string): Promise<Runt
 export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetupContext): Promise<{
   runtimeFactory: RuntimeFactory;
   updates?: AdapterUpdateService;
+  readQuota?: ReadRuntimeQuota;
 }> {
   const workerContext = { environment: context.environment, logger: context.logger };
   let prepared: AdapterSetup | undefined;
@@ -44,9 +51,11 @@ export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetu
       if (!prepared || typeof prepared.create !== "function") throw new Error("Invalid adapter setup");
       const updates = prepared.updates ? new AdapterUpdateService(adapter.id, prepared.updates, context.logger) : undefined;
       const initialized = { ...adapter, create: prepared.create.bind(prepared) };
+      const readQuota = prepared.readQuota?.bind(prepared);
       return {
         runtimeFactory: createRuntimeFactory(initialized, workerContext),
-        ...(updates ? { updates } : {})
+        ...(updates ? { updates } : {}),
+        ...(readQuota ? { readQuota } : {})
       };
     } catch {
       // Never expose arbitrary module errors; a failed optional updater must not

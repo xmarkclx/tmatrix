@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { WorkerError } from "./errors.js";
+import { defaultRuntimePolicy, runtimePolicySchema } from "./runtime-routing.js";
 import { conversationNamespace } from "./source-namespace.js";
 
 const logLevels = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
@@ -19,6 +20,7 @@ function fileSizeBytes(value: string): number {
 
 const rawConfigSchema = z.object({
   runtime_adapter: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).default("codex"),
+  runtime_policy: runtimePolicySchema.default(defaultRuntimePolicy),
   adapter_module: z.string().refine(isAbsolute, "must be an absolute module path").optional(),
   poll_url: z.string().min(1),
   api_key: z.string().min(1),
@@ -60,6 +62,7 @@ export interface WorkerConfig extends z.infer<typeof rawConfigSchema> {
 
 const ENV_TO_KEY = {
   RUNTIME_ADAPTER: "runtime_adapter",
+  RUNTIME_POLICY: "runtime_policy",
   ADAPTER_MODULE: "adapter_module",
   POLL_URL: "poll_url",
   API_KEY: "api_key",
@@ -213,6 +216,7 @@ function parseWorkerConfig(candidate: unknown): WorkerConfig {
 export function safeConfig(config: WorkerConfig): Record<string, unknown> {
   return {
     runtime_adapter: config.runtime_adapter,
+    runtime_policy: config.runtime_policy,
     poll_url: config.poll_url,
     instance_id: config.instance_id,
     swarm_id: config.swarm_id,

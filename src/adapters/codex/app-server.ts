@@ -237,6 +237,7 @@ class AppServerThread implements ThreadLike {
 
   async runStreamed(input: Input, options: {
     outputSchema?: unknown;
+    beforeStart?: () => void | Promise<void>;
     signal?: AbortSignal;
     missingConversationInput?: () => Promise<Input>;
   } = {}): Promise<StreamedTurnLike> {
@@ -262,6 +263,7 @@ class AppServerThread implements ThreadLike {
 
   private async *run(input: Input, turnOptions: {
     outputSchema?: unknown;
+    beforeStart?: () => void | Promise<void>;
     signal?: AbortSignal;
     missingConversationInput?: () => Promise<Input>;
   }): AsyncGenerator<WorkerThreadEvent> {
@@ -325,6 +327,8 @@ class AppServerThread implements ThreadLike {
     if (turnOptions.signal?.aborted) interrupt();
 
     try {
+      await turnOptions.beforeStart?.();
+      throwIfAborted(turnOptions.signal);
       const response = asRecord(await transport.request("turn/start", {
         threadId,
         input: appServerInput(input),

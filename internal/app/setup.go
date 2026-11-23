@@ -27,7 +27,7 @@ func (s *Service) SetupService() error {
 		return err
 	}
 	if len(cfg.Sources) == 0 {
-		fmt.Println("Service setup queued. Authenticate Codex, then open tmatrix and connect with c; the service will be installed automatically.")
+		fmt.Println("Service setup queued. Set up authentication for the worker runtime, then open tmatrix and connect with c. The service will install automatically.")
 		return nil
 	}
 	return s.finishServiceSetup(os.Stdout)

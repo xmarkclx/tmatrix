@@ -53,7 +53,7 @@ func (s *Service) addSource(ctx context.Context, cfg config.Config, connection b
 		if !snapshot.LiveSourceAdd {
 			return errors.New("engine update needed to add a source while TMatrix is running")
 		}
-	} else if _, err := sourceEngine(cfg.EngineDir); err != nil {
+	} else if _, err := sourceEngine(cfg); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {

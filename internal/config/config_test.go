@@ -62,7 +62,7 @@ func TestRejectUnsafeConnectionAndSettings(t *testing.T) {
 		func(c *Config) { c.MaxWorkers = 101 },
 		func(c *Config) { c.PollIntervalMS = 249 },
 		func(c *Config) { c.PollIntervalMS = 300001 },
-		func(c *Config) { c.WorkerType = "claude" },
+		func(c *Config) { c.WorkerType = "unsupported" },
 		func(c *Config) { c.UpdateOrigin = "http://unsafe.invalid" },
 		func(c *Config) { c.InstanceID = strings.Repeat("x", 36) },
 	} {
@@ -197,5 +197,22 @@ func TestCustomAdapterConfigurationRoundTrip(t *testing.T) {
 	cfg.WorkerType = "codex"
 	if Validate(cfg) == nil {
 		t.Fatal("accepted bundled adapter override")
+	}
+}
+
+func TestBundledClaudeConfigurationRoundTrip(t *testing.T) {
+	dir := privateTestDir(t)
+	cfg := Default()
+	cfg.WorkerType = "claude"
+	if err := Save(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir)
+	if err != nil || loaded.WorkerType != "claude" || loaded.AdapterModule != "" {
+		t.Fatalf("Claude settings were not restored: %v", err)
+	}
+	cfg.AdapterModule = filepath.Join(dir, "replacement.mjs")
+	if err := Save(dir, cfg); err == nil {
+		t.Fatal("accepted a module override for the bundled Claude adapter")
 	}
 }

@@ -450,6 +450,21 @@ describe("AppServerCodex", () => {
     expect(JSON.stringify(events)).not.toContain("RAW_CONTENT_SENTINEL");
   });
 
+  it("checks routing policy at dispatch before sending the model turn", async () => {
+    const server = standardServer();
+    const codex = new AppServerCodex({ environment: {}, spawnProcess: () => server.asProcess(), closeTimeoutMs: 20 });
+    try {
+      const blocked = new Error("Routing changed");
+      const stream = await codex.startThread(threadOptions).runStreamed("Do the ticket", {
+        beforeStart: () => { throw blocked; }
+      });
+      await expect(collect(stream.events)).rejects.toBe(blocked);
+      expect(server.requests.map(request => request.method)).toEqual(["initialize", "thread/start", "thread/name/set"]);
+    } finally {
+      await codex.close();
+    }
+  });
+
   it("creates, names, and runs a persistent explicitly configured App Server thread", async () => {
     const server = standardServer();
     let launchArguments: readonly string[] | undefined;

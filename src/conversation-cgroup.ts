@@ -17,7 +17,7 @@ function code(error: unknown): string | undefined {
   return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
 
-export async function createLeaseCgroup(token: string): Promise<string | undefined> {
+export async function createLeaseCgroup(token: string, expectedPath?: string): Promise<string | undefined> {
   if (process.platform !== "linux") return undefined;
   let created: string | undefined;
   try {
@@ -25,7 +25,8 @@ export async function createLeaseCgroup(token: string): Promise<string | undefin
     const membership = /^0::(\/[^\n]*)$/m.exec(await readFile("/proc/self/cgroup", "utf8"))?.[1];
     if (!membership) return undefined;
     const path = `${root}${membership === "/" ? "" : membership}/tmatrix-lease-${token}`;
-    if (!validLeaseCgroup(path, token) || await realpath(join(path, "..")) !== join(path, "..")) return undefined;
+    if ((expectedPath !== undefined && path !== expectedPath) || !validLeaseCgroup(path, token) ||
+        await realpath(join(path, "..")) !== join(path, "..")) return undefined;
     await mkdir(path);
     created = path;
     await access(join(path, "cgroup.kill"), constants.W_OK);

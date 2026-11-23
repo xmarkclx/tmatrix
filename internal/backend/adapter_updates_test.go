@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -74,5 +75,38 @@ func TestAdapterUpdateHandlesOldEnginesAndPrivateFailures(t *testing.T) {
 			}
 		}
 		server.Close()
+	}
+}
+
+func TestTargetedAdapterUpdateActionsSendExactProvider(t *testing.T) {
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var fields map[string]string
+		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer "+testBridgeToken || json.NewDecoder(r.Body).Decode(&fields) != nil {
+			t.Error("targeted runtime update did not use the authenticated bridge")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(fields) != 1 {
+			t.Errorf("unexpected update request fields: %v", fields)
+		}
+		requests <- r.URL.Path + " " + fields["adapter_id"]
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+	client, err := NewHTTP(discoveryFile(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := client.CheckRuntimeUpdate(ctx, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RollbackRuntimeUpdate(ctx, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if <-requests != "/v1/adapter/check-now claude" || <-requests != "/v1/adapter/rollback codex" {
+		t.Fatal("bridge routed an action to the wrong provider")
 	}
 }

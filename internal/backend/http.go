@@ -172,18 +172,29 @@ func (h *HTTP) ShutdownIfIdle(ctx context.Context) error {
 }
 
 func (h *HTTP) CheckAdapterUpdate(ctx context.Context) error {
-	return h.adapterUpdateAction(ctx, "/v1/adapter/check-now")
+	return h.CheckRuntimeUpdate(ctx, "")
 }
 
 func (h *HTTP) RollbackAdapterUpdate(ctx context.Context) error {
-	return h.adapterUpdateAction(ctx, "/v1/adapter/rollback")
+	return h.RollbackRuntimeUpdate(ctx, "")
 }
 
-func (h *HTTP) adapterUpdateAction(ctx context.Context, path string) error {
+func (h *HTTP) CheckRuntimeUpdate(ctx context.Context, adapterID string) error {
+	return h.adapterUpdateAction(ctx, "/v1/adapter/check-now", adapterID)
+}
+
+func (h *HTTP) RollbackRuntimeUpdate(ctx context.Context, adapterID string) error {
+	return h.adapterUpdateAction(ctx, "/v1/adapter/rollback", adapterID)
+}
+
+func (h *HTTP) adapterUpdateAction(ctx context.Context, path, adapterID string) error {
+	body := struct {
+		AdapterID string `json:"adapter_id,omitempty"`
+	}{AdapterID: adapterID}
 	var result struct {
 		OK bool `json:"ok"`
 	}
-	err := h.request(ctx, http.MethodPost, path, struct{}{}, &result)
+	err := h.request(ctx, http.MethodPost, path, body, &result)
 	if errors.Is(err, errActionNotFound) {
 		return errors.New("runtime updates are unavailable in this engine")
 	}

@@ -275,6 +275,16 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if m.screen == settingsScreen || m.screen == connectScreen {
+		if m.hasRuntimePolicy() && m.field == runtimePolicyField && !m.busy {
+			switch name {
+			case "left":
+				m.cycleRuntimePolicy(-1)
+				return m, nil
+			case "right", "enter":
+				m.cycleRuntimePolicy(1)
+				return m, nil
+			}
+		}
 		switch name {
 		case "esc":
 			if !m.busy {

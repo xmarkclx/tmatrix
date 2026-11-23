@@ -13,6 +13,39 @@ import (
 	"tmatrix/internal/backend"
 )
 
+const runtimePolicyField = 2
+
+var runtimePolicyChoices = []struct {
+	policy config.RuntimePolicy
+	label  string
+}{
+	{config.SubscriptionsFirst, "Subscriptions first"},
+	{config.ClaudeFirst, "Claude first"},
+	{config.SubscriptionsOnly, "No credit fallback"},
+	{config.CodexOnly, "Codex only"},
+	{config.ClaudeOnly, "Claude only"},
+}
+
+func (m Model) hasRuntimePolicy() bool {
+	return m.screen == settingsScreen && m.runtimePolicyAtOpen != ""
+}
+
+func (m Model) runtimePolicyIndex() int {
+	policy := config.RuntimePolicy(m.form[runtimePolicyField].Value())
+	for i, choice := range runtimePolicyChoices {
+		if choice.policy == policy {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m *Model) cycleRuntimePolicy(direction int) {
+	size := len(runtimePolicyChoices)
+	next := (m.runtimePolicyIndex() + direction + size) % size
+	m.form[runtimePolicyField].SetValue(string(runtimePolicyChoices[next].policy))
+}
+
 func fieldInput(value, placeholder string, secret bool) textinput.Model {
 	input := textinput.New()
 	input.SetValue(value)
@@ -35,6 +68,7 @@ func (m *Model) openForm(target screen) tea.Cmd {
 	m.field = 0
 	m.failure = ""
 	m.notice = ""
+	m.runtimePolicyAtOpen = ""
 	if target == connectScreen {
 		name, endpoint := "", "https://tzudo.app"
 		placeholder := "Paste the source's worker API key"
@@ -66,6 +100,10 @@ func (m *Model) openForm(target screen) tea.Cmd {
 			workerType = "codex"
 		}
 		m.form = []textinput.Model{fieldInput(strconv.Itoa(maximum), "3", false), fieldInput(strconv.Itoa(interval), "5000", false), fieldInput(workerType, "codex", false), fieldInput("tzudo", "tzudo", false)}
+		if workerType == "codex" && m.snapshot.RuntimePolicy.Validate() == nil {
+			m.runtimePolicyAtOpen = m.snapshot.RuntimePolicy
+			m.form[runtimePolicyField].SetValue(string(m.runtimePolicyAtOpen))
+		}
 	}
 	return nil
 }
@@ -164,14 +202,21 @@ func (m *Model) submitForm() tea.Cmd {
 		m.failure = "Poll interval must be 250–300000 milliseconds."
 		return nil
 	}
-	workerType := strings.TrimSpace(m.form[2].Value())
+	workerType := strings.TrimSpace(m.form[runtimePolicyField].Value())
 	pollerType := strings.TrimSpace(m.form[3].Value())
 	currentAdapter := m.snapshot.RuntimeAdapter
 	if currentAdapter == "" {
 		currentAdapter = "codex"
 	}
-	if workerType != currentAdapter {
-		m.failure = "Select worker_type and adapter_module in config.json, then restart the engine."
+	var runtimePolicy *config.RuntimePolicy
+	if m.hasRuntimePolicy() {
+		policy := runtimePolicyChoices[m.runtimePolicyIndex()].policy
+		if policy != m.runtimePolicyAtOpen {
+			runtimePolicy = &policy
+		}
+		workerType = "codex"
+	} else if workerType != currentAdapter {
+		m.failure = "Set worker_type in config.json, then restart the engine. Custom workers also need adapter_module."
 		return nil
 	}
 	if pollerType != "tzudo" {
@@ -181,7 +226,7 @@ func (m *Model) submitForm() tea.Cmd {
 	m.busy = true
 	m.failure = ""
 	m.notice = "Saving settings…"
-	settings := backend.Settings{MaxWorkers: &maximum, PollIntervalMS: &interval, WorkerType: &workerType, PollerType: &pollerType}
+	settings := backend.Settings{MaxWorkers: &maximum, PollIntervalMS: &interval, WorkerType: &workerType, PollerType: &pollerType, RuntimePolicy: runtimePolicy}
 	return m.operation("settings", "", func(ctx context.Context) (string, error) {
 		return "Settings saved; active workers keep their current conversation.", m.backend.Configure(ctx, settings)
 	})

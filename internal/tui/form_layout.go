@@ -30,6 +30,18 @@ func (m Model) formContent() layoutBlock {
 			style = accentStyle
 			focusLine = len(b.lines)
 		}
+		if m.hasRuntimePolicy() && i == runtimePolicyField {
+			b.lines = append(b.lines, style.Render(fit(marker+"Routing policy [←/→]", m.width-4)))
+			label := runtimePolicyChoices[m.runtimePolicyIndex()].label
+			b.targets = append(b.targets, hitTarget{x: 0, y: len(b.lines) - 1, width: m.width - 2, height: 2, action: "field", field: i})
+			selector := controls([]control{{"‹", "left"}, {label, ""}, {"›", "right"}}, m.width-4)
+			for j := range selector.targets {
+				selector.targets[j].action = "runtime-policy"
+			}
+			b.append(selector)
+			b.lines = append(b.lines, "")
+			continue
+		}
 		input.Width = max(4, m.width-8)
 		b.targets = append(b.targets, hitTarget{x: 0, y: len(b.lines), width: m.width - 2, height: 2, action: "field", field: i})
 		label := labels[i]
@@ -38,8 +50,8 @@ func (m Model) formContent() layoutBlock {
 		}
 		b.lines = append(b.lines, style.Render(fit(marker+label, m.width-4)), " "+input.View(), "")
 	}
-	if m.screen == settingsScreen {
-		b.lines = append(b.lines, mutedStyle.Render(" Adapters: configure in config.json, then restart. See README."))
+	if m.screen == settingsScreen && !m.hasRuntimePolicy() {
+		b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" Set worker_type to codex or claude in config.json, then restart the engine.", m.width-4)), "\n")...)
 	}
 	prefix := layoutBlock{}
 	if m.screen == settingsScreen {

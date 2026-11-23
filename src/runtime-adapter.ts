@@ -1,6 +1,7 @@
 /** TMatrix adapter API v1. No provider SDK is required to implement this contract. */
 import type { Logger } from "pino";
 import type { TicketHistoryReader } from "./helpers/ticket-history.js";
+import type { UsageDisplay } from "./worker-usage.js";
 import type { ReportSecurityWarning } from "./security-warning.js";
 import type { ExecutionProfile, ReasoningEffort, ServiceTier } from "./types.js";
 
@@ -42,6 +43,7 @@ export interface ThreadLike {
   steer?(input: Input, options?: { signal?: AbortSignal }): Promise<boolean>;
   runStreamed(input: Input, options?: {
     outputSchema?: unknown;
+    beforeStart?: () => void | Promise<void>;
     signal?: AbortSignal;
     /** Use after confirmed conversation loss or an explicit resume rejection during crash recovery. */
     missingConversationInput?: () => Promise<Input>;
@@ -115,10 +117,18 @@ export interface AdapterSetupContext extends AdapterContext {
   /** Private per-instance/per-adapter store outside engine/release directories. */
   updateDirectory: string;
 }
+export type RuntimeQuota = {
+  plan: "available" | "exhausted" | "unavailable" | "unknown";
+  credits?: boolean;
+  display?: UsageDisplay;
+};
+export type ReadRuntimeQuota = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeQuota>;
+
 export interface AdapterSetup {
   /** Bound to this engine instance, with a fresh context supplied for each worker. */
   create: RuntimeCreator;
   updates?: AdapterUpdates;
+  readQuota?: ReadRuntimeQuota;
 }
 export interface RuntimeAdapter {
   apiVersion: 1;

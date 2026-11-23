@@ -9,16 +9,12 @@ Concept:
 - Your computer runs TMatrix app, this app, which is very easy to install/uninstall.
 - TMatrix orchestraters tasks, pollers and workers.
 - A **poller** gets tasks from a **source** like tzudo.app.
-- An **AI worker** works on those tasks, a worker can be something like Codex.
+- An **AI worker** runs those tasks with Codex or Claude Code.
 - This goes on until the number of workers limit is reached. You can set the max # yourself.
 
 ---
 
 Created for [Tzudo](https://tzudo.app/), the ultimate to do list and time tracker to 10x your productivity and work stress-free.
-
-Codex adapter included.
-
-Im not using Claude this month, so I may not work on a Claude adapter until I get back to using it.
 
 ![example](images/sample.png)
 
@@ -31,9 +27,24 @@ curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.
 ```
 
 - Open `tmatrix`, press `c`, and add TzuDo using your worker API key from https://tzudo.app/settings.
-- Currently only supports Codex for now. Claude Code Integration is on the roadmap.
 
 Press `s` to open Settings and view the TMatrix version, build number, and commit at the top.
+
+## Route work across subscriptions
+
+Sign Codex in to ChatGPT under the user that runs TMatrix. To add Claude, [install Claude Code](https://code.claude.com/docs/en/setup) 2.1.220 or newer and run `claude auth login` under that same user. In Claude's account settings, turn off **Usage credits** so Claude can report when its subscription is exhausted. TMatrix looks for `claude` on `PATH` and in `~/.local/bin`. Set `TMATRIX_CLAUDE_PATH` in the engine environment for a different location.
+
+TMatrix checks allowance before each new turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. Starting a turn on credits requires both plans to report exhaustion and Codex to report available credits. If TMatrix cannot verify a route, it reports the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
+
+Press `s` to open **Settings**, move to **Routing policy**, and use Left or Right to choose a policy. Press `Ctrl+S` to save. You can put Claude first, omit the Codex credits fallback, or choose a single provider. A policy change applies to new turns.
+
+Open a worker to see which provider and allowance TMatrix selected. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows each provider's responses and tool activity. Active turns stay with their current provider.
+
+TMatrix checks Anthropic's stable npm channel at startup and daily. Open **Settings**, press `o` for **Runtime updates**, and use Left or Right to choose a provider. TMatrix verifies each Claude Code release in its private runtime store before selecting it. Active workers keep the version they started with. Set `DISABLE_UPDATES=1` in the engine environment to turn off Claude update checks.
+
+TMatrix reports included plan allowance and available paid balances to Tzu Do when it has one production Tzu Do source. It refreshes these figures at startup and every five minutes while the engine runs. Claude Code does not report a prepaid balance, so Tzu Do can show Claude's plan allowance and whether Usage credits are off.
+
+To report to one account when several production sources are configured, set `TMATRIX_USAGE_SOURCE_ID` in the engine or service environment to that source's `id` in `config.json`. Use the same setting to opt in to reporting on official Tzu Do staging or a PR preview. Use `legacy` for a single-source legacy engine. A missing or invalid selection on a multi-account engine leaves reporting off.
 
 ## Connect multiple sources
 

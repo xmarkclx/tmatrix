@@ -100,7 +100,7 @@ func sourceEngineFixture(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(engine, "dist"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for name, body := range map[string]string{"index.js": "// TMATRIX_CONTROL_FILE TMATRIX_INTAKE_PAUSED", "local-control-server.js": "", "source-supervisor.js": ""} {
+	for name, body := range map[string]string{"index.js": "// TMATRIX_CONTROL_FILE TMATRIX_INTAKE_PAUSED", "local-control-server.js": "", "source-supervisor.js": "", "runtime-routing.js": ""} {
 		if err := os.WriteFile(filepath.Join(engine, "dist", name), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}

@@ -5,7 +5,7 @@ import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
 import { prepareTicketHistory } from "./helpers/ticket-history.js";
 import { serializePromptHistory } from "./helpers/serialize-prompt-history.js";
 import { workerTitle } from "./helpers/worker-title.js";
-import type { ConversationStore } from "./conversation-store.js";
+import { boundContext, stripConversationReference, type ConversationLease, type ConversationStore } from "./conversation-store.js";
 import type { WorkerObservation } from "./local-worker-state.js";
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
@@ -29,6 +29,7 @@ import type { Metrics } from "./metrics.js";
 import { ProgressReporter } from "./progress.js";
 import { deliverResult } from "./result-delivery.js";
 import { prepareCodexInput } from "./adapters/codex/prepare-input.js";
+import { conversationReferenceSchema } from "./types.js";
 import type {
   ExecutionProfile,
   ReasoningEffort,
@@ -132,6 +133,17 @@ export class SteeringMailbox {
   }
 }
 
+export interface RuntimeSelection {
+  id: string;
+  runtimeFactory: RuntimeFactory;
+  conversationStore: ConversationStore;
+  model?: (requested: string) => string;
+  label?: string;
+  assertCurrent?: () => void | Promise<void>;
+}
+
+type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeSelection>;
+
 interface TurnOutcome {
   finalResponse: string;
   threadId?: string;
@@ -141,6 +153,7 @@ interface TurnOutcome {
 export class TicketRunner {
   private readonly alertSecurityWarning: AlertSecurityWarning | undefined;
   private readonly runtimeFactory: RuntimeFactory;
+  private readonly selectRuntime: SelectRuntime | undefined;
   private readonly api: TicketApi;
   private readonly logger: Logger;
   private readonly metrics: Metrics;
@@ -151,6 +164,7 @@ export class TicketRunner {
   constructor(options: {
     alertSecurityWarning?: AlertSecurityWarning;
     runtimeFactory?: RuntimeFactory;
+    selectRuntime?: SelectRuntime;
     /** @deprecated Use runtimeFactory. */
     codexFactory?: RuntimeFactory;
     api: TicketApi;
@@ -162,8 +176,10 @@ export class TicketRunner {
   }) {
     const factory = options.runtimeFactory ?? options.codexFactory;
     if (!factory) throw new Error("A runtime factory is required");
+    if (options.selectRuntime && !options.conversationStore) throw new Error("Runtime selection requires a shared conversation lease");
     this.alertSecurityWarning = options.alertSecurityWarning;
     this.runtimeFactory = factory;
+    this.selectRuntime = options.selectRuntime;
     this.api = options.api;
     this.logger = options.logger.child({ component: "ticket_runner" });
     this.metrics = options.metrics;
@@ -214,7 +230,37 @@ export class TicketRunner {
     let runtime: RuntimeLike | undefined;
     let runtimeCloseFailure: unknown;
     let cancelled = cancellationReason(options.signal);
-    let releaseConversation: import("./conversation-store.js").ConversationLease | undefined;
+    let releaseConversation: ConversationLease | undefined;
+    let conversationStore = this.conversationStore;
+    let lastCompletedRoute: { store: ConversationStore | undefined; threadId: string | undefined } | undefined;
+    let pendingLocalMessage: string | undefined;
+
+    const completedResult = (response: Handoff, contextNote?: string): TicketResult => ({
+      status: "completed",
+      input_revision: processedInputRevision,
+      outcome: response.outcome,
+      context_summary: conversationStore && threadId
+        ? conversationStore.attachContext(ticket, threadId, response.context_summary, contextNote)
+        : boundContext(response.context_summary, contextNote),
+      user_message: response.user_message,
+      final_response: response.user_message,
+      ...(threadId ? { thread_id: threadId, ...(conversationStore ? { conversation: conversationStore.reference(threadId) } : {}) } : {}),
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      duration_ms: Date.now() - startedAtMs,
+      ...(usage ? { usage } : {})
+    });
+
+    const closeRuntime = async () => {
+      const closing = runtime;
+      runtime = undefined;
+      try {
+        await closing?.close?.();
+      } catch (cause) {
+        runtimeCloseFailure = toError(cause);
+        throw cause;
+      }
+    };
 
     try {
       log.info({ event: "worker.run_started", stage: "claim" }, "Ticket run started");
@@ -223,99 +269,162 @@ export class TicketRunner {
         await this.stage(log, "claim", () => this.api.markTaken(ticket, options.signal));
         const history = await this.stage(log, "history", () => this.api.getHistory(ticket, options.signal));
         releaseConversation = await this.conversationStore?.acquire(ticket, options.signal);
+        const recoveredAttempt = releaseConversation?.recoveredAttempt;
         if (releaseConversation?.recovered) {
-          options.observe?.({ kind: "conversation.recovered", text: "Recovered the previous worker's conversation lock automatically. Resuming saved context; a missing conversation will be rebuilt from the durable handoff." });
+          const text = this.selectRuntime && recoveredAttempt
+            ? "Recovered the interrupted ticket's conversation lock. Checking its saved runtime and session."
+            : "Recovered the previous worker's conversation lock automatically. Resuming saved context; a missing conversation will be rebuilt from the durable handoff.";
+          options.observe?.({ kind: "conversation.recovered", text });
         }
-        let resumeId = await this.conversationStore?.resolve(ticket, history);
-        if (this.conversationStore && !resumeId && hasReplyAncestry(ticket, history)) {
-          options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
-        }
-        const workingDirectory = await resolveWorkingDirectory(
-          ticket.project_path,
-          this.fallbackWorkingDirectory
-        );
-        runtime = this.runtimeFactory(profile, releaseConversation?.environment);
-        const ticketHistory = runtime.prepareTicketHistory ? prepareTicketHistory(ticket, history) : undefined;
-        const deferred = ticketHistory && await runtime.prepareTicketHistory?.(ticketHistory.read)
-          ? ticketHistory.deferred : undefined;
-        const fullPrompt = buildPrompt(ticket, deferred?.history ?? history, deferred?.instructions);
-        const commentPrompt = resumeId && runtime.resumeThread ? buildCommentPrompt(ticket, history) : undefined;
+        const workingDirectory = await resolveWorkingDirectory(ticket.project_path, this.fallbackWorkingDirectory);
         const context = conversationContext(history);
-        const changes = commentPrompt !== undefined && resumeId
-          ? await this.conversationStore?.contextChanges(ticket, resumeId, context) ?? {}
-          : {};
-        const updates = Object.keys(changes).length ? `# Updated task context\n${JSON.stringify(changes, null, 2)}\n\n` : "";
-        const prompt = commentPrompt === undefined ? fullPrompt : updates + commentPrompt;
-        let missingConversationText = commentPrompt === undefined ? undefined : fullPrompt;
-
-
-        log.info({
-          event: resumeId ? "codex.thread_resuming" : "codex.thread_starting",
-          stage: "codex.start",
-          instruction_chars: ticket.instructions.length,
-          prompt_chars: prompt.length,
-          working_directory: workingDirectory,
-          used_project_path: workingDirectory === ticket.project_path
-        }, resumeId ? "Resuming runtime conversation" : "Starting runtime conversation");
-
-        const threadOptions = runtimeThreadOptions(
-          profile,
-          workingDirectory,
-          workerTitle(ticket)
-        );
-        if (warning) {
-          threadOptions.reportSecurityWarning = warning.report;
-        }
-        if (releaseConversation?.recovered) threadOptions.rebuildOnResumeRejection = true;
-        if (resumeId && !runtime.resumeThread) {
-          options.observe?.({ kind: "conversation.unlinked", text: "This runtime cannot resume conversations. Starting a fresh conversation from the task history and saved handoff." });
-        }
-        const requestedResumeId = runtime.resumeThread ? resumeId : undefined;
-        const thread = resumeId && runtime.resumeThread
-          ? runtime.resumeThread(resumeId, threadOptions)
-          : runtime.startThread(threadOptions);
-        const observeRuntime = async (event: WorkerObservation) => {
-          if (event.thread_id) {
-            threadId = event.thread_id;
-            // Persist before the generator advances to turn/start, so a restart
-            // recovers this same conversation even if the first turn fails.
-            await this.conversationStore?.remember(ticket, threadId, resumeId);
-            resumeId = threadId;
-          }
-          // Compare against the original route, not resumeId (which advances
-          // after connection). A missing conversation may have been rebuilt.
-          options.observe?.(event.kind === "thread.started" ? {
-            ...event,
-            run_kind: requestedResumeId && event.thread_id === requestedResumeId ? "resumed" : "initial"
-          } : event);
-        };
-
-        // Local console only: never enqueue prompt text in remote progress/logs.
-        // This records prepared input, not confirmation of runtime receipt.
-        options.observe?.({ kind: "prompt.prepared", text: prompt, input_revision: processedInputRevision });
-
-        let turnInput = prompt;
+        const recoveredReference = options.recovered ? savedConversation(ticket, history) : undefined;
+        const recoveredRuntime = recoveredAttempt?.runtime ?? recoveredReference?.runtime;
+        let activeSelection: RuntimeSelection | undefined;
+        let activeThread: { thread: ThreadLike; observe: (event: WorkerObservation) => Promise<void> } | undefined;
+        let turnInput = "";
+        let missingConversationText: string | undefined;
         let localSteeringId: string | undefined;
+
         while (true) {
+          const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model);
+          options.signal?.throwIfAborted();
+          const switching = !!activeThread && selected !== undefined && selected.id !== activeSelection?.id;
+          const model = selected?.model?.(profile.model) ?? profile.model;
+          if (!activeThread || switching) {
+            if (switching) {
+              await closeRuntime();
+              options.signal?.throwIfAborted();
+              try {
+                await releaseConversation?.prepareRuntimeReplacement?.();
+              } catch (cause) {
+                if (!(cause instanceof WorkerError) || cause.code !== "CONVERSATION_GROUP_UNAVAILABLE") runtimeCloseFailure = toError(cause);
+                throw cause;
+              }
+              threadId = undefined;
+            } else if (selected && recoveredRuntime && selected.id !== recoveredRuntime) {
+              throw new WorkerError({
+                message: "The recovered ticket used a different runtime. Inspect the interrupted work before retrying.",
+                code: "RUNTIME_RECOVERY_PROVIDER_CHANGED", stage: "runtime.select"
+              });
+            }
+
+            conversationStore = selected?.conversationStore ?? conversationStore;
+            const previousAttempt = selected && !switching ? recoveredAttempt : undefined;
+            const priorConversation = previousAttempt?.conversation;
+            const expectedReference = switching || !selected ? undefined
+              : previousAttempt ? priorConversation : recoveredReference;
+            if ((previousAttempt && !priorConversation) ||
+                (expectedReference && (expectedReference.runtime !== selected?.id ||
+                  conversationStore?.reference(expectedReference.thread_id).scope !== expectedReference.scope))) {
+              throw unverifiedRuntimeRecovery();
+            }
+            let resumeId = switching ? undefined : priorConversation?.thread_id ?? await conversationStore?.resolve(ticket, history);
+            if (selected) await releaseConversation?.rememberRuntime?.(selected.id,
+              resumeId ? selected.conversationStore.reference(resumeId) : undefined);
+            options.signal?.throwIfAborted();
+            if (conversationStore && !switching && !resumeId && hasReplyAncestry(ticket, history)) {
+              options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
+            }
+            const runtimeProfile = model === profile.model ? profile : Object.freeze({ ...profile, model });
+            runtime = (selected?.runtimeFactory ?? this.runtimeFactory)(runtimeProfile, releaseConversation?.environment);
+            if (selected && !runtime.close) throw new WorkerError({
+              message: "The selected runtime cannot confirm teardown.",
+              code: "RUNTIME_CLOSE_UNSUPPORTED", stage: "runtime.select"
+            });
+            const ticketHistory = runtime.prepareTicketHistory ? prepareTicketHistory(ticket, history) : undefined;
+            const deferred = ticketHistory && await runtime.prepareTicketHistory?.(ticketHistory.read)
+              ? ticketHistory.deferred : undefined;
+            const fullPrompt = buildPrompt(ticket, deferred?.history ?? history, deferred?.instructions);
+            const commentPrompt = resumeId && runtime.resumeThread ? buildCommentPrompt(ticket, history) : undefined;
+            const changes = commentPrompt !== undefined && resumeId
+              ? await conversationStore?.contextChanges(ticket, resumeId, context) ?? {}
+              : {};
+            const updates = Object.keys(changes).length ? `# Updated task context\n${JSON.stringify(changes, null, 2)}\n\n` : "";
+            turnInput = switching && handoff ? continueOnNewRuntime(fullPrompt, handoff, turnInput)
+              : previousAttempt ? recoverInterruptedRuntime(fullPrompt)
+                : commentPrompt === undefined ? fullPrompt : updates + commentPrompt;
+            missingConversationText = previousAttempt || commentPrompt === undefined ? undefined : fullPrompt;
+
+            log.info({
+              event: resumeId ? "codex.thread_resuming" : "codex.thread_starting",
+              stage: "codex.start",
+              instruction_chars: ticket.instructions.length,
+              prompt_chars: turnInput.length,
+              working_directory: workingDirectory,
+              used_project_path: workingDirectory === ticket.project_path,
+              ...(selected ? { runtime_adapter: selected.id } : {})
+            }, resumeId ? "Resuming runtime conversation" : "Starting runtime conversation");
+
+            const threadOptions = runtimeThreadOptions(runtimeProfile, workingDirectory, workerTitle(ticket));
+            if (warning) threadOptions.reportSecurityWarning = warning.report;
+            if (!switching && !previousAttempt && releaseConversation?.recovered) threadOptions.rebuildOnResumeRejection = true;
+            if (previousAttempt && !runtime.resumeThread) throw unverifiedRuntimeRecovery();
+            if (resumeId && !runtime.resumeThread) {
+              options.observe?.({ kind: "conversation.unlinked", text: "This runtime cannot resume conversations. Starting a fresh conversation from the task history and saved handoff." });
+            }
+            const requestedResumeId = runtime.resumeThread ? resumeId : undefined;
+            const thread = resumeId && runtime.resumeThread
+              ? runtime.resumeThread(resumeId, threadOptions)
+              : runtime.startThread(threadOptions);
+            const sessionStore = conversationStore;
+            let rebuiltCodexThread: string | undefined;
+            activeThread = { thread, observe: async event => {
+              if (event.thread_id) {
+                if (priorConversation && priorConversation.thread_id !== event.thread_id) throw unverifiedRuntimeRecovery();
+                const openedThread = event.thread_id;
+                if (selected?.id === "codex" && requestedResumeId && requestedResumeId !== openedThread) {
+                  rebuiltCodexThread = openedThread;
+                } else {
+                  threadId = openedThread;
+                  await sessionStore?.remember(ticket, openedThread, resumeId);
+                  resumeId = openedThread;
+                }
+                if (selected) await releaseConversation?.rememberRuntime?.(selected.id, selected.conversationStore.reference(openedThread));
+              }
+              if (event.kind === "turn.started" && rebuiltCodexThread) {
+                await sessionStore?.remember(ticket, rebuiltCodexThread, resumeId);
+                threadId = rebuiltCodexThread;
+                resumeId = rebuiltCodexThread;
+                rebuiltCodexThread = undefined;
+              }
+              options.observe?.(event.kind === "thread.started" ? {
+                ...event,
+                run_kind: requestedResumeId && event.thread_id === requestedResumeId ? "resumed" : "initial"
+              } : event);
+            } };
+          }
+          if (selected && (selected.id !== activeSelection?.id || selected.label !== activeSelection?.label)) {
+            options.observe?.({
+              kind: "runtime.selected", text: selected.label ?? selected.id, runtime_adapter: selected.id, model
+            });
+          }
+          activeSelection = selected;
+          if (!handoff) {
+            options.observe?.({ kind: "prompt.prepared", text: turnInput, input_revision: processedInputRevision });
+          }
           reporter.setInputRevision(processedInputRevision);
           const turn = await this.runPreparedTurn(
-            thread,
+            activeThread.thread,
             turnInput,
             ticket,
             log,
             reporter,
             options.signal,
-            observeRuntime,
+            activeThread.observe,
             localSteeringId,
             missingConversationText,
             steering,
-            warning
+            warning,
+            selected?.assertCurrent
           );
           missingConversationText = undefined;
           threadId = turn.threadId ?? threadId;
           usage = mergeUsage(usage, turn.usage);
           handoff = parseHandoff(turn.finalResponse);
-          if (threadId) await this.conversationStore?.rememberContext(ticket, threadId, context);
+          lastCompletedRoute = { store: conversationStore, threadId };
+          pendingLocalMessage = undefined;
+          if (threadId) await conversationStore?.rememberContext(ticket, threadId, context);
 
           if (localSteeringId) options.observe?.({ kind: "steering.response_observed", text: "A response was observed after the local message", steering_id: localSteeringId });
           localSteeringId = undefined;
@@ -329,6 +438,7 @@ export class TicketRunner {
               break;
             }
             localSteeringId = local.id;
+            pendingLocalMessage = local.message;
             turnInput = localSteeringPrompt(local.message);
             continue;
           }
@@ -358,23 +468,7 @@ export class TicketRunner {
         }
 
         await reporter.flush();
-        // Keep the authored response intact; PRs retain file diffs and CI evidence.
-        const userMessage = handoff.user_message;
-        result = {
-          status: "completed",
-          input_revision: processedInputRevision,
-          outcome: handoff.outcome,
-          context_summary: this.conversationStore && threadId
-            ? this.conversationStore.attachContext(ticket, threadId, handoff.context_summary)
-            : handoff.context_summary,
-          user_message: userMessage,
-          final_response: userMessage,
-          ...(threadId ? { thread_id: threadId, ...(this.conversationStore ? { conversation: this.conversationStore.reference(threadId) } : {}) } : {}),
-          started_at: startedAt,
-          completed_at: new Date().toISOString(),
-          duration_ms: Date.now() - startedAtMs,
-          ...(usage ? { usage } : {})
-        };
+        result = completedResult(handoff);
       } catch (cause) {
         await reporter.flush();
         cancelled = cancellationReason(options.signal);
@@ -386,6 +480,16 @@ export class TicketRunner {
             ...(cancelled.eventId ? { event_id: cancelled.eventId } : {}),
             duration_ms: Date.now() - startedAtMs
           }, "Ticket run cancellation reached the runner");
+        } else if (handoff && lastCompletedRoute && cause instanceof WorkerError && cause.stage === "runtime.route") {
+          conversationStore = lastCompletedRoute.store;
+          threadId = lastCompletedRoute.threadId;
+          const note = `TMatrix saved the completed work. The queued follow-up did not start. ${cause.message}`;
+          const pending = pendingLocalMessage === undefined ? "" : `\nQueued local message: ${pendingLocalMessage}`;
+          result = completedResult({
+            outcome: "AI_NEEDS_FEEDBACK",
+            context_summary: handoff.context_summary,
+            user_message: boundContext(handoff.user_message, note)
+          }, `Input revision ${processedInputRevision} is pending. ${cause.message}${pending}`);
         } else {
           const failure = normalizeRunFailure(cause, options.signal);
           log.error({
@@ -420,9 +524,8 @@ export class TicketRunner {
       steering.closeLocal();
       if (runtime?.close) {
         try {
-          await runtime.close();
+          await closeRuntime();
         } catch (cause) {
-          runtimeCloseFailure = cause;
           if (cancellationReason(options.signal)) {
             throw new WorkerError({
               message: "Runtime teardown failed during cancellation",
@@ -477,7 +580,7 @@ export class TicketRunner {
         const receipt = await deliverResult({ api: this.api, ticket, result, signal: reportController.signal, logger: log });
         if (threadId && result.status === "completed") {
           try {
-            await this.conversationStore?.bindResult(ticket, threadId, receipt);
+            await conversationStore?.bindResult(ticket, threadId, receipt);
           } catch (cause) {
             // Tzu Do already accepted the handoff. A local indexing failure must
             // not turn completed work into a failed run or repeat its side effects.
@@ -546,7 +649,8 @@ export class TicketRunner {
     localSteeringId?: string,
     missingConversationText?: string,
     steering?: SteeringMailbox,
-    warning?: ReturnType<typeof createSecurityWarningReporter>
+    warning?: ReturnType<typeof createSecurityWarningReporter>,
+    beforeStart?: () => void | Promise<void>
   ): Promise<TurnOutcome> {
     const endpoint = ticket.endpoints.history.replace(/^GET\s+/i, "");
     const prepared = await prepareCodexInput(text, {
@@ -582,7 +686,8 @@ export class TicketRunner {
         missingConversationInput,
         steering,
         ticket,
-        warning
+        warning,
+        beforeStart
       );
     } finally {
       await prepared.cleanup();
@@ -602,7 +707,8 @@ export class TicketRunner {
     missingConversationInput?: () => Promise<Input>,
     steering?: SteeringMailbox,
     ticket?: Ticket,
-    warning?: ReturnType<typeof createSecurityWarningReporter>
+    warning?: ReturnType<typeof createSecurityWarningReporter>,
+    beforeStart?: () => void | Promise<void>
   ): Promise<TurnOutcome> {
     let finalResponse: string | undefined;
     let threadId: string | undefined;
@@ -637,6 +743,7 @@ export class TicketRunner {
     try {
       const streamed = await thread.runStreamed(input, {
         outputSchema: HANDOFF_OUTPUT_SCHEMA,
+        ...(beforeStart ? { beforeStart } : {}),
         ...(missingConversationInput ? { missingConversationInput } : {}),
         ...(signal ? { signal } : {})
       });
@@ -799,6 +906,37 @@ function buildPrompt(ticket: Ticket, history: unknown, instructions = ticket.ins
     "Return the required structured handoff. Use outcome AI_DONE when the work is ready for user review, or AI_NEEDS_FEEDBACK when a specific human answer is required. Any inherited_context in durable history is branch-specific prior-session evidence; the current ticket and latest human revision override it, and important claims should be verified against the workspace. context_summary is private rolling operational memory attached to the same comment as user_message: record completed work, artifacts, decisions, verification, blockers, and next steps for a fresh worker; keep it as short as useful and normally under 8000 characters, and never include secrets or hidden chain-of-thought. Keep user_message concise and human-facing, and do not duplicate the context summary in it.",
     USER_MESSAGE_FORMAT_INSTRUCTION
   ].join("\n");
+}
+
+function savedConversation(ticket: Ticket, history: unknown) {
+  const route = typeof history === "object" && history !== null && Object.hasOwn(history, "conversation") && "conversation" in history
+    ? history.conversation : ticket.conversation;
+  return conversationReferenceSchema.safeParse(route).data;
+}
+
+function unverifiedRuntimeRecovery(): WorkerError {
+  return new WorkerError({
+    message: "The interrupted ticket's conversation could not be verified. Inspect the interrupted work before retrying.",
+    code: "RUNTIME_RECOVERY_UNVERIFIED", stage: "runtime.select"
+  });
+}
+
+function recoverInterruptedRuntime(fullPrompt: string): string {
+  return [
+    "# Resume an interrupted ticket",
+    "Inspect this conversation and the workspace to find the last completed step. Verify earlier side effects before acting and do not repeat completed work.",
+    fullPrompt
+  ].join("\n\n");
+}
+
+function continueOnNewRuntime(fullPrompt: string, handoff: Handoff, nextInput: string): string {
+  return [
+    fullPrompt,
+    "# Handoff from the previous runtime",
+    "Continue the work recorded below in this workspace. Verify the current state before acting, preserve completed work, and do not repeat completed side effects.",
+    JSON.stringify({ ...handoff, context_summary: stripConversationReference(handoff.context_summary) }, null, 2),
+    nextInput
+  ].join("\n\n");
 }
 
 /** Converts a human edit into a follow-up turn without exposing it to logs. */
