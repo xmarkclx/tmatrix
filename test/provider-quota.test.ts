@@ -167,6 +167,19 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     expect(await quota({ auth: { loggedIn: true, authMethod: "api_key" }, limits: subscriptionLimits })).toEqual({ plan: "unavailable" });
   });
 
+  it.each(["free", null])("classifies a signed-in Claude account with subscription type %j as unavailable", async (subscriptionType) => {
+    const auth = { loggedIn: true, authMethod: "claude.ai", subscriptionType };
+    expect(await quota({ auth, limits: null })).toEqual({ plan: "unavailable" });
+  });
+
+  it("keeps a failed authentication probe unknown", async () => {
+    const fixture = await claudeFixture({ limits: subscriptionLimits });
+    try {
+      const executable = join(fixture.directory, "missing-claude");
+      expect(await readClaudeQuota(executable, { PATH: process.env.PATH ?? "" }, undefined, fixture.directory)).toEqual({ plan: "unknown" });
+    } finally { await fixture.close(); }
+  });
+
   it("propagates cancellation while a probe is waiting", async () => {
     const fixture = await claudeFixture({ limits: subscriptionLimits, hang: true });
     const signal = AbortSignal.timeout(1_000);

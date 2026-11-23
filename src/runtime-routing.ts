@@ -40,14 +40,14 @@ export async function chooseFundingRoute({ policy, codex, claude, signal }: {
   }
 
   if (policy !== "subscriptions-only" && codexQuota?.plan === "exhausted" &&
-      claudeQuota?.plan === "exhausted" && codexQuota.credits === true) {
+      (claudeQuota?.plan === "exhausted" || claudeQuota?.plan === "unavailable") && codexQuota.credits === true) {
     return "codex-credits";
   }
 
-  const message = claudeQuota?.plan === "unavailable"
-    ? "No verified Codex plan allowance. Install Claude Code and sign in with a subscription to use Claude fallback."
-    : claudeQuota?.plan === "unknown" || codexQuota?.plan === "unknown"
-      ? "Provider plan usage could not be verified. Check both sign-ins and turn off Claude Usage credits for automatic routing."
+  const message = claudeQuota?.plan === "unknown" || codexQuota?.plan === "unknown"
+    ? "Provider plan usage could not be verified. Check both sign-ins and turn off Claude Usage credits for automatic routing."
+    : policy !== "subscriptions-only" && codexQuota?.plan === "exhausted"
+      ? "No included allowance is available. Check your Codex credit balance or Claude subscription."
       : "No included allowance is available under the selected routing policy.";
   throw new WorkerError({ code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route", message });
 }
