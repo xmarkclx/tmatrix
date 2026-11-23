@@ -36,6 +36,8 @@ Sign Codex in to ChatGPT under the user that runs TMatrix. To add Claude, [insta
 
 TMatrix checks allowance before each new turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. When Codex reports an exhausted plan and available credits, TMatrix uses credits if Claude's plan is exhausted or unavailable, including when Claude Code is signed out or has no paid subscription. If TMatrix cannot verify a route, it reports the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
 
+To change the default Claude model, add `"claude_model": "opus"` to TMatrix's `config.json` and restart the engine. On Linux the default path is `~/.config/tmatrix/config.json`. Without this setting, TMatrix uses `sonnet`. The `opus` alias follows the version selected by the installed Claude Code CLI for your provider. You can also use a full Claude model ID to pin a version. A task that names a Claude model keeps that selection. [Claude Code model aliases](https://code.claude.com/docs/en/model-config#model-aliases)
+
 Press `s` to open **Settings**, move to **Routing policy**, and use Left or Right to choose a policy. Press `Ctrl+S` to save. You can put Claude first, omit the Codex credits fallback, or choose a single provider. A policy change applies to new turns.
 
 Open a worker to see which provider and allowance TMatrix selected. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows each provider's responses and tool activity. Active turns stay with their current provider.

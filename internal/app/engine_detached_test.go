@@ -41,6 +41,8 @@ func TestDetachedCLIContinuesRotatingAndDrains(t *testing.T) {
 const fs = require('node:fs');
 const http = require('node:http');
 const bridge = process.env.TMATRIX_CONTROL_FILE;
+const settings = JSON.parse(fs.readFileSync(process.env.CONFIG_PATH, 'utf8'));
+if (settings.claude_model !== 'opus') throw new Error('Claude model did not reach engine settings');
 let stopping = false;
 const output = setInterval(() => { process.stdout.write('o'.repeat(524288)); process.stderr.write('e'.repeat(524288)); }, 20);
 function stop() {
@@ -65,6 +67,7 @@ server.listen(0,'127.0.0.1',() => fs.writeFileSync(bridge, JSON.stringify({versi
 	cfg := config.Default()
 	cfg.Sources = []config.Source{fixtureSource(cfg, config.DefaultPollURL)}
 	cfg.EngineDir = engine
+	cfg.ClaudeModel = "opus"
 	if err := config.Save(dir, cfg); err != nil {
 		t.Fatal(err)
 	}

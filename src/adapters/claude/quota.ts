@@ -58,8 +58,11 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const name = modelName(selectedModel);
     const family = name.split("-")[0];
     const legacyWindow = family === "sonnet" ? usage.seven_day_sonnet : family === "opus" ? usage.seven_day_opus : undefined;
-    const scoped = (usage.model_scoped ?? []).filter(window => modelName(window.display_name).split("-")[0] === family);
-    const applicable = name === family && scoped.length === 1 ? scoped : scoped.filter(window => modelName(window.display_name) === name);
+    const scoped = usage.model_scoped ?? [];
+    const exact = scoped.filter(window => modelName(window.display_name) === name);
+    const candidates = name === family && exact.length === 0
+      ? scoped.filter(window => modelName(window.display_name).split("-")[0] === family) : [];
+    const applicable = candidates.length === 1 ? candidates : exact;
     const accountWindows = [usage.five_hour, usage.seven_day].filter(window => window != null);
     const modelWindows = [legacyWindow, ...applicable].filter(window => window != null);
     const now = Date.now();
@@ -68,7 +71,11 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const account = currentUsage(accountWindows);
     const active = [...account, ...currentUsage(modelWindows)];
     const exhausted = active.includes(100);
-    const complete = active.length > 0 && active.length === accountWindows.length + modelWindows.length;
+    const ambiguousWindows = candidates.length > 1 ? candidates : [];
+    const candidateUsage = currentUsage(ambiguousWindows);
+    const complete = active.length + candidateUsage.length > 0 &&
+      active.length === accountWindows.length + modelWindows.length &&
+      candidateUsage.length === ambiguousWindows.length && !candidateUsage.includes(100);
     const extraDisabled = usage.extra_usage?.is_enabled === false;
     return {
       plan: exhausted ? "exhausted" : complete && extraDisabled ? "available" : "unknown",

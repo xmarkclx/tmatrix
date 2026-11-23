@@ -5,6 +5,7 @@ export function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig 
   return {
     runtime_adapter: "codex",
     runtime_policy: "subscriptions-first",
+    claude_model: "sonnet",
     poll_url: "https://tasks.example.test/api/poll",
     poll_origin: "https://tasks.example.test",
     api_key: "test-secret-key",

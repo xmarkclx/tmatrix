@@ -45,8 +45,8 @@ const imageTypes = new Map([
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_TOTAL_BYTES = 7 * 1024 * 1024;
 
-export function claudeModel(model: string): string {
-  return /^(?:gpt-|codex(?:-|$)|o[1-4](?:-|$))/.test(model) ? "sonnet" : model;
+export function claudeModel(model: string, fallback = "sonnet"): string {
+  return /^(?:gpt-|codex(?:-|$)|o[1-4](?:-|$))/.test(model) ? fallback : model;
 }
 
 export function createClaudeRuntime(context: AdapterContext, executable: string): ReturnType<RuntimeCreator> {

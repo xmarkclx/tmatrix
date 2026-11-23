@@ -54,6 +54,8 @@ func (p RuntimePolicy) Validate() error {
 	}
 }
 
+var claudeModelPattern = regexp.MustCompile(`^(?:(?:opus|sonnet)(?:\[1m\])?|haiku|fable|claude-[a-z0-9]+(?:-[a-z0-9]+)*(?:\[1m\])?)$`)
+
 type Config struct {
 	AdapterModule  string        `json:"adapter_module,omitempty"`
 	ResumeIntake   bool          `json:"resume_intake,omitempty"`
@@ -63,6 +65,7 @@ type Config struct {
 	EngineDir      string        `json:"engine_dir"`
 	WorkerType     string        `json:"worker_type"`
 	RuntimePolicy  RuntimePolicy `json:"runtime_policy,omitempty"`
+	ClaudeModel    string        `json:"claude_model,omitempty"`
 	InstanceID     string        `json:"instance_id"`
 	UpdateOrigin   string        `json:"update_origin"`
 	Sources        []Source      `json:"sources"`
@@ -177,6 +180,9 @@ func Validate(c Config) error {
 		if err := c.RuntimePolicy.Validate(); err != nil {
 			return err
 		}
+	}
+	if c.ClaudeModel != "" && (len(c.ClaudeModel) > 128 || !claudeModelPattern.MatchString(c.ClaudeModel)) {
+		return errors.New("claude_model must be a Claude model alias or ID")
 	}
 	switch c.WorkerType {
 	case "codex", "claude":
