@@ -10,7 +10,11 @@ import { ClaudeProcess } from "./process.js";
 
 const unknownQuota = { plan: "unknown" } satisfies RuntimeQuota;
 
-const authSchema = z.object({ loggedIn: z.boolean(), authMethod: z.string() });
+const authSchema = z.object({
+  loggedIn: z.boolean(),
+  authMethod: z.string(),
+  subscriptionType: z.string().nullable().optional()
+});
 const windowSchema = z.object({
   utilization: z.number().min(0).max(100).nullable(),
   resets_at: z.iso.datetime({ offset: true }).nullable()
@@ -78,7 +82,7 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
   return unknownQuota;
 }
 
-type Output = { code: number | null; lines: string[] } | "unavailable" | "unknown";
+type Output = { code: number | null; lines: string[] } | undefined;
 
 async function readOutput(options: {
   executable: string;
@@ -98,12 +102,12 @@ async function readOutput(options: {
     let outputLength = 0;
     for await (const line of child.lines) {
       outputLength += line.length + 1;
-      if (outputLength > MAX_OUTPUT_CHARS) return "unknown";
+      if (outputLength > MAX_OUTPUT_CHARS) return;
       lines.push(line);
     }
     options.signal.throwIfAborted();
     const exit = await child.exit;
-    return exit.kind === "unavailable" ? "unavailable" : { code: exit.code, lines };
+    if (exit.kind === "exited") return { code: exit.code, lines };
   } finally {
     options.signal.removeEventListener("abort", stop);
     await child.stop();
@@ -128,11 +132,15 @@ export async function readClaudeQuota(
   const probe = { executable, cwd: workingDirectory, environment: env, signal: probeSignal };
   try {
     const authOutput = await readOutput({ ...probe, args: ["auth", "status", "--json"] });
-    if (typeof authOutput === "string") return { plan: authOutput };
+    if (!authOutput) return unknownQuota;
     const auth = authSchema.safeParse(parseJson(authOutput.lines.join("\n")));
     if (!auth.success) return unknownQuota;
-    if ((authOutput.code === 1 && !auth.data.loggedIn) || (authOutput.code === 0 && auth.data.authMethod !== "claude.ai")) return { plan: "unavailable" };
-    if (authOutput.code !== 0 || !auth.data.loggedIn) return unknownQuota;
+    const { loggedIn, authMethod, subscriptionType } = auth.data;
+    if (authOutput.code === 1 && !loggedIn) return { plan: "unavailable" };
+    if (authOutput.code !== 0 || !loggedIn) return unknownQuota;
+    if (["api_key", "api_key_helper", "third_party"].includes(authMethod)) return { plan: "unavailable" };
+    if (authMethod !== "claude.ai") return unknownQuota;
+    if (subscriptionType === null || subscriptionType === "free") return { plan: "unavailable" };
     const requestId = randomUUID();
     const configDirectory = await mkdtemp(join(tmpdir(), "tmatrix-claude-quota-"));
     try {
@@ -148,7 +156,7 @@ export async function readClaudeQuota(
           "--no-session-persistence", "--settings", '{"disableAllHooks":true}'],
         input: `${JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "get_usage" } })}\n`
       });
-      return typeof output !== "string" && output.code === 0 ? usageQuota(output.lines, requestId, selectedModel) : unknownQuota;
+      return output?.code === 0 ? usageQuota(output.lines, requestId, selectedModel) : unknownQuota;
     } finally {
       await rm(configDirectory, { recursive: true, force: true });
     }

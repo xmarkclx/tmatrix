@@ -18,9 +18,15 @@ describe("subscription-first runtime routing", () => {
     await expect(resolve("subscriptions-first", exhausted, exhausted)).resolves.toBe("codex-credits");
   });
 
-  it("requires confirmed exhaustion of both subscriptions and a positive credit signal", async () => {
+  it.each(["subscriptions-first", "claude-first"] as const)("skips an unavailable Claude plan under %s", async (policy) => {
+    await expect(resolve(policy, available, unavailable)).resolves.toBe("codex-plan");
+    await expect(resolve(policy, exhausted, unavailable)).resolves.toBe("codex-credits");
+  });
+
+  it("requires confirmed exhaustion of the Codex subscription and a positive credit signal", async () => {
     for (const [codex, claude] of [[unknown, exhausted], [exhausted, unknown],
-      [exhausted, unavailable], [{ plan: "exhausted", credits: false }, exhausted]] satisfies [RuntimeQuota, RuntimeQuota][]) {
+      [unknown, unavailable], [{ plan: "exhausted", credits: false }, unavailable],
+      [{ plan: "exhausted", credits: false }, exhausted]] satisfies [RuntimeQuota, RuntimeQuota][]) {
       await expect(resolve("subscriptions-first", codex, claude)).rejects.toMatchObject({
         code: "RUNTIME_QUOTA_UNAVAILABLE", retryable: false
       });
@@ -33,6 +39,7 @@ describe("subscription-first runtime routing", () => {
     await expect(resolve("claude-first", available, exhausted)).resolves.toBe("codex-plan");
     await expect(resolve("claude-first", exhausted, exhausted)).resolves.toBe("codex-credits");
     await expect(resolve("subscriptions-only", exhausted, exhausted)).rejects.toMatchObject({ code: "RUNTIME_QUOTA_UNAVAILABLE" });
+    await expect(resolve("subscriptions-only", exhausted, unavailable)).rejects.toMatchObject({ code: "RUNTIME_QUOTA_UNAVAILABLE" });
   });
 
   it("allows a directly selected provider without automatic funding checks", async () => {

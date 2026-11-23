@@ -91,7 +91,7 @@ describe("Codex subscription and purchased credits", () => {
   });
 });
 
-async function claudeFixture(options: { auth?: unknown; limits: unknown; replyToOtherRequest?: boolean; hang?: boolean }) {
+async function claudeFixture(options: { auth?: unknown; authExitCode?: number; limits: unknown; replyToOtherRequest?: boolean; hang?: boolean }) {
   const directory = await mkdtemp(join(tmpdir(), "tmatrix-provider-quota-"));
   const executable = join(directory, "claude");
   await writeFile(executable, `#!/usr/bin/env node
@@ -99,7 +99,7 @@ const fixture = ${JSON.stringify(options)};
 if (process.argv[2] === 'auth') {
   const auth = fixture.auth ?? { loggedIn: true, authMethod: 'claude.ai' };
   console.log(JSON.stringify(auth, null, 2));
-  if (!auth.loggedIn) process.exitCode = 1;
+  process.exitCode = fixture.authExitCode ?? (auth.loggedIn ? 0 : 1);
 } else {
   if (process.env.CLAUDE_CONFIG_DIR === process.cwd() || process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR !== process.cwd()) process.exit(2);
   const readline = require('node:readline').createInterface({input: process.stdin});
@@ -162,9 +162,34 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     expect(await quota({ limits: subscriptionLimits, replyToOtherRequest: true })).toMatchObject({ plan: "unknown" });
   });
 
-  it("identifies signed-out and API-key sessions without selecting a plan", async () => {
+  it("identifies a confirmed signed-out session", async () => {
     expect(await quota({ auth: { loggedIn: false, authMethod: "none" }, limits: subscriptionLimits })).toEqual({ plan: "unavailable" });
-    expect(await quota({ auth: { loggedIn: true, authMethod: "api_key" }, limits: subscriptionLimits })).toEqual({ plan: "unavailable" });
+  });
+
+  it.each(["api_key", "api_key_helper", "third_party"])("identifies %s as a non-subscription session", async (authMethod) => {
+    expect(await quota({ auth: { loggedIn: true, authMethod }, limits: subscriptionLimits })).toEqual({ plan: "unavailable" });
+  });
+
+  it.each(["oauth_token", "future_method"])("keeps an unverified %s session unknown", async (authMethod) => {
+    expect(await quota({ auth: { loggedIn: true, authMethod }, limits: subscriptionLimits })).toEqual({ plan: "unknown" });
+  });
+
+  it("keeps a successful auth command reporting no login unknown", async () => {
+    const auth = { loggedIn: false, authMethod: "none" };
+    expect(await quota({ auth, authExitCode: 0, limits: subscriptionLimits })).toEqual({ plan: "unknown" });
+  });
+
+  it.each(["free", null])("classifies a signed-in Claude account with subscription type %j as unavailable", async (subscriptionType) => {
+    const auth = { loggedIn: true, authMethod: "claude.ai", subscriptionType };
+    expect(await quota({ auth, limits: null })).toEqual({ plan: "unavailable" });
+  });
+
+  it("keeps a failed authentication probe unknown", async () => {
+    const fixture = await claudeFixture({ limits: subscriptionLimits });
+    try {
+      const executable = join(fixture.directory, "missing-claude");
+      expect(await readClaudeQuota(executable, { PATH: process.env.PATH ?? "" }, undefined, fixture.directory)).toEqual({ plan: "unknown" });
+    } finally { await fixture.close(); }
   });
 
   it("propagates cancellation while a probe is waiting", async () => {
