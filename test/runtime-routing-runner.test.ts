@@ -61,13 +61,16 @@ async function fixture() {
     failTurn?: boolean;
     failClose?: boolean;
     replacementOnResume?: string;
+    assertCurrent?: () => Promise<void>;
+    contextSummary?: string;
   } = {}): RuntimeSelection {
     const threadFor = (threadId: string, model: string): ThreadLike => ({
-      async runStreamed(input) {
+      async runStreamed(input, turnOptions) {
         inputs.push(text(input));
         return {
           events: (async function* (): AsyncGenerator<WorkerThreadEvent> {
             yield { type: "thread.started", thread_id: threadId };
+            await turnOptions?.beforeStart?.();
             yield { type: "turn.started" };
             if (options.followUp) steering.enqueueLocal(`follow-up-${threadId}`, options.followUp);
             if (options.failTurn) {
@@ -79,7 +82,7 @@ async function fixture() {
               return;
             }
             yield { type: "item.completed", item: { type: "agent_message", id: "message", text: JSON.stringify({
-              outcome: "AI_DONE", user_message: `Finished with ${model}.`, context_summary: `Completed fixture step on ${threadId}.`
+              outcome: "AI_DONE", user_message: `Finished with ${model}.`, context_summary: options.contextSummary ?? `Completed fixture step on ${threadId}.`
             }) } };
             yield { type: "turn.completed", usage };
           })()
@@ -90,6 +93,7 @@ async function fixture() {
       id,
       label: id === "codex" ? "Codex plan" : "Claude plan",
       conversationStore: id === "codex" ? codex : claude,
+      ...(options.assertCurrent ? { assertCurrent: options.assertCurrent } : {}),
       ...(id === "claude" ? { model: () => "sonnet" } : {}),
       runtimeFactory() {
         return {
@@ -191,7 +195,9 @@ describe("automatic runtime routing at turn boundaries", () => {
   it("saves completed work and the pending follow-up when the next quota check cannot select a provider", async () => {
     const { codex, calls, inputs, results, route, run } = await fixture();
     const hold = new WorkerError({ code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route", message: "No verified plan allowance." });
-    const { result } = run([route("codex", { followUp: "Add the staging summary." }), hold]);
+    const { result } = run([route("codex", {
+      followUp: "Add the staging summary.", contextSummary: "A".repeat(100_000)
+    }), hold]);
     await expect(result).resolves.toEqual({ status: "completed", threadId: "prior-codex" });
     expect(calls).toEqual(["resume prior-codex", "close codex"]);
     expect(inputs).toHaveLength(1);
@@ -201,6 +207,22 @@ describe("automatic runtime routing at turn boundaries", () => {
       context_summary: expect.stringContaining("Queued local message: Add the staging summary.")
     });
     expect(results[0]?.user_message).toContain("The queued follow-up did not start.");
+    expect(results[0]?.context_summary).toHaveLength(100_000);
+    expect(results[0]?.context_summary).toMatch(/<!-- tmatrix-conversation:v1:/);
+  });
+
+  it("preserves the established route when a replacement is rejected before dispatch", async () => {
+    const { codex, ticket, results, route, run } = await fixture();
+    const { result } = run([route("codex", {
+      replacementOnResume: "empty-codex",
+      async assertCurrent() {
+        throw new WorkerError({ code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route", message: "No included allowance." });
+      }
+    })]);
+    await expect(result).resolves.toMatchObject({ status: "failed" });
+    expect(results[0]).toMatchObject({ status: "failed", error: { code: "RUNTIME_QUOTA_UNAVAILABLE" } });
+    expect(results[0]?.thread_id).toBeUndefined();
+    expect(await codex.resolve(ticket, { conversation: codex.reference("prior-codex") })).toBe("prior-codex");
   });
 
   it("resumes the interrupted provider's exact thread even if the server still reports a completed Codex route", async () => {
@@ -212,6 +234,18 @@ describe("automatic runtime routing at turn boundaries", () => {
     expect(calls).toEqual(["resume interrupted-claude", "close claude"]);
     expect(inputs[0]).toContain("Verify earlier side effects before acting");
     expect(results[0]).toMatchObject({ conversation: claude.reference("interrupted-claude") });
+  });
+
+  it("recovers the saved provider after another interruption before dispatch", async () => {
+    const { claude, store, ticket, calls, route, run } = await fixture();
+    const stalled = await store("codex", { ...previousBoot, boot: "4adc1e64-761b-481a-b125-bfe01ffcd268" }).acquire(ticket);
+    await stalled.rememberRuntime?.("claude", claude.reference("interrupted-claude"));
+    const second = await store("codex", previousBoot).acquire(ticket);
+    expect(second.recoveredAttempt?.conversation).toEqual(claude.reference("interrupted-claude"));
+
+    const { result } = run([route("claude")], true);
+    await expect(result).resolves.toEqual({ status: "completed", threadId: "interrupted-claude" });
+    expect(calls).toEqual(["resume interrupted-claude", "close claude"]);
   });
 
   it("allows a new ticket to switch providers after recovering an older ticket's stale task lock", async () => {

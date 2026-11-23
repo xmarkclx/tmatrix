@@ -72,7 +72,7 @@ func sourceEngine(cfg config.Config) (string, error) {
 			return "", errors.New("engine update needed for Claude. Install or build a TMatrix engine with the Claude adapter")
 		}
 	}
-	if cfg.WorkerType == "codex" && cfg.RuntimePolicy != "" {
+	if cfg.EffectiveRuntimePolicy() != "" {
 		info, err := os.Stat(filepath.Join(engine, "dist", "runtime-routing.js"))
 		if err != nil || !info.Mode().IsRegular() {
 			return "", errors.New("engine update needed for runtime routing. Install or build the matching TMatrix engine")
@@ -248,8 +248,8 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	if cfg.AdapterModule != "" {
 		engineConfig["adapter_module"] = cfg.AdapterModule
 	}
-	if cfg.WorkerType == "codex" && cfg.RuntimePolicy != "" {
-		engineConfig["runtime_policy"] = cfg.RuntimePolicy
+	if cfg.EffectiveRuntimePolicy() != "" {
+		engineConfig["runtime_policy"] = cfg.EffectiveRuntimePolicy()
 	}
 	data, _ := json.MarshalIndent(engineConfig, "", "  ")
 	engineConfigPath := filepath.Join(dir, "engine.json")

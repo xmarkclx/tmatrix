@@ -69,7 +69,9 @@ func TestRuntimeRoutingSavesAndUpdatesConnectedEngine(t *testing.T) {
 func TestRuntimeRoutingRejectsAnEngineThatCannotApplyTheSavedPolicy(t *testing.T) {
 	cfg := config.Default()
 	cfg.EngineDir = sourceEngineFixture(t)
-	cfg.RuntimePolicy = config.SubscriptionsOnly
+	if err := os.Remove(filepath.Join(cfg.EngineDir, "dist", "runtime-routing.js")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := sourceEngine(cfg); err == nil || !strings.Contains(err.Error(), "engine update needed for runtime routing") {
 		t.Fatalf("unsafe legacy engine was accepted: %v", err)
 	}

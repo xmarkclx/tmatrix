@@ -13,6 +13,12 @@ export function stripConversationReference(summary: string): string {
   return summary.replace(/\n?<!-- tmatrix-conversation:v1:[A-Za-z0-9_-]+\.[a-f0-9]{64} -->/g, "").trim();
 }
 
+export function boundContext(summary: string, note?: string): string {
+  if (!note) return summary;
+  const bounded = summary.slice(0, Math.max(0, 100_000 - note.length - 2)).replace(/[\uD800-\uDBFF]$/, "");
+  return `${bounded}\n\n${note}`;
+}
+
 export type BootIdentity = { machine: string; boot: string };
 
 /** Linux/WSL boot identity: unavailable platforms deliberately fail closed. */
@@ -83,15 +89,14 @@ export class ConversationStore {
   }
 
   /** The private handoff carries authenticated IDs, never credentials or logs. */
-  attachContext(ticket: Ticket, conversationId: string, summary: string): string {
-    if (!this.referenceKey || ticket.task_id === undefined) return summary;
+  attachContext(ticket: Ticket, conversationId: string, summary: string, note?: string): string {
+    if (!this.referenceKey || ticket.task_id === undefined) return boundContext(summary, note);
     threadId.parse(conversationId);
     const payload = Buffer.from(JSON.stringify({ version: 1, namespace: this.namespace, task: this.task(ticket), ticket: ticket.ticket_id, thread: conversationId })).toString("base64url");
     const signature = createHmac("sha256", this.referenceKey).update(payload).digest("hex");
     const clean = stripConversationReference(summary);
     const marker = `<!-- tmatrix-conversation:v1:${payload}.${signature} -->`;
-    const bounded = clean.slice(0, Math.max(0, 100_000 - marker.length - 2)).replace(/[\uD800-\uDBFF]$/, "");
-    return `${bounded}\n\n${marker}`;
+    return boundContext(clean, note ? `${note}\n\n${marker}` : marker);
   }
 
   /** Prefer the explicit task route, then the local task route, then legacy reply links. */
@@ -221,6 +226,7 @@ export class ConversationStore {
         try {
           // A symlink publishes the entire owner atomically, without a partially
           // written owner file that can become stranded after a crash.
+          owner = JSON.stringify({ ...ownerDetails, ...recoveredAttempt });
           await symlink(owner, path);
           if (signal?.aborted) {
             if (cgroup && !await stopLeaseCgroup(cgroup, token)) throw this.ownerLost();

@@ -56,7 +56,7 @@ const server = http.createServer((req,res) => {
  else res.end(JSON.stringify({version:1,max_workers:1,running_workers:0,intake_paused:true,poller:{status:'paused'}}));
 });
 server.listen(0,'127.0.0.1',() => fs.writeFileSync(bridge, JSON.stringify({version:1,pid:process.pid,url:'http://127.0.0.1:'+server.address().port,token:'fixture-token-123456789'}),{mode:0o600}));`
-	for name, body := range map[string]string{"index.js": fixture, "local-control-server.js": "// isolated fixture", "source-supervisor.js": "// isolated fixture"} {
+	for name, body := range map[string]string{"index.js": fixture, "local-control-server.js": "// isolated fixture", "source-supervisor.js": "// isolated fixture", "runtime-routing.js": "// isolated fixture"} {
 		if err := os.WriteFile(filepath.Join(engine, "dist", name), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}

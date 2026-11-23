@@ -5,7 +5,7 @@ import { buildCommentPrompt } from "./helpers/build-comment-prompt.js";
 import { prepareTicketHistory } from "./helpers/ticket-history.js";
 import { serializePromptHistory } from "./helpers/serialize-prompt-history.js";
 import { workerTitle } from "./helpers/worker-title.js";
-import { stripConversationReference, type ConversationLease, type ConversationStore } from "./conversation-store.js";
+import { boundContext, stripConversationReference, type ConversationLease, type ConversationStore } from "./conversation-store.js";
 import type { WorkerObservation } from "./local-worker-state.js";
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
@@ -139,11 +139,7 @@ export interface RuntimeSelection {
   conversationStore: ConversationStore;
   model?: (requested: string) => string;
   label?: string;
-  assertCurrent?: () => void;
-}
-
-function appendHandoffNote(text: string, note: string): string {
-  return `${text.slice(0, Math.max(0, HANDOFF_TEXT_LIMIT - note.length - 2)).replace(/[\uD800-\uDBFF]$/, "")}\n\n${note}`;
+  assertCurrent?: () => void | Promise<void>;
 }
 
 type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeSelection>;
@@ -239,13 +235,13 @@ export class TicketRunner {
     let lastCompletedRoute: { store: ConversationStore | undefined; threadId: string | undefined } | undefined;
     let pendingLocalMessage: string | undefined;
 
-    const completedResult = (response: Handoff): TicketResult => ({
+    const completedResult = (response: Handoff, contextNote?: string): TicketResult => ({
       status: "completed",
       input_revision: processedInputRevision,
       outcome: response.outcome,
       context_summary: conversationStore && threadId
-        ? conversationStore.attachContext(ticket, threadId, response.context_summary)
-        : response.context_summary,
+        ? conversationStore.attachContext(ticket, threadId, response.context_summary, contextNote)
+        : boundContext(response.context_summary, contextNote),
       user_message: response.user_message,
       final_response: response.user_message,
       ...(threadId ? { thread_id: threadId, ...(conversationStore ? { conversation: conversationStore.reference(threadId) } : {}) } : {}),
@@ -372,13 +368,25 @@ export class TicketRunner {
               ? runtime.resumeThread(resumeId, threadOptions)
               : runtime.startThread(threadOptions);
             const sessionStore = conversationStore;
+            let rebuiltCodexThread: string | undefined;
             activeThread = { thread, observe: async event => {
               if (event.thread_id) {
                 if (priorConversation && priorConversation.thread_id !== event.thread_id) throw unverifiedRuntimeRecovery();
-                threadId = event.thread_id;
-                await sessionStore?.remember(ticket, threadId, resumeId);
-                if (selected) await releaseConversation?.rememberRuntime?.(selected.id, selected.conversationStore.reference(threadId));
-                resumeId = threadId;
+                const openedThread = event.thread_id;
+                if (selected?.id === "codex" && requestedResumeId && requestedResumeId !== openedThread) {
+                  rebuiltCodexThread = openedThread;
+                } else {
+                  threadId = openedThread;
+                  await sessionStore?.remember(ticket, openedThread, resumeId);
+                  resumeId = openedThread;
+                }
+                if (selected) await releaseConversation?.rememberRuntime?.(selected.id, selected.conversationStore.reference(openedThread));
+              }
+              if (event.kind === "turn.started" && rebuiltCodexThread) {
+                await sessionStore?.remember(ticket, rebuiltCodexThread, resumeId);
+                threadId = rebuiltCodexThread;
+                resumeId = rebuiltCodexThread;
+                rebuiltCodexThread = undefined;
               }
               options.observe?.(event.kind === "thread.started" ? {
                 ...event,
@@ -479,9 +487,9 @@ export class TicketRunner {
           const pending = pendingLocalMessage === undefined ? "" : `\nQueued local message: ${pendingLocalMessage}`;
           result = completedResult({
             outcome: "AI_NEEDS_FEEDBACK",
-            context_summary: appendHandoffNote(handoff.context_summary, `Input revision ${processedInputRevision} is pending. ${cause.message}${pending}`),
-            user_message: appendHandoffNote(handoff.user_message, note)
-          });
+            context_summary: handoff.context_summary,
+            user_message: boundContext(handoff.user_message, note)
+          }, `Input revision ${processedInputRevision} is pending. ${cause.message}${pending}`);
         } else {
           const failure = normalizeRunFailure(cause, options.signal);
           log.error({
@@ -642,7 +650,7 @@ export class TicketRunner {
     missingConversationText?: string,
     steering?: SteeringMailbox,
     warning?: ReturnType<typeof createSecurityWarningReporter>,
-    beforeStart?: () => void
+    beforeStart?: () => void | Promise<void>
   ): Promise<TurnOutcome> {
     const endpoint = ticket.endpoints.history.replace(/^GET\s+/i, "");
     const prepared = await prepareCodexInput(text, {
@@ -700,7 +708,7 @@ export class TicketRunner {
     steering?: SteeringMailbox,
     ticket?: Ticket,
     warning?: ReturnType<typeof createSecurityWarningReporter>,
-    beforeStart?: () => void
+    beforeStart?: () => void | Promise<void>
   ): Promise<TurnOutcome> {
     let finalResponse: string | undefined;
     let threadId: string | undefined;

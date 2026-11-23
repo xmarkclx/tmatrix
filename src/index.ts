@@ -134,10 +134,21 @@ async function main(): Promise<void> {
             return undefined;
           });
         } while (route === undefined || policy !== runtimePolicy);
-        const assertCurrent = () => {
+        const assertPolicy = () => {
           if (policy !== runtimePolicy) throw new WorkerError({
             code: "RUNTIME_POLICY_CHANGED", stage: "runtime.route",
             message: "The routing policy changed before the turn started. Retry with the new policy."
+          });
+        };
+        const assertCurrent = async () => {
+          assertPolicy();
+          if (policy !== "subscriptions-only" || route !== "codex-plan") return;
+          const quota = await checkQuota(primary.readQuota, signal, cwd);
+          signal?.throwIfAborted();
+          assertPolicy();
+          if (quota.plan !== "available") throw new WorkerError({
+            code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route",
+            message: "Codex plan allowance is unavailable. Retry to check the next subscription."
           });
         };
         if (route === "claude" || route === "claude-plan") {

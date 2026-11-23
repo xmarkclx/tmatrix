@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { constants, linkSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { constants, copyFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { access, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
@@ -15,7 +15,6 @@ const interval = 24 * 60 * 60 * 1000;
 const executableName = process.platform === "win32" ? "claude.exe" : "claude";
 type Environment = Record<string, string>;
 interface Installation { executable: string; version: string }
-type SelectedInstallation = Installation & { source: "host" | "managed" };
 
 function compareVersions(left: string, right: string): number {
   const other = right.split(".").map(Number);
@@ -87,7 +86,7 @@ async function npmCommand(environment: Environment): Promise<[string, ...string[
 
 export class ClaudeUpdateManager implements AdapterUpdates {
   readonly displayName = "Claude Code";
-  private installation: SelectedInstallation | undefined;
+  private installation: Installation | undefined;
   private state: AdapterUpdateState = { status: "idle", current_version: "unknown" };
   private readonly closing = new AbortController();
   private timer?: NodeJS.Timeout;
@@ -100,12 +99,12 @@ export class ClaudeUpdateManager implements AdapterUpdates {
     for (const version of entries.filter(entry => versionPattern.test(entry)).sort((a, b) => compareVersions(b, a))) {
       const installation = await probe(join(this.directory, version, executableName), this.environment);
       if (installation?.version === version) {
-        this.installation = { ...installation, source: "managed" };
+        this.installation = installation;
         break;
       }
     }
     const host = await hostInstallation(this.environment);
-    if (host && (!this.installation || compareVersions(host.version, this.installation.version) > 0)) this.installation = { ...host, source: "host" };
+    if (host && (!this.installation || compareVersions(host.version, this.installation.version) > 0)) this.installation = host;
     this.state.current_version = this.installation?.version ?? "unknown";
     if (this.environment.DISABLE_UPDATES === "1") this.state.status = "disabled";
   }
@@ -117,18 +116,23 @@ export class ClaudeUpdateManager implements AdapterUpdates {
 
   acquire(): { executable: string; release(): void } {
     const executable = this.executable();
-    if (this.installation?.source === "host") return { executable, release() {} };
     const pins = join(this.directory, "workers");
     mkdirSync(pins, { mode: 0o700, recursive: true });
     const directory = mkdtempSync(join(pins, "worker-"));
     const pinned = join(directory, executableName);
     const release = () => { rmSync(directory, { recursive: true, force: true }); };
     try {
-      linkSync(executable, pinned);
+      const target = realpathSync(executable);
+      try {
+        linkSync(target, pinned);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+        copyFileSync(target, pinned, constants.COPYFILE_EXCL);
+      }
       return { executable: pinned, release };
     } catch {
       release();
-      throw new Error("Could not pin the managed Claude Code executable for this worker");
+      throw new Error("Could not pin the Claude Code executable for this worker");
     }
   }
 
@@ -185,7 +189,7 @@ export class ClaudeUpdateManager implements AdapterUpdates {
       const installation = await this.install(npm, platform, latest, signal);
       signal.throwIfAborted();
       if (this.installation) this.state.previous_version = this.installation.version;
-      this.installation = { ...installation, source: "managed" };
+      this.installation = installation;
       this.state.current_version = installation.version;
       this.state.status = "updated";
       await this.prune(installation.version).catch(() => undefined);

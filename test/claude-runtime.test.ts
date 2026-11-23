@@ -117,9 +117,28 @@ describe.skipIf(process.platform === "win32")("Claude Code runtime", () => {
     try {
       const blocked = new Error("Routing changed");
       const stream = await runtime.startThread(options).runStreamed("Do the ticket", {
-        outputSchema, beforeStart: () => { throw blocked; }
+        outputSchema, beforeStart: async () => { throw blocked; }
       });
       await expect(collect(stream.events)).rejects.toBe(blocked);
+      await expect(calls()).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("rejects the entire turn when the prepared attachments exceed the combined size limit", async () => {
+    const { dir, runtime, options, calls } = await fixture();
+    const first = join(dir, "first.png");
+    const second = join(dir, "second.png");
+    await Promise.all([first, second].map(path => writeFile(path, Buffer.alloc(4 * 1024 * 1024))));
+    try {
+      const thread = runtime.startThread(options);
+      const turn = await thread.runStreamed([
+        { type: "text", text: "Review both images." },
+        { type: "local_image", path: first },
+        { type: "local_image", path: second }
+      ], { outputSchema });
+      await expect(collect(turn.events)).rejects.toMatchObject({ code: "CLAUDE_ATTACHMENT_INVALID" });
       await expect(calls()).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await runtime.close();

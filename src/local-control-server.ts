@@ -106,7 +106,7 @@ export async function startLocalControlServer(options: {
       const parsed = updateActionSchema.safeParse(body);
       if (!parsed.success) { respond(response, 400, { error: "Invalid runtime update request" }); return; }
       const id = parsed.data.adapter_id;
-      const updater = id ? adapterUpdaters.find(candidate => candidate.snapshot().adapter_id === id) : adapterUpdaters[0];
+      const updater = id ? adapterUpdaters.find(candidate => candidate.snapshot().adapter_id === id) : options.adapterUpdates;
       const current = updater?.snapshot();
       if (!updater || !current || current.status === "disabled") {
         respond(response, 409, { error: "Runtime updates are unavailable for this engine" }); return;

@@ -43,7 +43,7 @@ export interface ThreadLike {
   steer?(input: Input, options?: { signal?: AbortSignal }): Promise<boolean>;
   runStreamed(input: Input, options?: {
     outputSchema?: unknown;
-    beforeStart?: () => void;
+    beforeStart?: () => void | Promise<void>;
     signal?: AbortSignal;
     /** Use after confirmed conversation loss or an explicit resume rejection during crash recovery. */
     missingConversationInput?: () => Promise<Input>;

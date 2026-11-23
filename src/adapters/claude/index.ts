@@ -18,7 +18,7 @@ export default {
         try {
           return await readClaudeQuota(lease.executable, context.environment, signal, workingDirectory, model);
         } finally {
-          lease.release();
+          try { lease.release(); } catch { /* Quota readings remain valid after cleanup failure. */ }
         }
       },
       create(worker) {

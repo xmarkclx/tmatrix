@@ -130,7 +130,8 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
       ensureOpen(turn.signal);
       const payload = await encodeInput(input, turn.signal);
       ensureOpen(turn.signal);
-      turn.beforeStart?.();
+      await turn.beforeStart?.();
+      ensureOpen(turn.signal);
 
       try {
         current = new ClaudeProcess(executable, argumentsFor(options, sessionId, resume, turn), options.workingDirectory, environment);
@@ -265,10 +266,14 @@ async function encodeInput(input: Input, signal?: AbortSignal): Promise<string> 
       continue;
     }
     const mediaType = imageTypes.get(extname(entry.path).toLowerCase());
-    if (!mediaType) continue;
-    const bytes = await readFile(entry.path, { signal }).catch(() => undefined);
+    const bytes = mediaType ? await readFile(entry.path, { signal }).catch(() => undefined) : undefined;
     signal?.throwIfAborted();
-    if (!bytes?.length || bytes.length > Math.min(MAX_IMAGE_BYTES, bytesRemaining)) continue;
+    if (!mediaType || !bytes?.length || bytes.length > Math.min(MAX_IMAGE_BYTES, bytesRemaining)) {
+      throw new WorkerError({
+        code: "CLAUDE_ATTACHMENT_INVALID", stage: "claude.input",
+        message: "Claude Code could not read an attached image or its image size limit was exceeded. Use smaller PNG, JPEG, GIF or WebP images and retry."
+      });
+    }
     bytesRemaining -= bytes.length;
     content.push({ type: "image", source: { type: "base64", media_type: mediaType, data: bytes.toString("base64") } });
   }

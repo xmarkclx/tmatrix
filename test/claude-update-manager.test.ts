@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,6 +60,24 @@ describe.skipIf(process.platform === "win32" || !["arm64", "x64"].includes(proce
     await restarted.initialize();
     expect(restarted.executable()).toBe(join(store, "2.1.221", "claude"));
     await restarted.close();
+  });
+
+  it("holds the native executable after its launcher switches to a newer version", async () => {
+    const { manager, original } = await setup();
+    const first = `${original}-2.1.220`;
+    const second = `${original}-2.1.221`;
+    await rename(original, first);
+    await symlink(first, original);
+    await writeFile(second, await readFile(first, "utf8").then(text => text.replace("2.1.220", "2.1.221")), { mode: 0o700 });
+    await manager.initialize();
+    const worker = manager.acquire();
+    await rm(original);
+    await symlink(second, original);
+    await rm(first);
+    expect(await readFile(worker.executable, "utf8")).toContain("2.1.220 (Claude Code)");
+    worker.release();
+    await expect(readFile(worker.executable)).rejects.toMatchObject({ code: "ENOENT" });
+    await manager.close();
   });
 
   it("keeps a running worker's managed binary through subsequent updates", async () => {
