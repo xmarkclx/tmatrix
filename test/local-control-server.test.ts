@@ -188,6 +188,27 @@ describe("local console bridge", () => {
     expect((await (await connect(supervisor)).request("/v1/settings", { runtime_policy: "claude-first" })).status).toBe(409);
   });
 
+  it("lists an additional updater without advertising it as the primary", async () => {
+    const { supervisor } = pausedSupervisor();
+    let status: "idle" | "up_to_date" = "idle";
+    const client = await connect(supervisor, undefined, undefined, {
+      additionalAdapterUpdates: [{
+        snapshot: () => ({ status, adapter_id: "claude", display_name: "Claude Code", can_rollback: false, current_version: "2.1.220" }),
+        async checkNow() { status = "up_to_date"; }
+      }]
+    });
+    const snapshot = await (await client.request("/v1/snapshot")).json();
+    expect(snapshot).not.toHaveProperty("adapter_update");
+    expect(snapshot.adapter_updates).toMatchObject([{ adapter_id: "claude", status: "idle" }]);
+    expect((await client.request("/v1/adapter/check-now", {})).status).toBe(409);
+    expect((await client.request("/v1/adapter/rollback", {})).status).toBe(409);
+    expect(status).toBe("idle");
+    expect((await client.request("/v1/adapter/check-now", { adapter_id: "claude" })).status).toBe(202);
+    expect(await (await client.request("/v1/snapshot")).json()).toMatchObject({
+      adapter_updates: [{ adapter_id: "claude", status: "up_to_date" }]
+    });
+  });
+
   it("refuses existing discovery files instead of replacing a running daemon", async () => {
     const { supervisor } = pausedSupervisor();
     const client = await connect(supervisor);

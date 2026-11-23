@@ -51,13 +51,15 @@ export async function startLocalControlServer(options: {
   server.headersTimeout = 5_000;
   server.keepAliveTimeout = 1_000;
 
-  const adapterUpdaters = [options.adapterUpdates, ...(options.additionalAdapterUpdates ?? [])].filter(update => update !== undefined);
+  const primaryUpdater = options.adapterUpdates;
+  const additionalUpdaters = options.additionalAdapterUpdates ?? [];
+  const adapterUpdaters = primaryUpdater ? [primaryUpdater, ...additionalUpdaters] : additionalUpdaters;
   const snapshot = () => {
     const updates = adapterUpdaters.map(updater => updater.snapshot());
     return {
       ...options.supervisor.localSnapshot(),
-      ...(updates[0] ? { adapter_update: updates[0] } : {}),
-      ...(updates.length > 1 ? { adapter_updates: updates } : {}),
+      ...(primaryUpdater ? { adapter_update: updates[0] } : {}),
+      ...(additionalUpdaters.length > 0 ? { adapter_updates: updates } : {}),
       ...(options.routing ? { runtime_policy: options.routing.get() } : {}),
       ...(options.addSource ? { live_source_add: true } : {})
     };
@@ -106,7 +108,7 @@ export async function startLocalControlServer(options: {
       const parsed = updateActionSchema.safeParse(body);
       if (!parsed.success) { respond(response, 400, { error: "Invalid runtime update request" }); return; }
       const id = parsed.data.adapter_id;
-      const updater = id ? adapterUpdaters.find(candidate => candidate.snapshot().adapter_id === id) : options.adapterUpdates;
+      const updater = id ? adapterUpdaters.find(candidate => candidate.snapshot().adapter_id === id) : primaryUpdater;
       const current = updater?.snapshot();
       if (!updater || !current || current.status === "disabled") {
         respond(response, 409, { error: "Runtime updates are unavailable for this engine" }); return;

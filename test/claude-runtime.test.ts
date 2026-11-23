@@ -1,11 +1,14 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeRuntime } from "../src/adapters/claude/runtime.js";
 import { LEASE_ENV, processStart } from "../src/conversation-recovery.js";
 import type { RuntimeThreadOptions, ThreadLike, WorkerThreadEvent } from "../src/runtime-adapter.js";
+
+vi.mock("node:child_process", { spy: true });
 
 const cli = String.raw`#!/usr/bin/env node
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
@@ -112,15 +115,22 @@ describe.skipIf(process.platform === "win32")("Claude Code runtime", () => {
     return collect((await thread.runStreamed(input, { outputSchema })).events);
   }
 
-  it("checks routing before starting Claude with a prompt", async () => {
-    const { runtime, options, calls } = await fixture();
+  it("checks routing before launching Claude", async () => {
+    const { runtime, options } = await fixture();
+    const launches = vi.mocked(spawn);
+    launches.mockClear();
     try {
       const blocked = new Error("Routing changed");
-      const stream = await runtime.startThread(options).runStreamed("Do the ticket", {
+      const thread = runtime.startThread(options);
+      const stream = await thread.runStreamed("Do the ticket", {
         outputSchema, beforeStart: async () => { throw blocked; }
       });
       await expect(collect(stream.events)).rejects.toBe(blocked);
-      await expect(calls()).rejects.toMatchObject({ code: "ENOENT" });
+      expect(launches).not.toHaveBeenCalled();
+
+      await run(thread);
+      expect(launches).toHaveBeenCalledExactlyOnceWith(expect.any(String), expect.any(Array),
+        expect.objectContaining({ cwd: options.workingDirectory }));
     } finally {
       await runtime.close();
     }
