@@ -143,7 +143,7 @@ func (s *Service) Configure(ctx context.Context, settings backend.Settings) erro
 		cfg.PollIntervalMS = *settings.PollIntervalMS
 	}
 	if settings.WorkerType != nil && *settings.WorkerType != cfg.WorkerType {
-		return errors.New("select worker_type and adapter_module together in config.json, then restart the engine")
+		return errors.New("set worker_type in config.json, then restart the engine. Custom workers also need adapter_module")
 	}
 	if err := config.Save(s.Dir, cfg); err != nil {
 		return err
@@ -230,7 +230,7 @@ func (s *Service) Connect(ctx context.Context, connection backend.Connection) er
 	if err := config.Validate(cfg); err != nil {
 		return err
 	}
-	if _, err := sourceEngine(cfg.EngineDir); err != nil {
+	if _, err := sourceEngine(cfg); err != nil {
 		return err
 	}
 	if err := s.drainConnection(ctx); err != nil {
@@ -283,7 +283,7 @@ func (s *Service) RemoveSource(ctx context.Context, id string) error {
 		cfg.ResumeIntake = false
 	}
 	if len(cfg.Sources) > 0 {
-		if _, err := sourceEngine(cfg.EngineDir); err != nil {
+		if _, err := sourceEngine(cfg); err != nil {
 			return err
 		}
 	}
@@ -404,6 +404,15 @@ func (s *Service) Restart(ctx context.Context) error {
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	cfg, err := config.Load(s.Dir)
+	if err != nil {
+		return err
+	}
+	if cfg.WorkerType == "claude" && len(cfg.Sources) > 0 {
+		if _, err := sourceEngine(cfg); err != nil {
+			return err
+		}
 	}
 	finish, err := s.trackRestart()
 	if err != nil {

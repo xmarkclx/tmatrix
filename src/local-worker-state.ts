@@ -32,7 +32,7 @@ export interface LocalWorkerView {
 
 /** Opt-in, bounded memory for the local console. Never sent to the task API. */
 export class LocalWorkerState {
-  constructor(private readonly adapterId = "codex") {}
+  constructor(private readonly adapterId = "codex", private readonly runtimeModel?: (model: string) => string) {}
 
   private readonly workers = new Map<string, LocalWorkerView>();
   private sequence = 0;
@@ -44,7 +44,7 @@ export class LocalWorkerState {
       // Instructions may contain credentials and are not a display title.
       title: cleanText(workerTitle(ticket)).slice(0, 4096),
       worker_type: this.adapterId,
-      model: ticket.model,
+      model: this.runtimeModel?.(ticket.model) ?? ticket.model,
       status: "running",
       pinned: false,
       input_revision: ticket.input_revision ?? 0,

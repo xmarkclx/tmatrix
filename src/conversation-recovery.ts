@@ -75,7 +75,8 @@ async function leaseProcesses(token: string, startedAfter: string): Promise<Proc
 }
 
 /** Only leases explicitly tagged at runtime creation are eligible. The caller
- * must establish that their daemon is dead and hold the recovery guard first.
+ * must own the lease and stop intake to it, or hold the recovery guard after
+ * confirming that its daemon is dead.
  * Recheck PID birth identity before each signal; rescan for inherited children.
  */
 export async function stopLeaseProcesses(token: string, signal?: AbortSignal, startedAfter = "0"): Promise<boolean> {

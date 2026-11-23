@@ -1,6 +1,8 @@
 import { startLocalControlServer, type LocalControlServer } from "./local-control-server.js";
 import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
+import { claudeModel } from "./adapters/claude/runtime.js";
+import { CLAUDE_INSTALL_REQUIRED } from "./adapters/claude/update-manager.js";
 import { loadAdapter, setupAdapter } from "./adapter-loader.js";
 import { sanitizedCodexEnvironment } from "./adapters/codex/environment.js";
 import { loadEngineConfig, loadSavedSource, safeEngineConfig } from "./config.js";
@@ -34,23 +36,24 @@ async function main(): Promise<void> {
   }, "AI worker daemon starting");
 
   const adapter = await loadAdapter(config.runtime_adapter, config.adapter_module);
+  const runtimeEnvironment = sanitizedCodexEnvironment(process.env);
+  const updateDirectory = resolveAdapterUpdateDirectory(adapter.id, config.update_origin, config.instance_id);
+  const setupContext = { environment: runtimeEnvironment, logger, updateDirectory };
+  const claudeSetup = adapter.id === "claude" ? await setupAdapter(adapter, setupContext) : undefined;
+  if (claudeSetup && !claudeSetup.updates) throw new Error(CLAUDE_INSTALL_REQUIRED);
 
   if (process.argv.includes("--check-config")) {
     if (config.sources.some(source => source.kind === "error")) {
       await close();
       throw new Error("One or more sources have an unreadable private worker key");
     }
+    await claudeSetup?.updates?.close();
     logger.info({ event: "config.valid", config: safeEngineConfig(config) }, "Configuration is valid");
     await close();
     return;
   }
 
-  const codexEnvironment = sanitizedCodexEnvironment(process.env);
-  const { runtimeFactory, updates: adapterUpdates } = await setupAdapter(adapter, {
-    environment: codexEnvironment,
-    logger,
-    updateDirectory: resolveAdapterUpdateDirectory(adapter.id, config.update_origin, config.instance_id)
-  });
+  const { runtimeFactory, updates: adapterUpdates } = claudeSetup ?? await setupAdapter(adapter, setupContext);
   const supervisor = new SourceSupervisor({
     config,
     logger,
@@ -67,8 +70,9 @@ async function main(): Promise<void> {
           : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "aiworker", "conversations"),
         namespace: source.metadata.conversation_namespace,
         adapterId: adapter.id,
-        trackRuntime: adapter.id === "codex",
-        runtimeHome: adapter.id === "codex" ? (codexEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex")) : homedir(),
+        trackRuntime: adapter.id === "codex" || adapter.id === "claude",
+        runtimeHome: adapter.id === "codex" ? (runtimeEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex"))
+          : adapter.id === "claude" ? (runtimeEnvironment.CLAUDE_CONFIG_DIR || resolve(homedir(), ".claude")) : homedir(),
         referenceKey: sourceConfig.api_key
       });
       const runner = new TicketRunner({ runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
@@ -78,7 +82,7 @@ async function main(): Promise<void> {
         onCancellation: request => { child.handleCancellation(request, "push"); } });
       child = new Supervisor({ config: sourceConfig, poller: api, runner, cancellationApi: api,
         control, logger: sourceLogger, metrics, sharedCapacity,
-        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id) } : {}) });
+        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id, adapter.id === "claude" ? claudeModel : undefined) } : {}) });
       return child;
     }
   });

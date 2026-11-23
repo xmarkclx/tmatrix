@@ -171,7 +171,7 @@ func (m *Model) submitForm() tea.Cmd {
 		currentAdapter = "codex"
 	}
 	if workerType != currentAdapter {
-		m.failure = "Select worker_type and adapter_module in config.json, then restart the engine."
+		m.failure = "Set worker_type in config.json, then restart the engine. Custom workers also need adapter_module."
 		return nil
 	}
 	if pollerType != "tzudo" {

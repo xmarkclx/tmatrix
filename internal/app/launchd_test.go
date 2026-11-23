@@ -19,8 +19,11 @@ import (
 func TestLaunchAgentPlist(t *testing.T) {
 	t.Setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
 	t.Setenv("CODEX_HOME", "/Users/a & b/codex")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/Users/a & b/claude config")
+	t.Setenv("TMATRIX_CLAUDE_PATH", "/Users/a & b/bin/claude")
 	t.Setenv("XDG_STATE_HOME", "/Users/a/state")
 	t.Setenv("API_KEY", "must-not-be-captured")
+	t.Setenv("ANTHROPIC_API_KEY", "must-not-be-captured")
 	plist, err := launchAgentPlist("/Users/a & b/tmatrix", "/Users/a/Library/Application Support/tmatrix")
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +32,13 @@ func TestLaunchAgentPlist(t *testing.T) {
 p=plistlib.loads(sys.stdin.buffer.read())
 assert p['Label']=='app.tmatrix.worker'
 assert p['ProgramArguments']==['/Users/a & b/tmatrix','--config-dir','/Users/a/Library/Application Support/tmatrix','daemon']
-assert p['EnvironmentVariables']=={'PATH':'/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin','CODEX_HOME':'/Users/a & b/codex','XDG_STATE_HOME':'/Users/a/state'}
+assert p['EnvironmentVariables']=={
+    'PATH':'/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+    'CODEX_HOME':'/Users/a & b/codex',
+    'CLAUDE_CONFIG_DIR':'/Users/a & b/claude config',
+    'TMATRIX_CLAUDE_PATH':'/Users/a & b/bin/claude',
+    'XDG_STATE_HOME':'/Users/a/state',
+}
 assert p['KeepAlive']=={'SuccessfulExit':False}
 assert p['RunAtLoad'] and p['ExitTimeOut']==0 and p['Umask']==63
 `)

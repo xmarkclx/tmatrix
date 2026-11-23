@@ -51,6 +51,8 @@ describe("runtime adapters", () => {
       await expect(loadAdapter("custom", path)).rejects.toThrow("absolute");
     }
     await expect(loadAdapter("codex", "/tmp/override.mjs")).rejects.toThrow("cannot be overridden");
+    await expect(loadAdapter("claude", "/tmp/override.mjs")).rejects.toThrow("cannot be overridden");
+    await expect(loadAdapter("claude")).resolves.toMatchObject({ id: "claude", apiVersion: 1 });
   });
 
   it("passes a fresh sanitized environment and requires confirmed teardown", () => {

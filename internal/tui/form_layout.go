@@ -39,7 +39,7 @@ func (m Model) formContent() layoutBlock {
 		b.lines = append(b.lines, style.Render(fit(marker+label, m.width-4)), " "+input.View(), "")
 	}
 	if m.screen == settingsScreen {
-		b.lines = append(b.lines, mutedStyle.Render(" Adapters: configure in config.json, then restart. See README."))
+		b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" Set worker_type to codex or claude in config.json, then restart the engine.", m.width-4)), "\n")...)
 	}
 	prefix := layoutBlock{}
 	if m.screen == settingsScreen {

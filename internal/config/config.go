@@ -143,11 +143,15 @@ func Validate(c Config) error {
 	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`).MatchString(c.WorkerType) {
 		return errors.New("invalid worker adapter ID")
 	}
-	if c.WorkerType == "codex" && c.AdapterModule != "" {
-		return errors.New("the bundled codex adapter cannot be overridden")
-	}
-	if c.WorkerType != "codex" && (!filepath.IsAbs(c.AdapterModule) || len(c.AdapterModule) > 4096 || strings.ContainsRune(c.AdapterModule, '\x00')) {
-		return errors.New("custom workers require an absolute adapter_module path in config.json")
+	switch c.WorkerType {
+	case "codex", "claude":
+		if c.AdapterModule != "" {
+			return fmt.Errorf("the bundled %s adapter cannot be overridden", c.WorkerType)
+		}
+	default:
+		if !filepath.IsAbs(c.AdapterModule) || len(c.AdapterModule) > 4096 || strings.ContainsRune(c.AdapterModule, '\x00') {
+			return errors.New("custom workers require an absolute adapter_module path in config.json")
+		}
 	}
 	if !validID(c.InstanceID) {
 		return errors.New("invalid instance ID")

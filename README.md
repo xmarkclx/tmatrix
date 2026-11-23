@@ -9,16 +9,12 @@ Concept:
 - Your computer runs TMatrix app, this app, which is very easy to install/uninstall.
 - TMatrix orchestraters tasks, pollers and workers.
 - A **poller** gets tasks from a **source** like tzudo.app.
-- An **AI worker** works on those tasks, a worker can be something like Codex.
+- An **AI worker** runs those tasks with Codex or Claude Code.
 - This goes on until the number of workers limit is reached. You can set the max # yourself.
 
 ---
 
 Created for [Tzudo](https://tzudo.app/), the ultimate to do list and time tracker to 10x your productivity and work stress-free.
-
-Codex adapter included.
-
-Im not using Claude this month, so I may not work on a Claude adapter until I get back to using it.
 
 ![example](images/sample.png)
 
@@ -31,9 +27,18 @@ curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.
 ```
 
 - Open `tmatrix`, press `c`, and add TzuDo using your worker API key from https://tzudo.app/settings.
-- Currently only supports Codex for now. Claude Code Integration is on the roadmap.
 
 Press `s` to open Settings and view the TMatrix version, build number, and commit at the top.
+
+## Run with Claude Code
+
+1. [Install Claude Code](https://code.claude.com/docs/en/setup) 2.1.220 or newer and run `claude auth login` as the user who runs TMatrix. The engine looks on `PATH` and in `~/.local/bin`. To use a different executable, set `TMATRIX_CLAUDE_PATH` to its absolute path in the engine environment.
+2. In the TMatrix `config.json`, set `"worker_type": "claude"` and remove `adapter_module` if present. The default settings directory is `~/.config/tmatrix` on Linux and `~/Library/Application Support/tmatrix` on macOS. Use the directory passed to `--config-dir` if you set one.
+3. Run `tmatrix engine restart` to drain active work and apply the setting. Open a worker in the terminal to follow Claude's responses and tool activity. Messages sent during a turn enter the next turn in that conversation.
+
+One runtime handles all sources on an engine. Use the same runtime on engines that share a source queue. Claude uses the configured model when you give it a Claude model ID or alias. Existing Codex model settings use Sonnet on Claude engines.
+
+TMatrix checks Anthropic's stable npm channel at startup and daily. Open **Settings → Runtime updates** to check now. The engine verifies each new binary in its private runtime store before selecting it for new workers. Active workers keep the version they started with. TMatrix keeps the two most recent managed releases and disables Claude's own update prompts inside worker sessions. Set `DISABLE_UPDATES=1` in the engine environment to turn off update checks.
 
 ## Connect multiple sources
 

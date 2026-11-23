@@ -57,14 +57,20 @@ func findEngine(configured, executable string) (string, error) {
 	return "", errors.New("compatible TMatrix engine not found; run sh scripts/stage-engine.sh in the tmatrix directory or set TMATRIX_ENGINE_DIR to a release engine")
 }
 
-func sourceEngine(configured string) (string, error) {
-	engine, err := FindEngine(configured)
+func sourceEngine(cfg config.Config) (string, error) {
+	engine, err := FindEngine(cfg.EngineDir)
 	if err != nil {
 		return "", err
 	}
 	info, err := os.Stat(filepath.Join(engine, "dist", "source-supervisor.js"))
 	if err != nil || !info.Mode().IsRegular() {
 		return "", errors.New("engine update needed for multiple sources; install or build the matching TMatrix engine")
+	}
+	if cfg.WorkerType == "claude" {
+		info, err := os.Stat(filepath.Join(engine, "dist", "adapters", "claude", "index.js"))
+		if err != nil || !info.Mode().IsRegular() {
+			return "", errors.New("engine update needed for Claude. Install or build a TMatrix engine with the Claude adapter")
+		}
 	}
 	return engine, nil
 }
@@ -195,7 +201,7 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	if len(cfg.Sources) == 0 {
 		return errors.New("add a source in TMatrix first (press c)")
 	}
-	engineDir, err := sourceEngine(cfg.EngineDir)
+	engineDir, err := sourceEngine(cfg)
 	if err != nil {
 		return err
 	}
