@@ -135,9 +135,12 @@ export async function readClaudeQuota(
     if (!authOutput) return unknownQuota;
     const auth = authSchema.safeParse(parseJson(authOutput.lines.join("\n")));
     if (!auth.success) return unknownQuota;
-    if ((authOutput.code === 1 && !auth.data.loggedIn) || (authOutput.code === 0 && auth.data.authMethod !== "claude.ai")) return { plan: "unavailable" };
-    if (authOutput.code !== 0 || !auth.data.loggedIn) return unknownQuota;
-    if (auth.data.subscriptionType === null || auth.data.subscriptionType === "free") return { plan: "unavailable" };
+    const { loggedIn, authMethod, subscriptionType } = auth.data;
+    if (authOutput.code === 1 && !loggedIn) return { plan: "unavailable" };
+    if (authOutput.code !== 0 || !loggedIn) return unknownQuota;
+    if (["api_key", "api_key_helper", "third_party"].includes(authMethod)) return { plan: "unavailable" };
+    if (authMethod !== "claude.ai") return unknownQuota;
+    if (subscriptionType === null || subscriptionType === "free") return { plan: "unavailable" };
     const requestId = randomUUID();
     const configDirectory = await mkdtemp(join(tmpdir(), "tmatrix-claude-quota-"));
     try {
