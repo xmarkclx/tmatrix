@@ -83,6 +83,8 @@ async function main(): Promise<void> {
   const primary = claudeSetup ?? await prepare(adapter);
   const multiProvider = adapter.id === "codex";
   let runtimePolicy = config.runtime_policy;
+  const resolveClaudeModel = (model = config.claude_model) => claudeModel(model, config.claude_model);
+  const primaryModel = adapter.id === "claude" ? resolveClaudeModel : undefined;
   const secondary = multiProvider ? await prepare(await loadAdapter("claude")) : undefined;
   const claudeFallback = secondary?.readQuota ? secondary : undefined;
   const updaters = [primary.updates, claudeFallback?.updates].filter(updates => updates !== undefined);
@@ -126,7 +128,7 @@ async function main(): Promise<void> {
             policy,
             codex: () => checkQuota(primary.readQuota, signal, cwd),
             claude: () => claudeFallback
-              ? checkQuota(claudeFallback.readQuota, signal, cwd, claudeModel(model ?? "sonnet"))
+              ? checkQuota(claudeFallback.readQuota, signal, cwd, resolveClaudeModel(model))
               : Promise.resolve({ plan: "unavailable" }),
             ...(signal ? { signal } : {})
           }).catch(error => {
@@ -156,20 +158,21 @@ async function main(): Promise<void> {
             code: "CLAUDE_INSTALL_REQUIRED", stage: "runtime.route", message: CLAUDE_INSTALL_REQUIRED
           });
           return { id: "claude", runtimeFactory: claudeFallback.runtimeFactory, conversationStore: claudeStore,
-            model: claudeModel, label: fundingLabels[route], assertCurrent };
+            model: resolveClaudeModel, label: fundingLabels[route], assertCurrent };
         }
         return { id: "codex", runtimeFactory: primary.runtimeFactory, conversationStore,
           model: codexModel, label: fundingLabels[route], assertCurrent };
       };
       const runner = new TicketRunner({ runtimeFactory: primary.runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
         ...(multiProvider ? { selectRuntime } : {}),
+        ...(primaryModel ? { runtimeModel: primaryModel } : {}),
         alertSecurityWarning: (alert, signal) => api.alertUserEmergency(alert, signal) });
       let child!: Supervisor;
       const control = new ControlClient({ config: sourceConfig, logger: sourceLogger, metrics,
         onCancellation: request => { child.handleCancellation(request, "push"); } });
       child = new Supervisor({ config: sourceConfig, poller: api, runner, cancellationApi: api,
         control, logger: sourceLogger, metrics, sharedCapacity,
-        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id, adapter.id === "claude" ? claudeModel : undefined) } : {}) });
+        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id, primaryModel) } : {}) });
       return child;
     }
   });

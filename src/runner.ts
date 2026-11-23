@@ -154,6 +154,7 @@ export class TicketRunner {
   private readonly alertSecurityWarning: AlertSecurityWarning | undefined;
   private readonly runtimeFactory: RuntimeFactory;
   private readonly selectRuntime: SelectRuntime | undefined;
+  private readonly runtimeModel: ((model: string) => string) | undefined;
   private readonly api: TicketApi;
   private readonly logger: Logger;
   private readonly metrics: Metrics;
@@ -165,6 +166,7 @@ export class TicketRunner {
     alertSecurityWarning?: AlertSecurityWarning;
     runtimeFactory?: RuntimeFactory;
     selectRuntime?: SelectRuntime;
+    runtimeModel?: (model: string) => string;
     /** @deprecated Use runtimeFactory. */
     codexFactory?: RuntimeFactory;
     api: TicketApi;
@@ -180,6 +182,7 @@ export class TicketRunner {
     this.alertSecurityWarning = options.alertSecurityWarning;
     this.runtimeFactory = factory;
     this.selectRuntime = options.selectRuntime;
+    this.runtimeModel = options.runtimeModel;
     this.api = options.api;
     this.logger = options.logger.child({ component: "ticket_runner" });
     this.metrics = options.metrics;
@@ -290,7 +293,7 @@ export class TicketRunner {
           const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model);
           options.signal?.throwIfAborted();
           const switching = !!activeThread && selected !== undefined && selected.id !== activeSelection?.id;
-          const model = selected?.model?.(profile.model) ?? profile.model;
+          const model = (selected?.model ?? this.runtimeModel)?.(profile.model) ?? profile.model;
           if (!activeThread || switching) {
             if (switching) {
               await closeRuntime();

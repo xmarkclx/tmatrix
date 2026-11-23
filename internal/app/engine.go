@@ -251,6 +251,9 @@ func runEngine(ctx context.Context, dir string, cfg config.Config) error {
 	if cfg.EffectiveRuntimePolicy() != "" {
 		engineConfig["runtime_policy"] = cfg.EffectiveRuntimePolicy()
 	}
+	if cfg.ClaudeModel != "" {
+		engineConfig["claude_model"] = cfg.ClaudeModel
+	}
 	data, _ := json.MarshalIndent(engineConfig, "", "  ")
 	engineConfigPath := filepath.Join(dir, "engine.json")
 	sourceSettingsFile, err := filepath.Abs(filepath.Join(dir, config.ConfigFilename))

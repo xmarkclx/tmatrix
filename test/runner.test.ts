@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Input } from "@openai/codex-sdk";
 import { describe, expect, it, vi } from "vitest";
+import { claudeModel } from "../src/adapters/claude/runtime.js";
 import type { TicketApi } from "../src/api-client.js";
 import { RunCancellationError } from "../src/errors.js";
 import { nullLogger } from "../src/logger.js";
@@ -130,6 +131,29 @@ describe("TicketRunner", () => {
       });
     }
   );
+
+  it.each([
+    ["gpt-5.6-sol", "opus"],
+    ["claude-opus-4-8", "claude-opus-4-8"]
+  ])("uses the configured Claude default for a dedicated worker with task model %s", async (requested, expected) => {
+    const api = apiMock();
+    const capture: CodexCapture = {};
+    const claude = codexMock([[
+      { type: "item.completed", item: {
+        id: "completed", type: "agent_message", text: handoffText("AI_DONE", "Completed.", "Ready for review.")
+      } },
+      { type: "turn.completed", usage }
+    ]], capture);
+    const runner = new TicketRunner({
+      runtimeFactory: () => claude,
+      runtimeModel: model => claudeModel(model, "opus"),
+      api,
+      logger: nullLogger(),
+      metrics: new Metrics()
+    });
+    await runner.run(makeTicket({ model: requested }), { runId: "test-claude-model", recovered: false });
+    expect(capture.threadOptions).toMatchObject({ model: expected });
+  });
 
   it("hydrates durable history, streams progress, and reports the final result", async () => {
     const api = apiMock();

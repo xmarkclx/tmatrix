@@ -153,6 +153,21 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     expect(await quota({ limits }, "claude-fable-5")).toMatchObject({ plan: "exhausted" });
   });
 
+  it("checks every possible model before treating a Claude family alias as available", async () => {
+    const older = { display_name: "Opus 4.7", ...activeWindow(100) };
+    const newer = { display_name: "Opus 4.8", ...activeWindow(20) };
+    const limits = { ...subscriptionLimits, model_scoped: [older, newer] };
+    expect(await quota({ limits }, "opus")).toMatchObject({ plan: "unknown" });
+    expect(await quota({ limits }, "claude-opus-4-8")).toMatchObject({ plan: "available" });
+    expect(await quota({ limits }, "claude-opus-4-7")).toMatchObject({ plan: "exhausted" });
+    expect(await quota({ limits: { ...limits, model_scoped: [older, { ...newer, utilization: 100 }] } }, "opus")).toMatchObject({ plan: "unknown" });
+    expect(await quota({ limits: { ...limits, model_scoped: [{ ...older, utilization: 50 }, newer] } }, "opus")).toMatchObject({ plan: "available" });
+    expect(await quota({ limits: { ...limits, model_scoped: [{ ...older, utilization: 50, resets_at: "2000-01-01T00:00:00Z" }, newer] } }, "opus")).toMatchObject({ plan: "unknown" });
+    expect(await quota({ limits: { ...limits, seven_day_opus: activeWindow(100) } }, "opus")).toMatchObject({ plan: "exhausted" });
+    expect(await quota({ limits: { ...limits, seven_day: activeWindow(100) } }, "opus")).toMatchObject({ plan: "exhausted" });
+    expect(await quota({ limits: { ...limits, model_scoped: [older, newer, { display_name: "Opus", ...activeWindow(30) }] } }, "opus")).toMatchObject({ plan: "available" });
+  });
+
   it.each([null, { is_enabled: true }])("refuses to select a plan from unknown or enabled overage settings (%j)", async (extra_usage) => {
     expect(await quota({ limits: { ...subscriptionLimits, extra_usage } })).toMatchObject({ plan: "unknown" });
   });

@@ -21,6 +21,9 @@ function fileSizeBytes(value: string): number {
 const rawConfigSchema = z.object({
   runtime_adapter: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).default("codex"),
   runtime_policy: runtimePolicySchema.default(defaultRuntimePolicy),
+  claude_model: z.string().max(128)
+    .regex(/^(?:(?:opus|sonnet)(?:\[1m\])?|haiku|fable|claude-[a-z0-9]+(?:-[a-z0-9]+)*(?:\[1m\])?)$/, "must be a Claude model alias or ID")
+    .default("sonnet"),
   adapter_module: z.string().refine(isAbsolute, "must be an absolute module path").optional(),
   poll_url: z.string().min(1),
   api_key: z.string().min(1),
@@ -217,6 +220,7 @@ export function safeConfig(config: WorkerConfig): Record<string, unknown> {
   return {
     runtime_adapter: config.runtime_adapter,
     runtime_policy: config.runtime_policy,
+    claude_model: config.claude_model,
     poll_url: config.poll_url,
     instance_id: config.instance_id,
     swarm_id: config.swarm_id,

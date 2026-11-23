@@ -1,8 +1,8 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadConfig, safeConfig } from "../src/config.js";
+import { loadConfig, loadEngineConfig, safeConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("loads JSON and applies environment overrides without exposing the API key", async () => {
@@ -26,6 +26,7 @@ describe("loadConfig", () => {
       }
     });
 
+    expect(config.claude_model).toBe("sonnet");
     expect(config.api_key).toBe("env-secret");
     expect(config.instance_id).toBe("from-env");
     expect(config.max_workers).toBe(5);
@@ -89,4 +90,30 @@ describe("loadConfig", () => {
       }
     })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
+});
+
+describe("Claude model configuration", () => {
+  async function configuredModel(model: string) {
+    const directory = await mkdtemp(join(tmpdir(), "tmatrix-claude-model-"));
+    try {
+      await writeFile(join(directory, "config.json"), JSON.stringify({
+        update_origin: "https://tasks.example.test", instance_id: "test", sources: [], claude_model: model
+      }));
+      return (await loadEngineConfig({ cwd: directory, env: {} })).claude_model;
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  it.each(["opus", "sonnet", "haiku", "fable", "opus[1m]", "claude-opus-4-8", "claude-sonnet-4-6[1m]"])(
+    "loads the Claude default %s", async model => {
+      await expect(configuredModel(model)).resolves.toBe(model);
+    }
+  );
+
+  it.each(["--help", "gpt-6-sol", "opus --help", " opus", "claude-", "opus[2m]", "opus\n"])(
+    "rejects an invalid Claude default %j", async model => {
+      await expect(configuredModel(model)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+  );
 });

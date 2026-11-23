@@ -16,6 +16,7 @@ func TestSettingsRoundTripKeepsCredentialSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.MaxWorkers = 7
+	c.ClaudeModel = "opus"
 	if err := Save(dir, c); err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +76,22 @@ func TestRejectUnsafeConnectionAndSettings(t *testing.T) {
 	for _, key := range []string{"", "key\r\nAuthorization: other", " space", "a b"} {
 		if SaveAPIKey(privateTestDir(t), key) == nil {
 			t.Fatal("accepted invalid credential")
+		}
+	}
+}
+
+func TestClaudeModelAcceptsAliasesAndPinnedVersions(t *testing.T) {
+	c := Default()
+	for _, model := range []string{"", "opus", "sonnet", "haiku", "fable", "opus[1m]", "claude-opus-4-8", "claude-sonnet-4-6[1m]"} {
+		c.ClaudeModel = model
+		if err := Validate(c); err != nil {
+			t.Fatalf("rejected Claude model %q: %v", model, err)
+		}
+	}
+	for _, model := range []string{"--help", "gpt-6-sol", "opus --help", " opus", "claude-", "opus[2m]", "opus\n"} {
+		c.ClaudeModel = model
+		if err := Validate(c); err == nil {
+			t.Fatalf("accepted invalid Claude model %q", model)
 		}
 	}
 }
