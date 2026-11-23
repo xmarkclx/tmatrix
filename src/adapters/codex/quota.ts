@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { RuntimeLike } from "../../runtime-adapter.js";
+import type { RuntimeLike, RuntimeQuota } from "../../runtime-adapter.js";
 import { AppServerCodex } from "./app-server.js";
 
-export type CodexQuota = { plan: "available" | "exhausted" | "unknown"; credits: boolean };
+type CodexQuota = RuntimeQuota & { credits: boolean };
 
 const unknownQuota: CodexQuota = { plan: "unknown", credits: false };
 const configSchema = z.object({ config: z.object({ model_provider: z.literal("openai").nullish() }) });
@@ -12,9 +12,13 @@ const quotaSchema = z.object({
   rateLimitsByLimitId: z.object({ codex: z.unknown().optional() }).nullish(),
   rateLimits: z.unknown().optional()
 });
+const planWindowSchema = z.object({ usedPercent: z.number().min(0).max(100), resetsAt: z.number().nullish() });
+const balancePattern = /^\d{1,15}(?:\.\d{1,15})?$/;
 const bucketSchema = z.object({
   limitId: z.string().nullish(),
   spendControlReached: z.boolean().nullish(),
+  primary: planWindowSchema.nullish().catch(undefined),
+  secondary: planWindowSchema.nullish().catch(undefined),
   credits: z.object({
     hasCredits: z.boolean(),
     unlimited: z.boolean(),
@@ -24,17 +28,27 @@ const bucketSchema = z.object({
 
 function parseQuota(payload: unknown): CodexQuota {
   const quota = quotaSchema.safeParse(payload);
-  if (!quota.success || quota.data.ordinaryUsageAllowed == null) return unknownQuota;
-  const plan = quota.data.ordinaryUsageAllowed ? "available" : "exhausted";
+  if (!quota.success) return unknownQuota;
+  const ordinary = quota.data.ordinaryUsageAllowed;
+  const plan = ordinary == null ? "unknown" : ordinary ? "available" : "exhausted";
   const bucket = bucketSchema.safeParse(quota.data.rateLimitsByLimitId?.codex ?? quota.data.rateLimits);
-  if (!bucket.success || (bucket.data.limitId != null && bucket.data.limitId !== "codex") || bucket.data.spendControlReached) {
-    return { plan, credits: false };
-  }
-  const credits = bucket.data.credits;
+  if (!bucket.success || (bucket.data.limitId != null && bucket.data.limitId !== "codex")) return { plan, credits: false };
+
+  const { primary, secondary, spendControlReached, credits } = bucket.data;
   const balance = credits?.balance?.trim() ?? "";
+  const measured = [primary, secondary].flatMap(window =>
+    window && (window.resetsAt == null || window.resetsAt * 1000 > Date.now()) ? [window.usedPercent] : []
+  );
+  const remaining = plan === "exhausted" ? 0 : measured.length ? 100 - Math.max(...measured) : null;
   return {
     plan,
-    credits: credits?.hasCredits === true && (credits.unlimited || (/^\d+(?:\.\d+)?$/.test(balance) && Number(balance) > 0))
+    credits: ordinary != null && !spendControlReached && credits?.hasCredits === true &&
+      (credits.unlimited || (/^\d+(?:\.\d+)?$/.test(balance) && Number(balance) > 0)),
+    display: {
+      plan_remaining_percent: remaining,
+      credits: credits?.unlimited === true && credits.hasCredits ? { kind: "unlimited" }
+        : balancePattern.test(balance) ? { kind: "amount", amount: balance, unit: "credits" } : { kind: "unavailable" }
+    }
   };
 }
 

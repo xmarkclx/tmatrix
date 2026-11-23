@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { z } from "zod";
 import { CGROUP_ENV } from "../../conversation-cgroup.js";
 import { LEASE_ENV } from "../../conversation-recovery.js";
+import type { RuntimeQuota } from "../../runtime-adapter.js";
 import { ClaudeProcess } from "./process.js";
 
-export type ClaudeQuota = "available" | "exhausted" | "unavailable" | "unknown";
+const unknownQuota = { plan: "unknown" } satisfies RuntimeQuota;
 
 const authSchema = z.object({ loggedIn: z.boolean(), authMethod: z.string() });
 const windowSchema = z.object({
@@ -45,7 +46,7 @@ function modelName(model: string): string {
     .replace(/[. ]+/g, "-").replace(/-\d{8}$/, "");
 }
 
-function usageQuota(lines: string[], requestId: string, selectedModel: string): ClaudeQuota {
+function usageQuota(lines: string[], requestId: string, selectedModel: string): RuntimeQuota {
   for (const line of lines) {
     const parsed = usageSchema.safeParse(parseJson(line));
     if (!parsed.success || parsed.data.response.request_id !== requestId) continue;
@@ -55,14 +56,26 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const legacyWindow = family === "sonnet" ? usage.seven_day_sonnet : family === "opus" ? usage.seven_day_opus : undefined;
     const scoped = (usage.model_scoped ?? []).filter(window => modelName(window.display_name).split("-")[0] === family);
     const applicable = name === family && scoped.length === 1 ? scoped : scoped.filter(window => modelName(window.display_name) === name);
-    const windows = [usage.five_hour, usage.seven_day, legacyWindow, ...applicable].filter(window => window != null);
+    const accountWindows = [usage.five_hour, usage.seven_day].filter(window => window != null);
+    const modelWindows = [legacyWindow, ...applicable].filter(window => window != null);
     const now = Date.now();
-    const active = windows.filter(window => window.utilization != null && window.resets_at != null && Date.parse(window.resets_at) > now);
-    if (active.some(window => window.utilization === 100)) return "exhausted";
-    if (active.length > 0 && active.length === windows.length && usage.extra_usage?.is_enabled === false) return "available";
-    return "unknown";
+    const currentUsage = (windows: typeof accountWindows) => windows.flatMap(window =>
+      window.utilization != null && window.resets_at != null && Date.parse(window.resets_at) > now ? [window.utilization] : []);
+    const account = currentUsage(accountWindows);
+    const active = [...account, ...currentUsage(modelWindows)];
+    const exhausted = active.includes(100);
+    const complete = active.length > 0 && active.length === accountWindows.length + modelWindows.length;
+    const extraDisabled = usage.extra_usage?.is_enabled === false;
+    return {
+      plan: exhausted ? "exhausted" : complete && extraDisabled ? "available" : "unknown",
+      display: {
+        plan_remaining_percent: account.includes(100) ? 0
+          : account.length > 0 && account.length === accountWindows.length ? 100 - Math.max(...account) : null,
+        credits: { kind: extraDisabled ? "disabled" : "unavailable" }
+      }
+    };
   }
-  return "unknown";
+  return unknownQuota;
 }
 
 type Output = { code: number | null; lines: string[] } | "unavailable" | "unknown";
@@ -103,7 +116,7 @@ export async function readClaudeQuota(
   signal?: AbortSignal,
   workingDirectory = process.cwd(),
   selectedModel = "sonnet"
-): Promise<ClaudeQuota> {
+): Promise<RuntimeQuota> {
   signal?.throwIfAborted();
   const deadline = AbortSignal.timeout(10_000);
   const probeSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -115,11 +128,11 @@ export async function readClaudeQuota(
   const probe = { executable, cwd: workingDirectory, environment: env, signal: probeSignal };
   try {
     const authOutput = await readOutput({ ...probe, args: ["auth", "status", "--json"] });
-    if (typeof authOutput === "string") return authOutput;
+    if (typeof authOutput === "string") return { plan: authOutput };
     const auth = authSchema.safeParse(parseJson(authOutput.lines.join("\n")));
-    if (!auth.success) return "unknown";
-    if ((authOutput.code === 1 && !auth.data.loggedIn) || (authOutput.code === 0 && auth.data.authMethod !== "claude.ai")) return "unavailable";
-    if (authOutput.code !== 0 || !auth.data.loggedIn) return "unknown";
+    if (!auth.success) return unknownQuota;
+    if ((authOutput.code === 1 && !auth.data.loggedIn) || (authOutput.code === 0 && auth.data.authMethod !== "claude.ai")) return { plan: "unavailable" };
+    if (authOutput.code !== 0 || !auth.data.loggedIn) return unknownQuota;
     const requestId = randomUUID();
     const configDirectory = await mkdtemp(join(tmpdir(), "tmatrix-claude-quota-"));
     try {
@@ -135,12 +148,12 @@ export async function readClaudeQuota(
           "--no-session-persistence", "--settings", '{"disableAllHooks":true}'],
         input: `${JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "get_usage" } })}\n`
       });
-      return typeof output !== "string" && output.code === 0 ? usageQuota(output.lines, requestId, selectedModel) : "unknown";
+      return typeof output !== "string" && output.code === 0 ? usageQuota(output.lines, requestId, selectedModel) : unknownQuota;
     } finally {
       await rm(configDirectory, { recursive: true, force: true });
     }
   } catch {
     signal?.throwIfAborted();
-    return "unknown";
+    return unknownQuota;
   }
 }

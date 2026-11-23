@@ -16,7 +16,7 @@ export default {
       async readQuota(signal, workingDirectory, model) {
         const lease = updates.acquire();
         try {
-          return { plan: await readClaudeQuota(lease.executable, context.environment, signal, workingDirectory, model) };
+          return await readClaudeQuota(lease.executable, context.environment, signal, workingDirectory, model);
         } finally {
           lease.release();
         }

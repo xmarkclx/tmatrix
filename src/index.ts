@@ -1,6 +1,7 @@
 import { startLocalControlServer, type LocalControlServer } from "./local-control-server.js";
 import { LocalWorkerState } from "./local-worker-state.js";
 import { ApiClient } from "./api-client.js";
+import { WorkerUsageReporter } from "./worker-usage.js";
 import { claudeModel } from "./adapters/claude/runtime.js";
 import { CLAUDE_INSTALL_REQUIRED } from "./adapters/claude/update-manager.js";
 import { loadAdapter, setupAdapter } from "./adapter-loader.js";
@@ -85,6 +86,11 @@ async function main(): Promise<void> {
   const secondary = multiProvider ? await prepare(await loadAdapter("claude")) : undefined;
   const claudeFallback = secondary?.readQuota ? secondary : undefined;
   const updaters = [primary.updates, claudeFallback?.updates].filter(updates => updates !== undefined);
+  const claudeQuota = adapter.id === "claude" ? primary.readQuota : claudeFallback?.readQuota;
+  const usageReporter = new WorkerUsageReporter({
+    ...(adapter.id === "codex" && primary.readQuota ? { codex: primary.readQuota } : {}),
+    ...(claudeQuota ? { claude: claudeQuota } : {})
+  }, process.env.TMATRIX_USAGE_SOURCE_ID);
   const conversationDirectory = config.conversation_state_dir
     ? resolve(config.conversation_state_dir)
     : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "aiworker", "conversations");
@@ -98,6 +104,8 @@ async function main(): Promise<void> {
       const metrics = new Metrics();
       sourceMetrics.push({ metrics, logger: sourceLogger });
       const api = new ApiClient({ config: sourceConfig, logger: sourceLogger, metrics });
+      usageReporter.addSource({ id: source.metadata.id, pollUrl: sourceConfig.poll_url,
+        publish: (providers, signal) => api.reportWorkerUsage(providers, signal) });
       const storeFor = (id: string) => new ConversationStore({
         directory: conversationDirectory,
         namespace: source.metadata.conversation_namespace,
@@ -167,7 +175,7 @@ async function main(): Promise<void> {
     shutdownPromise = (async () => {
       clearInterval(metricsTimer);
       // Abort an update immediately, independently of the worker drain.
-      const updateClosed = Promise.all(updaters.map(updates => updates.close()));
+      const updateClosed = Promise.all([...updaters.map(updates => updates.close()), usageReporter.close()]);
       await supervisor.shutdown(graceMs);
       await updateClosed;
       await localControl?.close();
@@ -236,6 +244,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  usageReporter.start();
   await supervisor.run();
   await shutdownPromise;
 }

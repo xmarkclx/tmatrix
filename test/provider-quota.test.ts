@@ -36,7 +36,7 @@ async function codexQuota(options: { account?: string; provider?: string; limits
   finally { await appServer.close(); }
 }
 
-const credits = { hasCredits: true, unlimited: false, balance: "20.25" };
+const credits = { hasCredits: true, unlimited: false, balance: "20.2500012345" };
 const exhausted = { ordinaryUsageAllowed: false, rateLimitsByLimitId: { codex: { credits } } };
 
 describe("Codex subscription and purchased credits", () => {
@@ -44,25 +44,38 @@ describe("Codex subscription and purchased credits", () => {
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: true,
       rateLimits: { primary: { usedPercent: 100, resetsAt: null }, credits }
-    } })).toEqual({ plan: "available", credits: true });
+    } })).toMatchObject({ plan: "available", credits: true, display: {
+      plan_remaining_percent: 0, credits: { kind: "amount", amount: "20.2500012345", unit: "credits" }
+    } });
   });
 
   it("keeps exhausted plan and available credits separate", async () => {
-    expect(await codexQuota({ limits: exhausted })).toEqual({ plan: "exhausted", credits: true });
+    expect(await codexQuota({ limits: exhausted })).toMatchObject({ plan: "exhausted", credits: true, display: {
+      plan_remaining_percent: 0, credits: { kind: "amount", amount: "20.2500012345", unit: "credits" }
+    } });
+  });
+
+  it("reports the tightest current plan window and preserves an exact zero balance", async () => {
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 20 }, secondary: { usedPercent: 59 }, credits: { ...credits, balance: "0.00" } }
+    } })).toEqual({ plan: "available", credits: false, display: {
+      plan_remaining_percent: 41, credits: { kind: "amount", amount: "0.00", unit: "credits" }
+    } });
   });
 
   it.each([undefined, null, "false"])("does not infer subscription state from percentages or credits without a boolean (%s)", async (permission) => {
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: permission,
       rateLimits: { primary: { usedPercent: 0 }, credits }
-    } })).toEqual({ plan: "unknown", credits: false });
+    } })).toMatchObject({ plan: "unknown", credits: false });
   });
 
   it.each(["0", "-1", "abc", "0x10", null])("does not infer paid balance from a tracking flag (%s)", async (balance) => {
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: false,
       rateLimits: { credits: { ...credits, balance } }
-    } })).toEqual({ plan: "exhausted", credits: false });
+    } })).toMatchObject({ plan: "exhausted", credits: false });
   });
 
   it("does not use a different provider's allowance or API-key authentication", async () => {
@@ -74,7 +87,7 @@ describe("Codex subscription and purchased credits", () => {
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: false,
       rateLimits: { spendControlReached: true, credits }
-    } })).toEqual({ plan: "exhausted", credits: false });
+    } })).toMatchObject({ plan: "exhausted", credits: false });
   });
 });
 
@@ -121,33 +134,37 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
   }
 
   it("reports included usage from a no-prompt control request", async () => {
-    expect(await quota({ limits: subscriptionLimits })).toBe("available");
+    expect(await quota({ limits: subscriptionLimits })).toEqual({ plan: "available", display: {
+      plan_remaining_percent: 80, credits: { kind: "disabled" }
+    } });
   });
 
   it("reports an exhausted subscription even when Claude's purchased credits are enabled", async () => {
-    expect(await quota({ limits: { ...subscriptionLimits, seven_day: activeWindow(100), extra_usage: { is_enabled: true } } })).toBe("exhausted");
+    expect(await quota({ limits: { ...subscriptionLimits, seven_day: activeWindow(100), extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 750 } } })).toEqual({
+      plan: "exhausted", display: { plan_remaining_percent: 0, credits: { kind: "unavailable" } }
+    });
   });
 
   it("uses the reported model-specific limits for the selected Claude model", async () => {
     const limits = { ...subscriptionLimits, seven_day_sonnet: activeWindow(100), seven_day_opus: activeWindow(20),
       model_scoped: [{ display_name: "Fable 5", ...activeWindow(100) }] };
-    expect(await quota({ limits }, "sonnet")).toBe("exhausted");
-    expect(await quota({ limits }, "claude-opus-4-7")).toBe("available");
-    expect(await quota({ limits }, "claude-fable-5")).toBe("exhausted");
+    expect(await quota({ limits }, "sonnet")).toMatchObject({ plan: "exhausted", display: { plan_remaining_percent: 80 } });
+    expect(await quota({ limits }, "claude-opus-4-7")).toMatchObject({ plan: "available" });
+    expect(await quota({ limits }, "claude-fable-5")).toMatchObject({ plan: "exhausted" });
   });
 
   it.each([null, { is_enabled: true }])("refuses to select a plan from unknown or enabled overage settings (%j)", async (extra_usage) => {
-    expect(await quota({ limits: { ...subscriptionLimits, extra_usage } })).toBe("unknown");
+    expect(await quota({ limits: { ...subscriptionLimits, extra_usage } })).toMatchObject({ plan: "unknown" });
   });
 
   it("keeps stale and unmatched response data unknown", async () => {
-    expect(await quota({ limits: { ...subscriptionLimits, five_hour: { utilization: 100, resets_at: "2000-01-01T00:00:00.000Z" } } })).toBe("unknown");
-    expect(await quota({ limits: subscriptionLimits, replyToOtherRequest: true })).toBe("unknown");
+    expect(await quota({ limits: { ...subscriptionLimits, five_hour: { utilization: 100, resets_at: "2000-01-01T00:00:00.000Z" } } })).toMatchObject({ plan: "unknown" });
+    expect(await quota({ limits: subscriptionLimits, replyToOtherRequest: true })).toMatchObject({ plan: "unknown" });
   });
 
   it("identifies signed-out and API-key sessions without selecting a plan", async () => {
-    expect(await quota({ auth: { loggedIn: false, authMethod: "none" }, limits: subscriptionLimits })).toBe("unavailable");
-    expect(await quota({ auth: { loggedIn: true, authMethod: "api_key" }, limits: subscriptionLimits })).toBe("unavailable");
+    expect(await quota({ auth: { loggedIn: false, authMethod: "none" }, limits: subscriptionLimits })).toEqual({ plan: "unavailable" });
+    expect(await quota({ auth: { loggedIn: true, authMethod: "api_key" }, limits: subscriptionLimits })).toEqual({ plan: "unavailable" });
   });
 
   it("propagates cancellation while a probe is waiting", async () => {

@@ -1,3 +1,4 @@
+import { workerUsageEndpoint, type ProviderUsage } from "./worker-usage.js";
 import type { SecurityAlert } from "./security-warning.js";
 import { randomUUID } from "node:crypto";
 import { IDENTITY_CONTRACT_HEADERS, parseIdentityJson, stringifyIdentityJson } from "./identity-transport.js";
@@ -38,6 +39,7 @@ interface RequestOptions {
   path: string;
   body?: unknown;
   expectJson?: boolean;
+  optional?: boolean;
   signal?: AbortSignal;
 }
 
@@ -84,6 +86,13 @@ export class ApiClient implements TicketApi {
     const url = new URL("/api/v1/alert-user-emergency", this.config.poll_origin);
     return this.request({ operation: "security_alert", method: "POST", url: url.toString(),
       path: url.pathname, body: alert, expectJson: true, ...(signal ? { signal } : {}) });
+  }
+
+  async reportWorkerUsage(providers: ProviderUsage[], signal: AbortSignal): Promise<void> {
+    const url = workerUsageEndpoint(this.config.poll_url);
+    if (!url || !providers.length) return;
+    await this.request({ operation: "worker_usage", method: "POST", url: url.href, path: url.pathname,
+      body: { providers }, optional: true, signal });
   }
 
   async poll(request: PollRequest, signal?: AbortSignal): Promise<PollResponse> {
@@ -272,7 +281,8 @@ export class ApiClient implements TicketApi {
     const startedAt = Date.now();
     let lastError: unknown;
 
-    for (let attempt = 1; attempt <= this.config.max_request_attempts; attempt += 1) {
+    const maxAttempts = options.optional ? 1 : this.config.max_request_attempts;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(new Error("Request timed out")), this.config.request_timeout_ms);
       const abortFromCaller = () => controller.abort(options.signal?.reason);
@@ -302,8 +312,13 @@ export class ApiClient implements TicketApi {
             "x-request-id": operationId
           },
           ...(options.body !== undefined && options.method !== "GET" ? { body: stringifyIdentityJson(options.body) } : {}),
-          signal: controller.signal
+          signal: controller.signal,
+          ...(options.optional ? { redirect: "error" } : {})
         });
+        if (options.optional && response.status === 404) {
+          await response.body?.cancel();
+          return;
+        }
 
         const responseText = await response.text();
         if (!response.ok) {
@@ -362,7 +377,7 @@ export class ApiClient implements TicketApi {
       } catch (cause) {
         lastError = this.normalizeRequestError(cause, options, operationId);
         const retryable = lastError instanceof WorkerError && lastError.retryable;
-        const willRetry = retryable && attempt < this.config.max_request_attempts && !options.signal?.aborted;
+        const willRetry = retryable && attempt < maxAttempts && !options.signal?.aborted;
         this.logger[willRetry ? "warn" : "error"]({
           event: willRetry ? "http.request_retrying" : "http.request_failed",
           operation: options.operation,

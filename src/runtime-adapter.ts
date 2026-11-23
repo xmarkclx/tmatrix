@@ -1,6 +1,7 @@
 /** TMatrix adapter API v1. No provider SDK is required to implement this contract. */
 import type { Logger } from "pino";
 import type { TicketHistoryReader } from "./helpers/ticket-history.js";
+import type { UsageDisplay } from "./worker-usage.js";
 import type { ReportSecurityWarning } from "./security-warning.js";
 import type { ExecutionProfile, ReasoningEffort, ServiceTier } from "./types.js";
 
@@ -119,6 +120,7 @@ export interface AdapterSetupContext extends AdapterContext {
 export type RuntimeQuota = {
   plan: "available" | "exhausted" | "unavailable" | "unknown";
   credits?: boolean;
+  display?: UsageDisplay;
 };
 export type ReadRuntimeQuota = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeQuota>;
 
