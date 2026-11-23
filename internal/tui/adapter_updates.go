@@ -16,12 +16,52 @@ func (m Model) openAdapterUpdates() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) selectedRuntimeUpdate() *backend.AdapterUpdate {
+	for i, entry := range m.snapshot.AdapterUpdates {
+		if entry.AdapterID == m.updateAdapterID {
+			return &m.snapshot.AdapterUpdates[i]
+		}
+	}
+	if len(m.snapshot.AdapterUpdates) > 0 {
+		return &m.snapshot.AdapterUpdates[0]
+	}
+	return m.snapshot.AdapterUpdate
+}
+
+func (m *Model) cycleRuntimeUpdate(direction int) {
+	entries := m.snapshot.AdapterUpdates
+	if len(entries) < 2 {
+		return
+	}
+	for i, entry := range entries {
+		if entry.AdapterID == m.selectedRuntimeUpdate().AdapterID {
+			m.updateAdapterID = entries[(i+direction+len(entries))%len(entries)].AdapterID
+			break
+		}
+	}
+	m.pageOffset, m.notice, m.failure = 0, "", ""
+}
+
+func (m Model) adapterUpdateActions() (check, rollback func(context.Context) error) {
+	if len(m.snapshot.AdapterUpdates) > 0 {
+		if updater, ok := m.backend.(backend.RuntimeUpdater); ok {
+			id := m.selectedRuntimeUpdate().AdapterID
+			return func(ctx context.Context) error { return updater.CheckRuntimeUpdate(ctx, id) },
+				func(ctx context.Context) error { return updater.RollbackRuntimeUpdate(ctx, id) }
+		}
+	} else if updater, ok := m.backend.(backend.AdapterUpdater); ok {
+		return updater.CheckAdapterUpdate, updater.RollbackAdapterUpdate
+	}
+	return nil, nil
+}
+
 func (m Model) adapterUpdateAvailable() bool {
-	_, capable := m.backend.(backend.AdapterUpdater)
-	if !capable || m.options.Demo || m.snapshot.AdapterUpdate == nil {
+	check, _ := m.adapterUpdateActions()
+	update := m.selectedRuntimeUpdate()
+	if check == nil || m.options.Demo || update == nil {
 		return false
 	}
-	switch m.snapshot.AdapterUpdate.Status {
+	switch update.Status {
 	case "idle", "checking", "installing", "verifying", "updated", "up_to_date", "failed":
 		return true
 	default:
@@ -30,7 +70,7 @@ func (m Model) adapterUpdateAvailable() bool {
 }
 
 func (m Model) adapterUpdateRunning() bool {
-	if update := m.snapshot.AdapterUpdate; update != nil {
+	if update := m.selectedRuntimeUpdate(); update != nil {
 		return update.Status == "checking" || update.Status == "installing" || update.Status == "verifying"
 	}
 	return false
@@ -49,6 +89,12 @@ func (m Model) handleAdapterUpdateKey(key string) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case "q":
 		return m, tea.Quit
+	case "left":
+		m.cycleRuntimeUpdate(-1)
+		return m, nil
+	case "right":
+		m.cycleRuntimeUpdate(1)
+		return m, nil
 	case "c", "b":
 		if !m.adapterUpdateAvailable() {
 			m.failure = "Runtime updates are unavailable for this connection."
@@ -58,8 +104,8 @@ func (m Model) handleAdapterUpdateKey(key string) (tea.Model, tea.Cmd) {
 			m.notice = "Runtime update already in progress. Workers continue."
 			return m, nil
 		}
-		updater := m.backend.(backend.AdapterUpdater)
-		if key == "b" && !m.snapshot.AdapterUpdate.CanRollback {
+		check, rollback := m.adapterUpdateActions()
+		if key == "b" && !m.selectedRuntimeUpdate().CanRollback {
 			m.failure = "Rollback is unavailable for this runtime."
 			return m, nil
 		}
@@ -70,9 +116,9 @@ func (m Model) handleAdapterUpdateKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, m.operation("adapter-update", "", func(ctx context.Context) (string, error) {
 			if key == "b" {
-				return "Rollback requested; watch status for completion. Active workers keep their version.", updater.RollbackAdapterUpdate(ctx)
+				return "Rollback requested; watch status for completion. Active workers keep their version.", rollback(ctx)
 			}
-			return "Check requested; watch status for completion. Workers continue.", updater.CheckAdapterUpdate(ctx)
+			return "Check requested; watch status for completion. Workers continue.", check(ctx)
 		})
 	}
 	maximum := max(0, len(m.adapterUpdateDetails())-m.adapterUpdateDetailHeight())
@@ -94,22 +140,31 @@ func (m Model) handleAdapterUpdateKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) adapterUpdateDetailHeight() int { return max(1, m.bodyHeight()-5) }
+func (m Model) adapterUpdateDetailHeight() int {
+	height := m.bodyHeight() - 5
+	if len(m.snapshot.AdapterUpdates) > 1 {
+		height--
+	}
+	return max(1, height)
+}
 
 func (m Model) adapterUpdateContent() layoutBlock {
 	b := layoutBlock{}
 	version, status := "Unavailable", "Unavailable"
-	if update := m.snapshot.AdapterUpdate; update != nil {
+	if update := m.selectedRuntimeUpdate(); update != nil {
 		version = single(update.CurrentVersion)
 		status = adapterUpdateStatus(update.Status)
 		if update.Status == "up_to_date" && update.BlockedVersion != "" && update.LatestVersion == update.BlockedVersion {
 			status = "Rollback retained"
 		}
 	}
+	if len(m.snapshot.AdapterUpdates) > 1 {
+		b.append(controls([]control{{"[←/→] Switch runtime", "right"}}, m.width-4))
+	}
 	b.lines = append(b.lines, accentStyle.Render("Current: "+version), bodyStyle.Render("Status: "+status))
 	if m.adapterUpdateAvailable() && !m.adapterUpdateRunning() && !m.busy {
 		items := []control{{"[c] Check now", "c"}}
-		if m.snapshot.AdapterUpdate.CanRollback {
+		if m.selectedRuntimeUpdate().CanRollback {
 			items = append(items, control{"[b] Roll back", "b"})
 		}
 		b.append(controls(items, m.width-4))
@@ -131,7 +186,7 @@ func (m Model) adapterUpdateDetails() []string {
 	add := func(text string) {
 		lines = append(lines, strings.Split(textBlock(text, m.width-4), "\n")...)
 	}
-	update := m.snapshot.AdapterUpdate
+	update := m.selectedRuntimeUpdate()
 	if update == nil {
 		add("Update status unavailable. The connected engine and its runtime adapter must support updates.")
 		return lines

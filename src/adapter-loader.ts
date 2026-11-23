@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AdapterUpdateService } from "./adapter-updates.js";
-import type { AdapterContext, AdapterSetup, AdapterSetupContext, RuntimeAdapter, RuntimeFactory } from "./runtime-adapter.js";
+import type { AdapterContext, AdapterSetup, AdapterSetupContext, ReadRuntimeQuota, RuntimeAdapter, RuntimeFactory } from "./runtime-adapter.js";
 
 const bundledAdapters = new Map<string, () => Promise<{ default: RuntimeAdapter }>>([
   ["codex", () => import("./adapters/codex/index.js")],
@@ -41,6 +41,7 @@ export async function loadAdapter(id: string, modulePath?: string): Promise<Runt
 export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetupContext): Promise<{
   runtimeFactory: RuntimeFactory;
   updates?: AdapterUpdateService;
+  readQuota?: ReadRuntimeQuota;
 }> {
   const workerContext = { environment: context.environment, logger: context.logger };
   let prepared: AdapterSetup | undefined;
@@ -50,9 +51,11 @@ export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetu
       if (!prepared || typeof prepared.create !== "function") throw new Error("Invalid adapter setup");
       const updates = prepared.updates ? new AdapterUpdateService(adapter.id, prepared.updates, context.logger) : undefined;
       const initialized = { ...adapter, create: prepared.create.bind(prepared) };
+      const readQuota = prepared.readQuota?.bind(prepared);
       return {
         runtimeFactory: createRuntimeFactory(initialized, workerContext),
-        ...(updates ? { updates } : {})
+        ...(updates ? { updates } : {}),
+        ...(readQuota ? { readQuota } : {})
       };
     } catch {
       // Never expose arbitrary module errors; a failed optional updater must not

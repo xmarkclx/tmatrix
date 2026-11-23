@@ -130,6 +130,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
       ensureOpen(turn.signal);
       const payload = await encodeInput(input, turn.signal);
       ensureOpen(turn.signal);
+      turn.beforeStart?.();
 
       try {
         current = new ClaudeProcess(executable, argumentsFor(options, sessionId, resume, turn), options.workingDirectory, environment);

@@ -30,15 +30,17 @@ curl -fsSL https://github.com/xmarkclx/tmatrix/releases/latest/download/install.
 
 Press `s` to open Settings and view the TMatrix version, build number, and commit at the top.
 
-## Run with Claude Code
+## Route work across subscriptions
 
-1. [Install Claude Code](https://code.claude.com/docs/en/setup) 2.1.220 or newer and run `claude auth login` as the user who runs TMatrix. The engine looks on `PATH` and in `~/.local/bin`. To use a different executable, set `TMATRIX_CLAUDE_PATH` to its absolute path in the engine environment.
-2. In the TMatrix `config.json`, set `"worker_type": "claude"` and remove `adapter_module` if present. The default settings directory is `~/.config/tmatrix` on Linux and `~/Library/Application Support/tmatrix` on macOS. Use the directory passed to `--config-dir` if you set one.
-3. Run `tmatrix engine restart` to drain active work and apply the setting. Open a worker in the terminal to follow Claude's responses and tool activity. Messages sent during a turn enter the next turn in that conversation.
+Sign Codex in to ChatGPT under the user that runs TMatrix. To add Claude, [install Claude Code](https://code.claude.com/docs/en/setup) 2.1.220 or newer and run `claude auth login` under that same user. In Claude's account settings, turn off **Usage credits** so Claude can report when its subscription is exhausted. TMatrix looks for `claude` on `PATH` and in `~/.local/bin`. Set `TMATRIX_CLAUDE_PATH` in the engine environment for a different location.
 
-One runtime handles all sources on an engine. Use the same runtime on engines that share a source queue. Claude uses the configured model when you give it a Claude model ID or alias. Existing Codex model settings use Sonnet on Claude engines.
+TMatrix checks allowance before each new turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. Starting a turn on credits requires both plans to report exhaustion and Codex to report available credits. If TMatrix cannot verify a route, it reports the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
 
-TMatrix checks Anthropic's stable npm channel at startup and daily. Open **Settings → Runtime updates** to check now. The engine verifies each new binary in its private runtime store before selecting it for new workers. Active workers keep the version they started with. TMatrix keeps the two most recent managed releases and disables Claude's own update prompts inside worker sessions. Set `DISABLE_UPDATES=1` in the engine environment to turn off update checks.
+Press `s` to open **Settings**, move to **Routing policy**, and use Left or Right to choose a policy. Press `Ctrl+S` to save. You can put Claude first, omit the Codex credits fallback, or choose a single provider. A policy change applies to new turns.
+
+Open a worker to see which provider and allowance TMatrix selected. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows each provider's responses and tool activity. Active turns stay with their current provider.
+
+TMatrix checks Anthropic's stable npm channel at startup and daily. Open **Settings**, press `o` for **Runtime updates**, and use Left or Right to choose a provider. TMatrix verifies each Claude Code release in its private runtime store before selecting it. Active workers keep the version they started with. Set `DISABLE_UPDATES=1` in the engine environment to turn off Claude update checks.
 
 ## Connect multiple sources
 

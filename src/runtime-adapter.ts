@@ -42,6 +42,7 @@ export interface ThreadLike {
   steer?(input: Input, options?: { signal?: AbortSignal }): Promise<boolean>;
   runStreamed(input: Input, options?: {
     outputSchema?: unknown;
+    beforeStart?: () => void;
     signal?: AbortSignal;
     /** Use after confirmed conversation loss or an explicit resume rejection during crash recovery. */
     missingConversationInput?: () => Promise<Input>;
@@ -115,10 +116,17 @@ export interface AdapterSetupContext extends AdapterContext {
   /** Private per-instance/per-adapter store outside engine/release directories. */
   updateDirectory: string;
 }
+export type RuntimeQuota = {
+  plan: "available" | "exhausted" | "unavailable" | "unknown";
+  credits?: boolean;
+};
+export type ReadRuntimeQuota = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeQuota>;
+
 export interface AdapterSetup {
   /** Bound to this engine instance, with a fresh context supplied for each worker. */
   create: RuntimeCreator;
   updates?: AdapterUpdates;
+  readQuota?: ReadRuntimeQuota;
 }
 export interface RuntimeAdapter {
   apiVersion: 1;

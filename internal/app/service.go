@@ -70,7 +70,7 @@ func (s *Service) Snapshot(ctx context.Context) (snapshot backend.Snapshot, snap
 	}
 	return backend.Snapshot{
 		Version: 2, InstanceID: cfg.InstanceID, MaxWorkers: cfg.MaxWorkers, RuntimeAdapter: cfg.WorkerType,
-		PollIntervalMS: cfg.PollIntervalMS, IntakePaused: true,
+		PollIntervalMS: cfg.PollIntervalMS, IntakePaused: true, RuntimePolicy: cfg.EffectiveRuntimePolicy(),
 		Pollers: savedPollers(cfg),
 		Workers: []backend.Worker{},
 	}, nil
@@ -101,19 +101,27 @@ func (s *Service) Pin(ctx context.Context, id string, pinned bool) error {
 }
 
 func (s *Service) CheckAdapterUpdate(ctx context.Context) error {
+	return s.CheckRuntimeUpdate(ctx, "")
+}
+
+func (s *Service) RollbackAdapterUpdate(ctx context.Context) error {
+	return s.RollbackRuntimeUpdate(ctx, "")
+}
+
+func (s *Service) CheckRuntimeUpdate(ctx context.Context, adapterID string) error {
 	client, err := s.client()
 	if err != nil {
 		return errors.New("engine is disconnected; runtime update check could not be requested")
 	}
-	return client.CheckAdapterUpdate(ctx)
+	return client.CheckRuntimeUpdate(ctx, adapterID)
 }
 
-func (s *Service) RollbackAdapterUpdate(ctx context.Context) error {
+func (s *Service) RollbackRuntimeUpdate(ctx context.Context, adapterID string) error {
 	client, err := s.client()
 	if err != nil {
 		return errors.New("engine is disconnected; runtime rollback could not be requested")
 	}
-	return client.RollbackAdapterUpdate(ctx)
+	return client.RollbackRuntimeUpdate(ctx, adapterID)
 }
 
 func (s *Service) Configure(ctx context.Context, settings backend.Settings) error {
@@ -145,6 +153,12 @@ func (s *Service) Configure(ctx context.Context, settings backend.Settings) erro
 	if settings.WorkerType != nil && *settings.WorkerType != cfg.WorkerType {
 		return errors.New("set worker_type in config.json, then restart the engine. Custom workers also need adapter_module")
 	}
+	if settings.RuntimePolicy != nil {
+		if cfg.WorkerType != "codex" {
+			return errors.New("runtime routing requires a built-in Codex engine")
+		}
+		cfg.RuntimePolicy = *settings.RuntimePolicy
+	}
 	if err := config.Save(s.Dir, cfg); err != nil {
 		return err
 	}
@@ -159,10 +173,10 @@ func (s *Service) Configure(ctx context.Context, settings backend.Settings) erro
 			return nil
 		}
 	}
-	if err != nil {
-		return err
+	if err == nil {
+		err = client.Configure(ctx, settings)
 	}
-	if err := client.Configure(ctx, settings); err != nil {
+	if err != nil {
 		_ = config.Save(s.Dir, previous)
 		return err
 	}
@@ -409,7 +423,7 @@ func (s *Service) Restart(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if cfg.WorkerType == "claude" && len(cfg.Sources) > 0 {
+	if (cfg.WorkerType == "claude" || cfg.RuntimePolicy != "") && len(cfg.Sources) > 0 {
 		if _, err := sourceEngine(cfg); err != nil {
 			return err
 		}

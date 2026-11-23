@@ -7,16 +7,39 @@ import { loadAdapter, setupAdapter } from "./adapter-loader.js";
 import { sanitizedCodexEnvironment } from "./adapters/codex/environment.js";
 import { loadEngineConfig, loadSavedSource, safeEngineConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
-import { errorContext } from "./errors.js";
+import { errorContext, WorkerError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import { Metrics } from "./metrics.js";
-import { TicketRunner } from "./runner.js";
+import { TicketRunner, type RuntimeSelection } from "./runner.js";
 import { Supervisor } from "./supervisor.js";
 import { SourceSupervisor } from "./source-supervisor.js";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
+import { chooseFundingRoute, type FundingRoute, type RuntimePolicy } from "./runtime-routing.js";
+import type { ReadRuntimeQuota, RuntimeAdapter, RuntimeQuota } from "./runtime-adapter.js";
+
+const fundingLabels = {
+  "codex-plan": "Codex subscription",
+  "claude-plan": "Claude subscription",
+  "codex-credits": "Codex credits",
+  codex: "Codex",
+  claude: "Claude"
+};
+
+async function checkQuota(probe: ReadRuntimeQuota | undefined, signal?: AbortSignal, cwd?: string, model?: string): Promise<RuntimeQuota> {
+  try {
+    return await probe?.(signal, cwd, model) ?? { plan: "unknown" };
+  } catch {
+    signal?.throwIfAborted();
+    return { plan: "unknown" };
+  }
+}
+
+function codexModel(model: string): string {
+  return /^(?:claude-|sonnet(?:$|-)|opus(?:$|-)|haiku(?:$|-))/.test(model) ? "gpt-6.2-sol" : model;
+}
 
 async function main(): Promise<void> {
   const config = await loadEngineConfig();
@@ -37,9 +60,12 @@ async function main(): Promise<void> {
 
   const adapter = await loadAdapter(config.runtime_adapter, config.adapter_module);
   const runtimeEnvironment = sanitizedCodexEnvironment(process.env);
-  const updateDirectory = resolveAdapterUpdateDirectory(adapter.id, config.update_origin, config.instance_id);
-  const setupContext = { environment: runtimeEnvironment, logger, updateDirectory };
-  const claudeSetup = adapter.id === "claude" ? await setupAdapter(adapter, setupContext) : undefined;
+  const prepare = (runtimeAdapter: RuntimeAdapter) => setupAdapter(runtimeAdapter, {
+    environment: runtimeEnvironment,
+    logger,
+    updateDirectory: resolveAdapterUpdateDirectory(runtimeAdapter.id, config.update_origin, config.instance_id)
+  });
+  const claudeSetup = adapter.id === "claude" ? await prepare(adapter) : undefined;
   if (claudeSetup && !claudeSetup.updates) throw new Error(CLAUDE_INSTALL_REQUIRED);
 
   if (process.argv.includes("--check-config")) {
@@ -53,7 +79,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { runtimeFactory, updates: adapterUpdates } = claudeSetup ?? await setupAdapter(adapter, setupContext);
+  const primary = claudeSetup ?? await prepare(adapter);
+  const multiProvider = adapter.id === "codex";
+  let runtimePolicy = config.runtime_policy;
+  const secondary = multiProvider ? await prepare(await loadAdapter("claude")) : undefined;
+  const claudeFallback = secondary?.readQuota ? secondary : undefined;
+  const updaters = [primary.updates, claudeFallback?.updates].filter(updates => updates !== undefined);
+  const conversationDirectory = config.conversation_state_dir
+    ? resolve(config.conversation_state_dir)
+    : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "aiworker", "conversations");
   const supervisor = new SourceSupervisor({
     config,
     logger,
@@ -64,18 +98,52 @@ async function main(): Promise<void> {
       const metrics = new Metrics();
       sourceMetrics.push({ metrics, logger: sourceLogger });
       const api = new ApiClient({ config: sourceConfig, logger: sourceLogger, metrics });
-      const conversationStore = new ConversationStore({
-        directory: config.conversation_state_dir
-          ? resolve(config.conversation_state_dir)
-          : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "aiworker", "conversations"),
+      const storeFor = (id: string) => new ConversationStore({
+        directory: conversationDirectory,
         namespace: source.metadata.conversation_namespace,
-        adapterId: adapter.id,
-        trackRuntime: adapter.id === "codex" || adapter.id === "claude",
-        runtimeHome: adapter.id === "codex" ? (runtimeEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex"))
-          : adapter.id === "claude" ? (runtimeEnvironment.CLAUDE_CONFIG_DIR || resolve(homedir(), ".claude")) : homedir(),
+        adapterId: id,
+        trackRuntime: id === "codex" || id === "claude",
+        runtimeHome: id === "codex" ? (runtimeEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex"))
+          : id === "claude" ? (runtimeEnvironment.CLAUDE_CONFIG_DIR || resolve(homedir(), ".claude")) : homedir(),
         referenceKey: sourceConfig.api_key
       });
-      const runner = new TicketRunner({ runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
+      const conversationStore = storeFor(adapter.id);
+      const claudeStore = claudeFallback ? storeFor("claude") : undefined;
+      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string): Promise<RuntimeSelection> => {
+        let policy: RuntimePolicy;
+        let route: FundingRoute | undefined;
+        do {
+          policy = runtimePolicy;
+          route = await chooseFundingRoute({
+            policy,
+            codex: () => checkQuota(primary.readQuota, signal, cwd),
+            claude: () => claudeFallback
+              ? checkQuota(claudeFallback.readQuota, signal, cwd, claudeModel(model ?? "sonnet"))
+              : Promise.resolve({ plan: "unavailable" }),
+            ...(signal ? { signal } : {})
+          }).catch(error => {
+            if (policy === runtimePolicy) throw error;
+            return undefined;
+          });
+        } while (route === undefined || policy !== runtimePolicy);
+        const assertCurrent = () => {
+          if (policy !== runtimePolicy) throw new WorkerError({
+            code: "RUNTIME_POLICY_CHANGED", stage: "runtime.route",
+            message: "The routing policy changed before the turn started. Retry with the new policy."
+          });
+        };
+        if (route === "claude" || route === "claude-plan") {
+          if (!claudeFallback || !claudeStore) throw new WorkerError({
+            code: "CLAUDE_INSTALL_REQUIRED", stage: "runtime.route", message: CLAUDE_INSTALL_REQUIRED
+          });
+          return { id: "claude", runtimeFactory: claudeFallback.runtimeFactory, conversationStore: claudeStore,
+            model: claudeModel, label: fundingLabels[route], assertCurrent };
+        }
+        return { id: "codex", runtimeFactory: primary.runtimeFactory, conversationStore,
+          model: codexModel, label: fundingLabels[route], assertCurrent };
+      };
+      const runner = new TicketRunner({ runtimeFactory: primary.runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
+        ...(multiProvider ? { selectRuntime } : {}),
         alertSecurityWarning: (alert, signal) => api.alertUserEmergency(alert, signal) });
       let child!: Supervisor;
       const control = new ControlClient({ config: sourceConfig, logger: sourceLogger, metrics,
@@ -99,7 +167,7 @@ async function main(): Promise<void> {
     shutdownPromise = (async () => {
       clearInterval(metricsTimer);
       // Abort an update immediately, independently of the worker drain.
-      const updateClosed = adapterUpdates?.close();
+      const updateClosed = Promise.all(updaters.map(updates => updates.close()));
       await supervisor.shutdown(graceMs);
       await updateClosed;
       await localControl?.close();
@@ -115,7 +183,12 @@ async function main(): Promise<void> {
     const managedSources = settingsFile && isAbsolute(settingsFile) && settingsFile === resolve(dirname(file), "config.json");
     localControl = await startLocalControlServer({
       supervisor,
-      ...(adapterUpdates ? { adapterUpdates } : {}),
+      ...(primary.updates ? { adapterUpdates: primary.updates } : {}),
+      ...(claudeFallback?.updates ? { additionalAdapterUpdates: [claudeFallback.updates] } : {}),
+      ...(multiProvider ? { routing: {
+        get: () => runtimePolicy,
+        set: (policy) => { runtimePolicy = policy; }
+      } } : {}),
       ...(managedSources ? { async addSource(id: string) {
         const source = await loadSavedSource({ file: settingsFile, id, engine: config }).catch(() => undefined);
         if (!source) return "invalid";
@@ -154,7 +227,7 @@ async function main(): Promise<void> {
     codex_environment_removed: process.env.API_KEY === undefined ? [] : ["API_KEY"]
   }, "AI worker daemon started");
 
-  adapterUpdates?.start();
+  for (const updates of updaters) updates.start();
 
   if (process.argv.includes("--once")) {
     await supervisor.runOnce();

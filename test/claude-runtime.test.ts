@@ -112,6 +112,20 @@ describe.skipIf(process.platform === "win32")("Claude Code runtime", () => {
     return collect((await thread.runStreamed(input, { outputSchema })).events);
   }
 
+  it("checks routing before starting Claude with a prompt", async () => {
+    const { runtime, options, calls } = await fixture();
+    try {
+      const blocked = new Error("Routing changed");
+      const stream = await runtime.startThread(options).runStreamed("Do the ticket", {
+        outputSchema, beforeStart: () => { throw blocked; }
+      });
+      await expect(collect(stream.events)).rejects.toBe(blocked);
+      await expect(calls()).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("streams local activity, delivers the structured result, and keeps the same session on follow-up", async () => {
     const { dir, runtime, options, calls } = await fixture();
     const photo = join(dir, "ticket.png");

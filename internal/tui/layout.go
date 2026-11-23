@@ -303,7 +303,7 @@ func (m Model) screenName() string {
 	case serviceScreen:
 		return "Background service"
 	case adapterUpdatesScreen:
-		if update := m.snapshot.AdapterUpdate; update != nil && strings.TrimSpace(update.DisplayName) != "" {
+		if update := m.selectedRuntimeUpdate(); update != nil && strings.TrimSpace(update.DisplayName) != "" {
 			return single(update.DisplayName) + " updates"
 		}
 		return "Runtime updates"

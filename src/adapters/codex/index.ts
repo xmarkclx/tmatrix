@@ -1,4 +1,5 @@
 import { AppServerCodex, resolveBundledCodexInstallation } from "./app-server.js";
+import { readCodexQuota } from "./quota.js";
 import { CodexUpdateManager, type CodexExecutableLease } from "./update-manager.js";
 import type { AdapterContext, RuntimeAdapter, RuntimeCreator } from "../../runtime-adapter.js";
 
@@ -40,7 +41,17 @@ export default {
       await updates.initialize();
       return {
         updates,
-        create: (workerContext) => createCodex(workerContext, updates.acquire())
+        create: (workerContext) => createCodex(workerContext, updates.acquire()),
+        async readQuota(signal, workingDirectory) {
+          const lease = updates.acquire();
+          const runtime = new AppServerCodex({ environment: context.environment, executablePath: lease.executablePath });
+          try {
+            return await readCodexQuota(runtime, signal, workingDirectory);
+          } finally {
+            await runtime.close();
+            lease.release();
+          }
+        }
       };
     } catch (error) {
       await updates.close();

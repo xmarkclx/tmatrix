@@ -1,5 +1,6 @@
 import type { RuntimeAdapter } from "../../runtime-adapter.js";
 import { createClaudeRuntime } from "./runtime.js";
+import { readClaudeQuota } from "./quota.js";
 import { ClaudeUpdateManager } from "./update-manager.js";
 
 export default {
@@ -12,6 +13,14 @@ export default {
     updates.executable();
     return {
       updates,
+      async readQuota(signal, workingDirectory, model) {
+        const lease = updates.acquire();
+        try {
+          return { plan: await readClaudeQuota(lease.executable, context.environment, signal, workingDirectory, model) };
+        } finally {
+          lease.release();
+        }
+      },
       create(worker) {
         const lease = updates.acquire();
         const runtime = createClaudeRuntime(worker, lease.executable);

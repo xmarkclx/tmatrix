@@ -10,6 +10,8 @@ export interface WorkerObservation {
   run_kind?: "initial" | "resumed";
   input_revision?: number;
   steering_id?: string;
+  runtime_adapter?: string;
+  model?: string;
 }
 
 export interface LocalWorkerView {
@@ -68,6 +70,12 @@ export class LocalWorkerState {
       };
       return;
     }
+    if (event.runtime_adapter !== undefined && event.runtime_adapter !== worker.worker_type) {
+      worker.worker_type = event.runtime_adapter;
+      delete worker.thread_id;
+      delete worker.run_kind;
+    }
+    if (event.model !== undefined) worker.model = event.model;
     if (event.thread_id !== undefined) worker.thread_id = event.thread_id;
     if (event.run_kind !== undefined) worker.run_kind = event.run_kind;
     if (event.input_revision !== undefined) worker.input_revision = event.input_revision;
