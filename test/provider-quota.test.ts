@@ -90,6 +90,16 @@ describe("Codex subscription and purchased credits", () => {
     } })).toMatchObject({ display: { plan_remaining_percent: 70, plan_resets_at: new Date((resetsAt + 7200) * 1000).toISOString() } });
   });
 
+  it.each([1e12, 1e20])("preserves usage and credits when reset seconds %s cannot be reported", async (resetsAt) => {
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 80, resetsAt }, credits }
+    } })).toEqual({ plan: "available", credits: true, display: {
+      plan_remaining_percent: 20, plan_resets_at: null,
+      credits: { kind: "amount", amount: "20.2500012345", unit: "credits" }
+    } });
+  });
+
   it.each([undefined, null, "false"])("does not infer subscription state from percentages or credits without a boolean (%s)", async (permission) => {
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: permission,
