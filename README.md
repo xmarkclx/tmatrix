@@ -34,17 +34,23 @@ Press `s` to open Settings and view the TMatrix version, build number, and commi
 
 Sign Codex in to ChatGPT under the user that runs TMatrix. To add Claude, [install Claude Code](https://code.claude.com/docs/en/setup) 2.1.220 or newer and run `claude auth login` under that same user. In Claude's account settings, turn off **Usage credits** so Claude can report when its subscription is exhausted. TMatrix looks for `claude` on `PATH` and in `~/.local/bin`. Set `TMATRIX_CLAUDE_PATH` in the engine environment for a different location.
 
-TMatrix checks allowance before each new turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. When Codex reports an exhausted plan and available credits, TMatrix uses credits if Claude's plan is exhausted or unavailable, including when Claude Code is signed out or has no paid subscription. If TMatrix cannot verify a route, it reports the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
+TMatrix checks allowance before each new turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. When Codex reports an exhausted plan and available credits, TMatrix uses credits if Claude's plan is exhausted or unavailable, including when Claude Code is signed out or has no paid subscription. If Claude's usage report cannot be read, Claude still gets the turn and fails clearly if its plan is spent; other unverifiable routes report the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
 
 Press `s` to open **Settings**, move to **Routing policy**, and use Left or Right to choose a policy. Press `Ctrl+S` to save. You can put Claude first, omit the Codex credits fallback, or choose a single provider. A policy change applies to new turns.
 
-Open a worker to see which provider and allowance TMatrix selected. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows each provider's responses and tool activity. Active turns stay with their current provider.
+Open a worker to see which provider and allowance TMatrix selected. A task stays on the provider that holds its conversation while that plan has allowance, so follow-ups keep their context. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows each provider's responses and tool activity. Active turns stay with their current provider.
 
 TMatrix checks Anthropic's stable npm channel at startup and daily. Open **Settings**, press `o` for **Runtime updates**, and use Left or Right to choose a provider. TMatrix verifies each Claude Code release in its private runtime store before selecting it. Active workers keep the version they started with. Set `DISABLE_UPDATES=1` in the engine environment to turn off Claude update checks.
 
 TMatrix reports included plan allowance and available paid balances to Tzu Do when it has one production Tzu Do source. It refreshes these figures at startup and every five minutes while the engine runs. Claude Code does not report a prepaid balance, so Tzu Do can show Claude's plan allowance and whether Usage credits are off.
 
 To report to one account when several production sources are configured, set `TMATRIX_USAGE_SOURCE_ID` in the engine or service environment to that source's `id` in `config.json`. Use the same setting to opt in to reporting on official Tzu Do staging or a PR preview. Use `legacy` for a single-source legacy engine. A missing or invalid selection on a multi-account engine leaves reporting off.
+
+## Watch and talk to Claude workers
+
+On Linux and macOS with `tmux` installed, Claude workers run interactive Claude Code in a private tmux session. Open the worker: its panel shows Claude's live screen. Press `v` to switch between the screen and the activity log, and `a` to attach to the session itself; press `Ctrl+B` then `D` to return. Messages sent with `Enter` go into the running Claude conversation.
+
+Workers answer only Claude Code's startup dialogs (workspace trust and the bypass-permissions warning) and approve the project's MCP servers. If Claude asks for anything else, the worker's activity says so; attach to answer. Each turn's prompt is a file Claude reads, and Claude writes its handoff to a file TMatrix checks. Set `TMATRIX_CLAUDE_TERMINAL=0` in the engine environment to use headless Claude Code instead.
 
 ## Connect multiple sources
 

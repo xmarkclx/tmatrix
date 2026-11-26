@@ -117,7 +117,7 @@ async function main(): Promise<void> {
       });
       const conversationStore = storeFor(adapter.id);
       const claudeStore = claudeFallback ? storeFor("claude") : undefined;
-      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string): Promise<RuntimeSelection> => {
+      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string, prefer?: string): Promise<RuntimeSelection> => {
         let policy: RuntimePolicy;
         let route: FundingRoute | undefined;
         do {
@@ -129,6 +129,7 @@ async function main(): Promise<void> {
             claude: () => claudeFallback
               ? checkQuota(claudeFallback.readQuota, signal, cwd, claudeModel(model ?? "sonnet"))
               : Promise.resolve({ plan: "unavailable" }),
+            ...(prefer === "codex" || prefer === "claude" ? { prefer } : {}),
             ...(signal ? { signal } : {})
           }).catch(error => {
             if (policy === runtimePolicy) throw error;

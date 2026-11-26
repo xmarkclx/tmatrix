@@ -64,16 +64,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     try {
       await current?.stop();
     } finally {
-      if (cgroup && !await stopLeaseCgroup(cgroup, ownerToken)) {
-        throw new Error("Claude Code runtime cgroup shutdown could not be confirmed");
-      }
-      if (!cgroup && ownerToken && process.platform === "linux") {
-        const startedAfter = await processStart(process.pid);
-        if (!sessionIdSchema.safeParse(ownerToken).success || !startedAfter ||
-            !await stopLeaseProcesses(ownerToken, undefined, startedAfter)) {
-          throw new Error("Claude Code runtime lease shutdown could not be confirmed");
-        }
-      }
+      await confirmLeaseStopped(cgroup, ownerToken);
     }
   }
 
@@ -88,6 +79,18 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     let sessionId = savedId ?? randomUUID();
     let resume = savedId !== undefined;
     let running = false;
+    /** Open while the current process still reads stdin; each written message yields one result. */
+    let inbox: { child: ClaudeProcess; pending: number } | undefined;
+
+    async function steer(input: Input, turn: { signal?: AbortSignal } = {}): Promise<boolean> {
+      if (!inbox) return false;
+      const payload = await encodeInput(input, turn.signal);
+      const target = inbox;
+      if (!target || closePromise) return false;
+      target.child.write(payload);
+      target.pending += 1;
+      return true;
+    }
 
     async function* run(input: Input, turn: TurnOptions = {}): AsyncGenerator<WorkerThreadEvent> {
       if (closePromise || running) throw turnFailure("Claude Code runtime is unavailable");
@@ -144,9 +147,10 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
       turn.signal?.addEventListener("abort", abort, { once: true });
       let connected = false;
       let result: ClaudeResult | undefined;
+      const mailbox = { child, pending: 1 };
       try {
         ensureOpen(turn.signal);
-        child.send(payload);
+        child.write(payload);
         for await (const line of child.lines) {
           ensureOpen(turn.signal);
           const event = decode(line);
@@ -160,6 +164,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
             if (connected) continue;
             connected = true;
             resume = true;
+            inbox = mailbox;
             yield { type: "thread.started", thread_id: sessionId };
             ensureOpen(turn.signal);
             yield { type: "turn.started" };
@@ -174,6 +179,11 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
               throw turnFailure("Claude Code returned an invalid result");
             }
             result = parsed.data;
+            mailbox.pending -= 1;
+            if (mailbox.pending <= 0 || result.is_error) {
+              if (inbox === mailbox) inbox = undefined;
+              child.endInput();
+            }
           }
         }
 
@@ -199,13 +209,14 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
         }
         return result;
       } finally {
+        if (inbox === mailbox) inbox = undefined;
         turn.signal?.removeEventListener("abort", abort);
         await child.stop();
         current = undefined;
       }
     }
 
-    return { async runStreamed(input, turn) { return { events: run(input, turn) }; } };
+    return { steer, async runStreamed(input, turn) { return { events: run(input, turn) }; } };
   }
 
   return {
@@ -216,6 +227,20 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     },
     close: () => closePromise ??= close()
   };
+}
+
+/** Rejects unless every process in the worker's lease or cgroup is confirmed stopped. */
+export async function confirmLeaseStopped(cgroup: string | undefined, ownerToken: string): Promise<void> {
+  if (cgroup && !await stopLeaseCgroup(cgroup, ownerToken)) {
+    throw new Error("Claude Code runtime cgroup shutdown could not be confirmed");
+  }
+  if (!cgroup && ownerToken && process.platform === "linux") {
+    const startedAfter = await processStart(process.pid);
+    if (!sessionIdSchema.safeParse(ownerToken).success || !startedAfter ||
+        !await stopLeaseProcesses(ownerToken, undefined, startedAfter)) {
+      throw new Error("Claude Code runtime lease shutdown could not be confirmed");
+    }
+  }
 }
 
 function argumentsFor(options: RuntimeThreadOptions, id: string, resume: boolean, turn: TurnOptions): string[] {
@@ -239,7 +264,7 @@ function decode(line: string): z.infer<typeof eventHeader> | undefined {
   }
 }
 
-function* assistantActivity(blocks: unknown[]): Iterable<WorkerThreadEvent> {
+export function* assistantActivity(blocks: unknown[]): Iterable<WorkerThreadEvent> {
   for (const block of blocks) {
     const text = textBlock.safeParse(block);
     if (text.success && text.data.text.trim()) {
@@ -281,6 +306,6 @@ async function encodeInput(input: Input, signal?: AbortSignal): Promise<string> 
   return message(content);
 }
 
-function turnFailure(message: string): WorkerError {
+export function turnFailure(message: string): WorkerError {
   return new WorkerError({ message, code: "CLAUDE_TURN_FAILED", stage: "claude.turn" });
 }

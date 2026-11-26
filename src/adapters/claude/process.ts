@@ -59,6 +59,15 @@ export class ClaudeProcess {
     this.child.stdin.end(input);
   }
 
+  /** Writes a message and keeps stdin open so later messages can join the conversation. */
+  write(input: string): void {
+    this.child.stdin.write(input);
+  }
+
+  endInput(): void {
+    this.child.stdin.end();
+  }
+
   get inputFailed(): boolean {
     return this.transportError;
   }

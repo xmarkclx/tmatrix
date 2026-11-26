@@ -1,5 +1,8 @@
 import type { RuntimeAdapter } from "../../runtime-adapter.js";
+import type { AdapterContext } from "../../runtime-adapter.js";
 import { createClaudeRuntime } from "./runtime.js";
+import { createClaudeTerminalRuntime } from "./terminal-runtime.js";
+import { tmuxAvailable } from "./tmux.js";
 import { readClaudeQuota } from "./quota.js";
 import { ClaudeUpdateManager } from "./update-manager.js";
 
@@ -11,6 +14,10 @@ export default {
     const updates = new ClaudeUpdateManager(context.updateDirectory, context.environment);
     await updates.initialize();
     updates.executable();
+    // Interactive Claude in tmux lets people watch and type; headless stream-json is the fallback.
+    const terminal = context.environment.TMATRIX_CLAUDE_TERMINAL !== "0" && await tmuxAvailable(context.environment);
+    const runtimeFor = (worker: AdapterContext, executable: string) => terminal
+      ? createClaudeTerminalRuntime(worker, executable) : createClaudeRuntime(worker, executable);
     return {
       updates,
       async readQuota(signal, workingDirectory, model) {
@@ -23,7 +30,7 @@ export default {
       },
       create(worker) {
         const lease = updates.acquire();
-        const runtime = createClaudeRuntime(worker, lease.executable);
+        const runtime = runtimeFor(worker, lease.executable);
         return {
           ...runtime,
           async close() {

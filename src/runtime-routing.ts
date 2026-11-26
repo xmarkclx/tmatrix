@@ -30,12 +30,15 @@ const planOrder = {
 } as const;
 
 /**
- * The requested model's provider runs first on its included plan; the policy decides the fallback.
+ * The requested model's provider runs first on its included plan; next the runtime that
+ * holds the ticket's conversation; then the policy decides the fallback.
  * Without a recognizable model, the policy alone decides.
  */
-export async function chooseFundingRoute({ policy, requested, signal, ...probes }: {
+export async function chooseFundingRoute({ policy, requested, prefer, signal, ...probes }: {
   policy: RuntimePolicy;
   requested?: Provider | undefined;
+  /** Runtime that holds this ticket's conversation; kept while its plan is not confirmed spent. */
+  prefer?: Provider | undefined;
   codex: () => Promise<RuntimeQuota>;
   claude: () => Promise<RuntimeQuota>;
   signal?: AbortSignal;
@@ -47,13 +50,17 @@ export async function chooseFundingRoute({ policy, requested, signal, ...probes 
     const quota = await (requested === "codex" ? codex() : claude());
     signal?.throwIfAborted();
     if (quota.plan === "available") return `${requested}-plan`;
+    // An explicitly chosen Claude model still runs when Claude's usage report is unreadable.
+    if (requested === "claude" && quota.plan === "unknown" && policy !== "codex-only") return "claude-plan";
   }
   if (policy === "codex-only") return "codex";
   if (policy === "claude-only") return "claude";
 
   let codexQuota: RuntimeQuota | undefined;
   let claudeQuota: RuntimeQuota | undefined;
-  for (const route of planOrder[policy]) {
+  const preferred: FundingRoute | undefined = prefer === "codex" ? "codex-plan" : prefer === "claude" ? "claude-plan" : undefined;
+  const order = preferred ? [preferred, ...planOrder[policy].filter(route => route !== preferred)] : planOrder[policy];
+  for (const route of order) {
     if (route === "codex-plan") {
       codexQuota = await codex();
       signal?.throwIfAborted();
@@ -62,6 +69,8 @@ export async function chooseFundingRoute({ policy, requested, signal, ...probes 
       claudeQuota = await claude();
       signal?.throwIfAborted();
       if (claudeQuota.plan === "available") return route;
+      // Resuming the saved Claude conversation beats switching runtimes on an unreadable usage report.
+      if (route === preferred && claudeQuota.plan === "unknown") return route;
     }
   }
 
@@ -70,8 +79,11 @@ export async function chooseFundingRoute({ policy, requested, signal, ...probes 
     return "codex-credits";
   }
 
-  const message = claudeQuota?.plan === "unknown" || codexQuota?.plan === "unknown"
-    ? "Provider plan usage could not be verified. Check both sign-ins and turn off Claude Usage credits for automatic routing."
+  // Claude's account report is often unreadable (expired probe, usage credits on). Let Claude try the turn; it fails clearly if the plan is spent.
+  if (claudeQuota?.plan === "unknown") return "claude-plan";
+
+  const message = codexQuota?.plan === "unknown"
+    ? "Codex plan usage could not be verified and no Claude subscription is available. Check the Codex sign-in."
     : policy !== "subscriptions-only" && codexQuota?.plan === "exhausted"
       ? "No included allowance is available. Check your Codex credit balance or Claude subscription."
       : "No included allowance is available under the selected routing policy.";

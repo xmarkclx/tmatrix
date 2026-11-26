@@ -12,6 +12,7 @@ export interface WorkerObservation {
   steering_id?: string;
   runtime_adapter?: string;
   model?: string;
+  terminal?: { socket: string; session: string };
 }
 
 export interface LocalWorkerView {
@@ -27,6 +28,8 @@ export interface LocalWorkerView {
   run_kind?: "initial" | "resumed";
   input_revision: number;
   started_at: string;
+  /** Live tmux screen for this worker; local console only. */
+  terminal?: { socket: string; session: string };
   initial_prompt?: { text: string; at: string; input_revision: number; truncated: boolean; redacted: boolean };
   activity: { sequence: number; at: string; kind: string; text: string; steering_id?: string }[];
   steering: { id: string; message: string; status: "queued" | "runtime_received" | "response_observed" | "failed" }[];
@@ -74,8 +77,10 @@ export class LocalWorkerState {
       worker.worker_type = event.runtime_adapter;
       delete worker.thread_id;
       delete worker.run_kind;
+      delete worker.terminal;
     }
     if (event.model !== undefined) worker.model = event.model;
+    if (event.terminal !== undefined) worker.terminal = event.terminal;
     if (event.thread_id !== undefined) worker.thread_id = event.thread_id;
     if (event.run_kind !== undefined) worker.run_kind = event.run_kind;
     if (event.input_revision !== undefined) worker.input_revision = event.input_revision;
