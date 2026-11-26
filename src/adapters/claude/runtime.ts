@@ -239,7 +239,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
 }
 
 /** Rejects unless every process in the worker's lease or cgroup is confirmed stopped. */
-export async function confirmLeaseStopped(cgroup: string | undefined, ownerToken: string): Promise<void> {
+async function confirmLeaseStopped(cgroup: string | undefined, ownerToken: string): Promise<void> {
   if (cgroup && !await stopLeaseCgroup(cgroup, ownerToken)) {
     throw new Error("Claude Code runtime cgroup shutdown could not be confirmed");
   }
@@ -302,6 +302,6 @@ async function encodeInput(input: Input, signal?: AbortSignal): Promise<string> 
   return message(content);
 }
 
-export function turnFailure(message: string): WorkerError {
+function turnFailure(message: string): WorkerError {
   return new WorkerError({ message, code: "CLAUDE_TURN_FAILED", stage: "claude.turn" });
 }

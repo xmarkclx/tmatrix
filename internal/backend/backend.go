@@ -97,14 +97,6 @@ type Worker struct {
 	InitialPrompt *InitialPrompt `json:"initial_prompt,omitempty"`
 	Activity      []Activity     `json:"activity"`
 	Steering      []Steering     `json:"steering"`
-	// Terminal is the worker's live tmux screen on this machine, when its runtime has one.
-	Terminal *Terminal `json:"terminal,omitempty"`
-}
-
-// Terminal names a private tmux server (`tmux -L Socket`) and its session.
-type Terminal struct {
-	Socket  string `json:"socket"`
-	Session string `json:"session"`
 }
 
 // InitialPrompt is the prepared first input for this execution, kept separately

@@ -35,9 +35,7 @@ export type WorkerThreadEvent =
   | { type: "turn.failed"; error: { message: string } }
   | { type: "item.started" | "item.updated" | "item.completed"; item: WorkerThreadItem }
   | { type: "error"; message: string }
-  | { type: "local.activity"; kind: string; text: string }
-  /** A local tmux session showing this runtime's live screen; console-only, never reported to the task API. */
-  | { type: "local.terminal"; socket: string; session: string };
+  | { type: "local.activity"; kind: string; text: string };
 export interface StreamedTurnLike { events: AsyncGenerator<WorkerThreadEvent> }
 export interface ThreadLike {
   /** True confirms runtime receipt. False means explicitly unaccepted; retry next turn.
