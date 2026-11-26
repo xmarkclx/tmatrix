@@ -1,10 +1,11 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { WorkerError } from "../../errors.js";
-import type { RuntimeAdapter } from "../../runtime-adapter.js";
+import type { AdapterContext, RuntimeAdapter } from "../../runtime-adapter.js";
 import { hostExecutableCandidates } from "../host-executable.js";
+import { readGeminiQuota } from "./quota.js";
 import { createGeminiRuntime } from "./runtime.js";
 
-function geminiExecutable(environment: Record<string, string>): string {
+function geminiExecutable(environment: Record<string, string>): string | undefined {
   const name = process.platform === "win32" ? "agy.exe" : "agy";
   for (const candidate of hostExecutableCandidates(environment, name, environment.TMATRIX_AGY_PATH)) {
     try {
@@ -13,6 +14,11 @@ function geminiExecutable(environment: Record<string, string>): string {
       return candidate;
     } catch { continue; }
   }
+}
+
+function create(context: AdapterContext) {
+  const executable = geminiExecutable(context.environment);
+  if (executable) return createGeminiRuntime(context, executable);
   throw new WorkerError({
     code: "GEMINI_INSTALL_REQUIRED",
     stage: "runtime.route",
@@ -23,5 +29,15 @@ function geminiExecutable(environment: Record<string, string>): string {
 export default {
   apiVersion: 1,
   id: "gemini",
-  create: context => createGeminiRuntime(context, geminiExecutable(context.environment))
+  create,
+  setup(context) {
+    return {
+      create,
+      async readQuota(signal) {
+        signal?.throwIfAborted();
+        const executable = geminiExecutable(context.environment);
+        return executable ? readGeminiQuota(executable, context.environment, signal) : { plan: "unknown" };
+      }
+    };
+  }
 } satisfies RuntimeAdapter;

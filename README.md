@@ -54,7 +54,9 @@ To report to one account when several production sources are configured, set `TM
 
 The default TMatrix worker sends the exact ID to `agy` and uses its existing sign-in and tool permissions. For Neon, the model suffix selects the reasoning level. Run `agy models` again to discover new IDs. For a nonstandard installation, set `TMATRIX_AGY_PATH` to the absolute path of the executable.
 
-The default worker allows Gemini under `subscriptions-first` and `claude-first`. The `subscriptions-only` policy requires a verified allowance, which TMatrix cannot read from `agy`. Gemini is also available as a dedicated worker with `"worker_type": "gemini"` in the TMatrix configuration. [Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
+Tzu Do’s **AI usage** indicator shows the lowest remaining percentage across the Gemini quota windows in `agy -p /usage` and the account credit balance from `agy -p /credits`. TMatrix refreshes both readings on its five-minute reporting schedule. You can check either command as the user that runs TMatrix.
+
+The default worker allows Gemini under `subscriptions-first` and `claude-first`. The `subscriptions-only` policy skips Gemini because `agy` does not identify which allowance will fund a particular turn. Gemini is also available as a dedicated worker with `"worker_type": "gemini"` in the TMatrix configuration. [Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
 
 ## Watch and talk to Claude workers
 

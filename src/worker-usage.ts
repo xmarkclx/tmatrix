@@ -1,6 +1,6 @@
 import type { ReadRuntimeQuota } from "./runtime-adapter.js";
+import { isProvider, type Provider } from "./runtime-routing.js";
 
-export type UsageProvider = "codex" | "claude";
 export type UsageCredits =
   | { kind: "amount"; amount: string; unit: "credits" | "USD" }
   | { kind: "disabled" | "unavailable" | "unlimited" };
@@ -8,7 +8,7 @@ export interface UsageDisplay {
   plan_remaining_percent: number | null;
   credits: UsageCredits;
 }
-export type ProviderUsage = UsageDisplay & { provider: UsageProvider };
+export type ProviderUsage = UsageDisplay & { provider: Provider };
 type PublishUsage = (providers: ProviderUsage[], signal: AbortSignal) => Promise<void>;
 type ReportingSource = { origin: string; publish: PublishUsage };
 
@@ -27,7 +27,7 @@ export class WorkerUsageReporter {
   private timer?: NodeJS.Timeout;
   private pending: Promise<void> | undefined;
 
-  constructor(private readonly probes: Partial<Record<UsageProvider, ReadRuntimeQuota>>, private readonly sourceId?: string) {}
+  constructor(private readonly probes: Partial<Record<Provider, ReadRuntimeQuota>>, private readonly sourceId?: string) {}
 
   addSource(source: { id: string; pollUrl: string; publish: PublishUsage }): void {
     const url = workerUsageEndpoint(source.pollUrl);
@@ -58,7 +58,7 @@ export class WorkerUsageReporter {
 
   private async report(source: ReportingSource): Promise<void> {
     const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(25_000)]);
-    const checks = await Promise.allSettled((["codex", "claude"] satisfies UsageProvider[]).map(async provider => {
+    const checks = await Promise.allSettled(Object.keys(this.probes).filter(isProvider).map(async provider => {
       const quota = await this.probes[provider]?.(signal);
       if (!quota?.display) return;
       const { plan_remaining_percent, credits } = quota.display;

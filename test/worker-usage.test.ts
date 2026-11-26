@@ -12,6 +12,10 @@ const codexUsage = {
 const claudeUsage = {
   provider: "claude", plan_remaining_percent: 71.5, credits: { kind: "unavailable" }
 } satisfies ProviderUsage;
+const geminiUsage = {
+  provider: "gemini", plan_remaining_percent: 43,
+  credits: { kind: "amount", amount: "51.25", unit: "credits" }
+} satisfies ProviderUsage;
 
 function clientAt(pollUrl: string, fetch: typeof globalThis.fetch) {
   return new ApiClient({
@@ -45,6 +49,18 @@ describe("worker usage reports", () => {
     expect(fetch.mock.calls.map(([url]) => url)).toEqual(["https://tzudo.app/api/v1/ai/worker-usage"]);
   });
 
+  it("keeps legacy meters fresh on servers that reject the Gemini provider", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await client.reportWorkerUsage([codexUsage, claudeUsage, geminiUsage], new AbortController().signal);
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { providers: [codexUsage, claudeUsage, geminiUsage] },
+      { providers: [codexUsage, claudeUsage] }
+    ]);
+  });
+
   it("refreshes the sole production source while idle and aborts on close", async () => {
     vi.useFakeTimers();
     const first = deferred<void>();
@@ -65,7 +81,10 @@ describe("worker usage reports", () => {
       claude: async () => {
         claudeReads += 1;
         return { plan: "unknown", display: { plan_remaining_percent: 71.5, credits: { kind: "unavailable" } } };
-      }
+      },
+      gemini: async () => ({ plan: "unknown", display: {
+        plan_remaining_percent: geminiUsage.plan_remaining_percent, credits: geminiUsage.credits
+      } })
     });
     reporter.addSource({ id: "production", pollUrl: "https://tzudo.app/api/v1/ai/poll",
       async publish(providers) { history.push({ source: "production", providers }); } });
@@ -76,7 +95,7 @@ describe("worker usage reports", () => {
       await vi.advanceTimersByTimeAsync(300_001);
       first.resolve();
       await vi.advanceTimersByTimeAsync(0);
-      expect(history).toEqual([{ source: "production", providers: [codexUsage, claudeUsage] }]);
+      expect(history).toEqual([{ source: "production", providers: [codexUsage, claudeUsage, geminiUsage] }]);
       expect([codexReads, claudeReads]).toEqual([1, 1]);
       await vi.advanceTimersByTimeAsync(300_000);
       expect([codexReads, claudeReads]).toEqual([2, 2]);

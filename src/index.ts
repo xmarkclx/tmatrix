@@ -90,7 +90,9 @@ async function main(): Promise<void> {
   const claudeQuota = adapter.id === "claude" ? primary.readQuota : claudeFallback?.readQuota;
   const usageReporter = new WorkerUsageReporter({
     ...(adapter.id === "codex" && primary.readQuota ? { codex: primary.readQuota } : {}),
-    ...(claudeQuota ? { claude: claudeQuota } : {})
+    ...(claudeQuota ? { claude: claudeQuota } : {}),
+    ...(dedicatedGemini && primary.readQuota ? { gemini: primary.readQuota } : {}),
+    ...(multiProvider ? { gemini: async (signal) => checkQuota((await geminiRuntime()).readQuota, signal) } : {})
   }, process.env.TMATRIX_USAGE_SOURCE_ID);
   const conversationDirectory = config.conversation_state_dir
     ? resolve(config.conversation_state_dir)

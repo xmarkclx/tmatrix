@@ -91,8 +91,21 @@ export class ApiClient implements TicketApi {
   async reportWorkerUsage(providers: ProviderUsage[], signal: AbortSignal): Promise<void> {
     const url = workerUsageEndpoint(this.config.poll_url);
     if (!url || !providers.length) return;
-    await this.request({ operation: "worker_usage", method: "POST", url: url.href, path: url.pathname,
-      body: { providers }, optional: true, signal });
+    const publish = (readings: ProviderUsage[]) => this.request({
+      operation: "worker_usage", method: "POST", url: url.href, path: url.pathname,
+      body: { providers: readings }, optional: true, signal
+    });
+    try {
+      await publish(providers);
+    } catch (error) {
+      // Older Tzu Do servers reject the entire batch when it contains an unknown provider.
+      if (!(error instanceof WorkerError) || error.code !== "HTTP_STATUS_ERROR" ||
+          (error.details.status !== 400 && error.details.status !== 422)) throw error;
+      const legacy = providers.filter(({ provider }) => provider === "codex" || provider === "claude");
+      if (legacy.length === 0 || legacy.length === providers.length) throw error;
+      signal.throwIfAborted();
+      await publish(legacy);
+    }
   }
 
   async poll(request: PollRequest, signal?: AbortSignal): Promise<PollResponse> {
