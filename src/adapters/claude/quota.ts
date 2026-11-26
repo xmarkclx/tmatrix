@@ -66,6 +66,7 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const currentUsage = (windows: typeof accountWindows) => windows.flatMap(window =>
       window.utilization != null && window.resets_at != null && Date.parse(window.resets_at) > now ? [window.utilization] : []);
     const account = currentUsage(accountWindows);
+    if (usage.five_hour?.utilization === 0 && usage.five_hour.resets_at === null) account.push(0);
     const active = [...account, ...currentUsage(modelWindows)];
     const exhausted = active.includes(100);
     const complete = active.length > 0 && active.length === accountWindows.length + modelWindows.length;
