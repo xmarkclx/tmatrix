@@ -30,7 +30,7 @@ import { ProgressReporter } from "./progress.js";
 import { deliverResult } from "./result-delivery.js";
 import { prepareCodexInput } from "./adapters/codex/prepare-input.js";
 import { conversationReferenceSchema } from "./types.js";
-import { isProvider, modelProvider, providers, type Provider } from "./runtime-routing.js";
+import { isProvider, providers, type Provider } from "./runtime-routing.js";
 import type {
   ExecutionProfile,
   ReasoningEffort,
@@ -140,11 +140,10 @@ export interface RuntimeSelection {
   conversationStore: ConversationStore;
   model?: (requested: string) => string;
   label?: string;
-  assertCurrent?: () => void | Promise<void>;
 }
 
-/** `prefer` names the runtime holding this ticket's conversation so routing can keep its context. */
-type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string, prefer?: string, exclude?: Provider) => Promise<RuntimeSelection | undefined>;
+/** Selects the runtime for the ticket's exact model. */
+type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeSelection | undefined>;
 
 interface TurnOutcome {
   finalResponse: string;
@@ -287,12 +286,10 @@ export class TicketRunner {
         let turnInput = "";
         let missingConversationText: string | undefined;
         let localSteeringId: string | undefined;
-        let excludedProvider: Provider | undefined;
         const savedRuntime = recoveredRuntime ?? savedConversation(ticket, history)?.runtime;
 
         while (true) {
-          const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model,
-            activeSelection?.id ?? savedRuntime, excludedProvider);
+          const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model);
           options.signal?.throwIfAborted();
           const switching = !!activeThread && selected !== undefined && selected.id !== activeSelection?.id;
           const model = selected?.model?.(profile.model) ?? profile.model;
@@ -353,11 +350,8 @@ export class TicketRunner {
             // Tell the runtime, and through its reply the person, why the task moved providers.
             const previousRuntime = switching ? activeSelection?.id : savedRuntime;
             if (selected && previousRuntime && previousRuntime !== selected.id && isProvider(previousRuntime) && isProvider(selected.id)) {
-              const reason = previousRuntime === excludedProvider ? "limit"
-                : !switching && modelProvider(profile.model) === selected.id ? "model"
-                  : previousRuntime === "gemini" ? "model-changed" : "plan";
-              runtimeInput = `${providerChangeNote(previousRuntime, selected.id, selected.label, reason)}\n\n${runtimeInput}`;
-              options.observe?.({ kind: "runtime.switched", text: providerChangeSummary(previousRuntime, selected.id, reason) });
+              runtimeInput = `${providerChangeNote(previousRuntime, selected.id, selected.label)}\n\n${runtimeInput}`;
+              options.observe?.({ kind: "runtime.switched", text: providerChangeSummary(previousRuntime, selected.id) });
             }
             missingConversationText = previousAttempt || commentPrompt === undefined ? undefined : fullPrompt;
 
@@ -419,9 +413,7 @@ export class TicketRunner {
             options.observe?.({ kind: "prompt.prepared", text: runtimeInput, input_revision: processedInputRevision });
           }
           reporter.setInputRevision(processedInputRevision);
-          let turn: TurnOutcome;
-          try {
-            turn = await this.runPreparedTurn(
+          const turn = await this.runPreparedTurn(
               activeThread.thread,
               runtimeInput,
               ticket,
@@ -432,17 +424,8 @@ export class TicketRunner {
               localSteeringId,
               missingConversationText,
               steering,
-              warning,
-              selected?.assertCurrent
+              warning
             );
-          } catch (cause) {
-            if (!(cause instanceof WorkerError) || cause.code !== "CLAUDE_USAGE_LIMIT" ||
-                selected?.id !== "claude" || !this.selectRuntime || options.signal?.aborted || excludedProvider) throw cause;
-            excludedProvider = "claude";
-            log.warn({ event: "runtime.fallback_after_failure", runtime_adapter: selected.id, error_code: cause.code },
-              "Claude reached its usage limit. Selecting an alternate runtime.");
-            continue;
-          }
           missingConversationText = undefined;
           threadId = turn.threadId ?? threadId;
           usage = mergeUsage(usage, turn.usage);
@@ -674,8 +657,7 @@ export class TicketRunner {
     localSteeringId?: string,
     missingConversationText?: string,
     steering?: SteeringMailbox,
-    warning?: ReturnType<typeof createSecurityWarningReporter>,
-    beforeStart?: () => void | Promise<void>
+    warning?: ReturnType<typeof createSecurityWarningReporter>
   ): Promise<TurnOutcome> {
     const endpoint = ticket.endpoints.history.replace(/^GET\s+/i, "");
     const prepared = await prepareCodexInput(text, {
@@ -711,8 +693,7 @@ export class TicketRunner {
         missingConversationInput,
         steering,
         ticket,
-        warning,
-        beforeStart
+        warning
       );
     } finally {
       await prepared.cleanup();
@@ -732,8 +713,7 @@ export class TicketRunner {
     missingConversationInput?: () => Promise<Input>,
     steering?: SteeringMailbox,
     ticket?: Ticket,
-    warning?: ReturnType<typeof createSecurityWarningReporter>,
-    beforeStart?: () => void | Promise<void>
+    warning?: ReturnType<typeof createSecurityWarningReporter>
   ): Promise<TurnOutcome> {
     let finalResponse: string | undefined;
     let threadId: string | undefined;
@@ -768,7 +748,6 @@ export class TicketRunner {
     try {
       const streamed = await thread.runStreamed(input, {
         outputSchema: HANDOFF_OUTPUT_SCHEMA,
-        ...(beforeStart ? { beforeStart } : {}),
         ...(missingConversationInput ? { missingConversationInput } : {}),
         ...(signal ? { signal } : {})
       });
@@ -954,20 +933,14 @@ function recoverInterruptedRuntime(fullPrompt: string): string {
   ].join("\n\n");
 }
 
-type ProviderChangeReason = "model" | "model-changed" | "plan" | "limit";
-
-function providerChangeSummary(from: Provider, to: Provider, reason: ProviderChangeReason): string {
-  if (reason === "limit") return `Continued on ${providers[to].label} because ${providers[from].label} stopped with a usage-limit error.`;
-  if (reason === "model-changed") return `Continued on ${providers[to].label} because the task now selects a model outside ${providers[from].label}.`;
-  return reason === "model"
-    ? `Continued on ${providers[to].label} because the task's selected model runs there; the earlier conversation was on ${providers[from].label}.`
-    : `Continued on ${providers[to].label} because the ${providers[from].label} plan allowance was unavailable or could not be confirmed.`;
+function providerChangeSummary(from: Provider, to: Provider): string {
+  return `Continued on ${providers[to].label} because the task's selected model runs there; the earlier conversation was on ${providers[from].label}.`;
 }
 
-export function providerChangeNote(from: Provider, to: Provider, label: string | undefined, reason: ProviderChangeReason): string {
+export function providerChangeNote(from: Provider, to: Provider, label: string | undefined): string {
   return [
     "# Provider change",
-    `${providerChangeSummary(from, to, reason)}${label ? ` Current route: ${label}.` : ""}`,
+    `${providerChangeSummary(from, to)}${label ? ` Current route: ${label}.` : ""}`,
     `The earlier ${providers[from].label} conversation's turns are not available here. Rely on the durable ticket history, AI comments and saved handoff in this message, and verify the workspace before acting.`,
     `Start user_message with one short sentence telling the person that this reply continued on ${providers[to].label} and why.`
   ].join("\n");

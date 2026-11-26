@@ -28,8 +28,8 @@ func NewDemo() *Demo {
 func newDemo(now func() time.Time) *Demo {
 	demo := &Demo{now: now, snapshot: Snapshot{
 		Version: 2, InstanceID: "demo", MaxWorkers: 4, RunningWorkers: 2, PollIntervalMS: 5000,
-		RuntimeAdapter: "codex", RuntimePolicy: config.SubscriptionsFirst,
-		Pollers: []Poller{{ID: "demo-tzudo", Name: "TzuDo", Type: "tzudo", Status: "demo", URL: config.DefaultPollURL, LastPollAt: "2026-09-29T10:04:30Z"}, {ID: "demo-mindmap", Name: "Mindmap", Type: "tzudo", Status: "demo", URL: "https://mindmap.tzudo.app/api/ai-chat/worker/poll", LastPollAt: "2026-09-29T10:04:30Z"}},
+		RuntimeAdapter: "codex",
+		Pollers:        []Poller{{ID: "demo-tzudo", Name: "TzuDo", Type: "tzudo", Status: "demo", URL: config.DefaultPollURL, LastPollAt: "2026-09-29T10:04:30Z"}, {ID: "demo-mindmap", Name: "Mindmap", Type: "tzudo", Status: "demo", URL: "https://mindmap.tzudo.app/api/ai-chat/worker/poll", LastPollAt: "2026-09-29T10:04:30Z"}},
 		Workers: []Worker{
 			{ID: "demo-01", TicketID: "TMX-12", Title: "⌨️ Build a keyboard-first command palette", Status: "running", Model: "gpt-6-astra", WorkerType: "codex", ThreadID: "demo-conversation-01", RunKind: "resumed", InputRevision: 3, StartedAt: "2026-09-29T10:00:00Z", InitialPrompt: &InitialPrompt{
 				Text: "Build a keyboard-first command palette.\nKeep every action reachable without a mouse, preserve focus when switching workers, and verify the shortcuts.\nUse fictional sample data only. [sample prompt]", At: "2026-09-29T10:00:00Z", InputRevision: 2,
@@ -190,9 +190,6 @@ func (d *Demo) Configure(ctx context.Context, settings Settings) error {
 	}
 	if settings.PollIntervalMS != nil {
 		d.snapshot.PollIntervalMS = *settings.PollIntervalMS
-	}
-	if settings.RuntimePolicy != nil {
-		d.snapshot.RuntimePolicy = *settings.RuntimePolicy
 	}
 	if settings.IntakePaused != nil {
 		d.snapshot.IntakePaused = *settings.IntakePaused

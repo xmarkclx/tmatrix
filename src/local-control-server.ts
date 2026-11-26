@@ -4,15 +4,13 @@ import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
-import { runtimePolicySchema, type RuntimePolicy } from "./runtime-routing.js";
 import type { AdapterUpdateControl } from "./runtime-adapter.js";
 import type { Supervisor } from "./supervisor.js";
 
 const settingsSchema = z.object({
   max_workers: z.number().int().min(1).max(100).optional(),
   intake_paused: z.boolean().optional(),
-  poll_interval_ms: z.number().int().min(250).max(300_000).optional(),
-  runtime_policy: runtimePolicySchema.optional()
+  poll_interval_ms: z.number().int().min(250).max(300_000).optional()
 }).strict();
 const steerSchema = z.object({
   message: z.string().trim().min(1).max(8_000),
@@ -33,7 +31,6 @@ export async function startLocalControlServer(options: {
   onShutdown: () => void;
   adapterUpdates?: AdapterUpdateControl;
   additionalAdapterUpdates?: readonly AdapterUpdateControl[];
-  routing?: { get(): RuntimePolicy; set(policy: RuntimePolicy): void };
   addSource?(id: string): Promise<"applied" | "invalid" | "conflict">;
 }): Promise<LocalControlServer> {
   if (!isAbsolute(options.file)) throw new Error("TMATRIX_CONTROL_FILE must be an absolute path");
@@ -60,7 +57,6 @@ export async function startLocalControlServer(options: {
       ...options.supervisor.localSnapshot(),
       ...(primaryUpdater ? { adapter_update: updates[0] } : {}),
       ...(additionalUpdaters.length > 0 ? { adapter_updates: updates } : {}),
-      ...(options.routing ? { runtime_policy: options.routing.get() } : {}),
       ...(options.addSource ? { live_source_add: true } : {})
     };
   };
@@ -130,10 +126,6 @@ export async function startLocalControlServer(options: {
     if (request.url === "/v1/settings") {
       const parsed = settingsSchema.safeParse(body);
       if (!parsed.success) { respond(response, 400, { error: "Invalid settings" }); return; }
-      if (parsed.data.runtime_policy !== undefined) {
-        if (!options.routing) { respond(response, 409, { error: "This engine uses a fixed runtime adapter" }); return; }
-        options.routing.set(parsed.data.runtime_policy);
-      }
       options.supervisor.updateLocalSettings({
         ...(parsed.data.max_workers !== undefined ? { max_workers: parsed.data.max_workers } : {}),
         ...(parsed.data.intake_paused !== undefined ? { intake_paused: parsed.data.intake_paused } : {}),

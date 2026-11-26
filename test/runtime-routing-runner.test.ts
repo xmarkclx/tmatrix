@@ -9,7 +9,7 @@ import { LocalWorkerState } from "../src/local-worker-state.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
 import { SteeringMailbox, TicketRunner, type RuntimeSelection } from "../src/runner.js";
-import { chooseFundingRoute, geminiModel, isProvider, modelProvider } from "../src/runtime-routing.js";
+import { chooseFundingRoute, geminiModel } from "../src/runtime-routing.js";
 import type { Input, ThreadLike, WorkerThreadEvent } from "../src/runtime-adapter.js";
 import type { TicketResult } from "../src/types.js";
 import { makeTicket } from "./helpers.js";
@@ -64,7 +64,6 @@ async function fixture() {
     turnError?: WorkerError;
     failClose?: boolean;
     replacementOnResume?: string;
-    assertCurrent?: () => Promise<void>;
     contextSummary?: string;
   } = {}): RuntimeSelection {
     const threadFor = (threadId: string, model: string): ThreadLike => ({
@@ -97,7 +96,6 @@ async function fixture() {
       id,
       label: { codex: "Codex plan", claude: "Claude plan", gemini: "Gemini" }[id],
       conversationStore: { codex, claude, gemini }[id],
-      ...(options.assertCurrent ? { assertCurrent: options.assertCurrent } : {}),
       ...(id === "claude" ? { model: () => "sonnet" } : id === "gemini" ? { model: geminiModel } : {}),
       runtimeFactory() {
         return {
@@ -151,10 +149,8 @@ describe("Gemini model selection through the ticket runner", () => {
       conversation: gemini.reference("prior-gemini"), context_summary: "Gemini context."
     });
     const otherProviderProbe = vi.fn(async () => ({ plan: "available" as const }));
-    const { result } = run(async (signal, _cwd, model, prefer) => {
-      const funding = await chooseFundingRoute({ policy: "subscriptions-first", requested: modelProvider(model),
-        ...(prefer && isProvider(prefer) ? { prefer } : {}), ...(signal ? { signal } : {}),
-        codex: otherProviderProbe, claude: otherProviderProbe });
+    const { result } = run(async (signal, _cwd, model) => {
+      const funding = await chooseFundingRoute({ model, ...(signal ? { signal } : {}), codex: otherProviderProbe });
       if (funding !== "gemini") throw new Error(`Unexpected provider: ${funding}`);
       return route(funding);
     });
@@ -175,7 +171,7 @@ describe("Gemini model selection through the ticket runner", () => {
     await previous.rememberRuntime?.("gemini", gemini.reference("interrupted-gemini"));
     const { result, selectRuntime } = run([route("gemini")], true);
     await expect(result).resolves.toMatchObject({ status: "completed", threadId: "interrupted-gemini" });
-    expect(selectRuntime).toHaveBeenCalledWith(undefined, expect.any(String), "gemini-4-neon-low", "gemini", undefined);
+    expect(selectRuntime).toHaveBeenCalledWith(undefined, expect.any(String), "gemini-4-neon-low");
     expect(calls).toEqual(["resume interrupted-gemini", "close gemini"]);
     expect(results[0]).toMatchObject({ conversation: gemini.reference("interrupted-gemini") });
   });
@@ -193,12 +189,12 @@ describe("Gemini model selection through the ticket runner", () => {
 });
 
 describe("automatic runtime routing at turn boundaries", () => {
-  it("explains a fresh conversation on another provider when the saved one's plan is spent", async () => {
+  it("explains a fresh conversation on another provider when the task's model runs there", async () => {
     const { calls, inputs, route, run } = await fixture();
     const { result } = run([route("claude")]);
     await expect(result).resolves.toMatchObject({ status: "completed" });
     expect(calls[0]).toBe("start claude-fresh");
-    expect(inputs[0]).toMatch(/^# Provider change\nContinued on Claude because the Codex plan allowance/);
+    expect(inputs[0]).toMatch(/^# Provider change\nContinued on Claude because the task's selected model runs there; the earlier conversation was on Codex\./);
     expect(inputs[0]).toContain("Previously verified staging.");
   });
 
@@ -211,16 +207,14 @@ describe("automatic runtime routing at turn boundaries", () => {
     await expect(result).resolves.toEqual({ status: "completed", threadId: "codex-credits" });
     expect(api.markTaken).toHaveBeenCalledTimes(1);
     expect(selectRuntime).toHaveBeenCalledTimes(3);
-    // Routing is asked to keep the runtime that holds the saved, then the active, conversation.
-    expect(selectRuntime.mock.calls.map(call => (call as unknown[])[3])).toEqual(["codex", "codex", "claude"]);
     expect(calls).toEqual([
       "resume prior-codex", "close codex", "start claude-fresh", "close claude", "start codex-credits", "close codex"
     ]);
     // Each switch tells the runtime why the task moved and asks it to tell the person.
     expect(inputs[0]).not.toContain("# Provider change");
-    expect(inputs[1]).toContain("# Provider change\nContinued on Claude because the Codex plan allowance was unavailable or could not be confirmed. Current route: Claude plan.");
+    expect(inputs[1]).toContain("# Provider change\nContinued on Claude because the task's selected model runs there; the earlier conversation was on Codex. Current route: Claude plan.");
     expect(inputs[1]).toContain("Start user_message with one short sentence telling the person that this reply continued on Claude and why.");
-    expect(inputs[2]).toContain("Continued on Codex because the Claude plan allowance was unavailable or could not be confirmed. Current route: Codex credits.");
+    expect(inputs[2]).toContain("Continued on Codex because the task's selected model runs there; the earlier conversation was on Claude. Current route: Codex credits.");
     expect(local.snapshot()[0]?.activity.filter(entry => entry.kind === "runtime.switched")).toHaveLength(2);
     expect(inputs[1]).toContain("Previously verified staging.");
     expect(inputs[1]).toContain("Completed fixture step on prior-codex.");
@@ -253,28 +247,14 @@ describe("automatic runtime routing at turn boundaries", () => {
     });
   });
 
-  it("reselects with Claude excluded after a usage-limit error and delivers the comment on Codex", async () => {
-    const { api, calls, claude, inputs, route, run, ticket } = await fixture();
-    ticket.trigger_comment_id = "fixture-comment";
-    const comment = "Check the release checklist again.";
-    vi.mocked(api.getHistory).mockResolvedValueOnce({
-      conversation: claude.reference("prior-claude"),
-      trigger_comment: { id: ticket.trigger_comment_id, content: comment },
-      inherited_context: { content: "Previously verified staging." }
-    });
+  it("fails a Claude usage-limit turn instead of switching to another model", async () => {
+    const { calls, results, route, run } = await fixture();
     const limit = new WorkerError({ code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn", message: "Usage limit reached" });
-    const { local, result, selectRuntime } = run([route("claude", { turnError: limit }), route("codex")]);
-    await expect(result).resolves.toEqual({ status: "completed", threadId: "codex-fresh" });
-    expect(selectRuntime).toHaveBeenCalledTimes(2);
-    expect(selectRuntime).toHaveBeenLastCalledWith(undefined, expect.any(String), expect.any(String), "claude", "claude");
-    expect(calls).toEqual(["resume prior-claude", "close claude", "start codex-fresh", "close codex"]);
-    expect(inputs[0]).toContain(comment);
-    const summary = "Continued on Codex because Claude stopped with a usage-limit error.";
-    expect(inputs[1]).toContain(`# Provider change\n${summary}`);
-    expect(inputs[1]).toContain(comment);
-    expect(inputs[1]).toContain("Read the release requirements.");
-    expect(inputs[1]).toContain("Previously verified staging.");
-    expect(local.snapshot()[0]?.activity).toContainEqual(expect.objectContaining({ kind: "runtime.switched", text: summary }));
+    const { result, selectRuntime } = run([route("claude", { turnError: limit }), route("codex")]);
+    await expect(result).resolves.toEqual({ status: "failed", threadId: "claude-fresh" });
+    expect(selectRuntime).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["start claude-fresh", "close claude"]);
+    expect(results[0]).toMatchObject({ status: "failed", error: { code: "CLAUDE_USAGE_LIMIT" } });
   });
 
   it("does not start another runtime after a non-limit Claude failure", async () => {
@@ -285,22 +265,6 @@ describe("automatic runtime routing at turn boundaries", () => {
     expect(selectRuntime).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(["start claude-fresh", "close claude"]);
     expect(results[0]).toMatchObject({ status: "failed", error: { code: "CLAUDE_TURN_FAILED" } });
-  });
-
-  it("replays the pending local message with the last handoff after a Claude usage-limit error", async () => {
-    const { inputs, route, run } = await fixture();
-    const limit = new WorkerError({ code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn", message: "Usage limit reached" });
-    const { local, result } = run([
-      route("codex", { followUp: "Add the staging summary." }),
-      route("claude", { turnError: limit }),
-      route("codex")
-    ]);
-    await expect(result).resolves.toEqual({ status: "completed", threadId: "codex-fresh" });
-    expect(inputs[2]).toContain("Completed fixture step on prior-codex.");
-    expect(inputs[2]).toContain("Add the staging summary.");
-    expect(inputs[2]).toContain("Continued on Codex because Claude stopped with a usage-limit error.");
-    expect(inputs[2]).not.toContain("Continued on Claude");
-    expect(local.snapshot()[0]?.activity).toContainEqual(expect.objectContaining({ kind: "steering.response_observed" }));
   });
 
   it("does not start another runtime after a failed turn that may have written changes", async () => {
@@ -329,20 +293,6 @@ describe("automatic runtime routing at turn boundaries", () => {
     expect(results[0]?.user_message).toContain("The queued follow-up did not start.");
     expect(results[0]?.context_summary).toHaveLength(100_000);
     expect(results[0]?.context_summary).toMatch(/<!-- tmatrix-conversation:v1:/);
-  });
-
-  it("preserves the established route when a replacement is rejected before dispatch", async () => {
-    const { codex, ticket, results, route, run } = await fixture();
-    const { result } = run([route("codex", {
-      replacementOnResume: "empty-codex",
-      async assertCurrent() {
-        throw new WorkerError({ code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route", message: "No included allowance." });
-      }
-    })]);
-    await expect(result).resolves.toMatchObject({ status: "failed" });
-    expect(results[0]).toMatchObject({ status: "failed", error: { code: "RUNTIME_QUOTA_UNAVAILABLE" } });
-    expect(results[0]?.thread_id).toBeUndefined();
-    expect(await codex.resolve(ticket, { conversation: codex.reference("prior-codex") })).toBe("prior-codex");
   });
 
   it("resumes the interrupted provider's exact thread even if the server still reports a completed Codex route", async () => {
