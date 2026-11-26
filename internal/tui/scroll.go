@@ -53,6 +53,14 @@ func newestSequence(spans []activitySpan) int64 {
 }
 
 func (m *Model) syncActivity() {
+	if m.showingTerminal() {
+		m.viewport.Width = max(1, m.width-4)
+		m.viewport.Height = m.activityHeight()
+		m.composer.Width = max(1, m.width-6)
+		m.viewport.SetContent(m.screenContent())
+		m.viewport.GotoTop()
+		return
+	}
 	m.saveReadingPosition()
 	position := m.reading[m.selected]
 	m.viewport.Width = max(1, m.width-4)

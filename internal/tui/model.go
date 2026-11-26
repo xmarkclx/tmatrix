@@ -68,6 +68,9 @@ type Model struct {
 	composer            textinput.Model
 	composing           bool
 	drafts              map[string]string
+	screens             map[string]string
+	hideTerminal        map[string]bool
+	screenLoop          bool
 	form                []textinput.Model
 	field               int
 	runtimePolicyAtOpen config.RuntimePolicy

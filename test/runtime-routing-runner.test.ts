@@ -149,6 +149,8 @@ describe("automatic runtime routing at turn boundaries", () => {
     await expect(result).resolves.toEqual({ status: "completed", threadId: "codex-credits" });
     expect(api.markTaken).toHaveBeenCalledTimes(1);
     expect(selectRuntime).toHaveBeenCalledTimes(3);
+    // Routing is asked to keep the runtime that holds the saved, then the active, conversation.
+    expect(selectRuntime.mock.calls.map(call => (call as unknown[])[3])).toEqual(["codex", "codex", "claude"]);
     expect(calls).toEqual([
       "resume prior-codex", "close codex", "start claude-fresh", "close claude", "start codex-credits", "close codex"
     ]);

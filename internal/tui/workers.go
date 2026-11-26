@@ -175,6 +175,13 @@ func (m Model) workerContent() layoutBlock {
 			pinLabel = "[P] Unpin"
 		}
 		items = append(items, control{pinLabel, "P"})
+		if worker.Status == "running" && validTerminal(worker.Terminal) {
+			viewLabel := "[v] Activity"
+			if m.hideTerminal[worker.ID] {
+				viewLabel = "[v] Screen"
+			}
+			items = append(items, control{viewLabel, "v"}, control{"[a] Attach", "a"})
+		}
 		b.append(controls(items, width))
 		if !m.compact() {
 			hint := ""

@@ -142,7 +142,8 @@ export interface RuntimeSelection {
   assertCurrent?: () => void | Promise<void>;
 }
 
-type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeSelection>;
+/** `prefer` names the runtime holding this ticket's conversation so routing can keep its context. */
+type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string, prefer?: string) => Promise<RuntimeSelection>;
 
 interface TurnOutcome {
   finalResponse: string;
@@ -285,9 +286,11 @@ export class TicketRunner {
         let turnInput = "";
         let missingConversationText: string | undefined;
         let localSteeringId: string | undefined;
+        const savedRuntime = recoveredRuntime ?? savedConversation(ticket, history)?.runtime;
 
         while (true) {
-          const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model);
+          const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model,
+            activeSelection?.id ?? savedRuntime);
           options.signal?.throwIfAborted();
           const switching = !!activeThread && selected !== undefined && selected.id !== activeSelection?.id;
           const model = selected?.model?.(profile.model) ?? profile.model;
@@ -1087,6 +1090,10 @@ function normalizeRunFailure(cause: unknown, signal?: AbortSignal): WorkerError 
 /** Local console text is separate from the metadata-only task progress path. */
 function observeRuntimeEvent(event: WorkerThreadEvent): WorkerObservation {
   if (event.type === "local.activity") return { kind: event.kind, text: event.text };
+  if (event.type === "local.terminal") {
+    return { kind: "terminal.attached", text: "Claude Code is running in a terminal. Press v to view it or a to attach.",
+      terminal: { socket: event.socket, session: event.session } };
+  }
   if (event.type === "thread.started") return { kind: event.type, text: "Conversation connected", thread_id: event.thread_id };
   if ("item" in event) {
     const item = event.item;

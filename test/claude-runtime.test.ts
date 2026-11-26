@@ -13,16 +13,33 @@ vi.mock("node:child_process", { spy: true });
 const cli = String.raw`#!/usr/bin/env node
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const flag = (name) => args[args.indexOf(name) + 1];
 const resume = args.includes("--resume");
 const session = flag(resume ? "--resume" : "--session-id");
 const output = (event) => console.log(JSON.stringify({ session_id: session, ...event }));
-let stdin = "";
-process.stdin.setEncoding("utf8");
-for await (const chunk of process.stdin) stdin += chunk;
-const input = JSON.parse(stdin);
+const scenario = process.env.FIXTURE_SCENARIO;
+let turn = 0;
+// Like the real CLI, each stdin line is a user message and gets its own result while stdin stays open.
+for await (const line of createInterface({ input: process.stdin })) {
+const input = JSON.parse(line);
+turn += 1;
+if (scenario === "steer" && turn === 1) {
+  writeFileSync(session, "");
+  output({ type: "system", subtype: "init" });
+  output({ type: "assistant", message: { content: [{ type: "text", text: "Starting." }] } });
+  continue;
+}
+if (scenario === "steer") {
+  const handoff = (user_message) => ({ type: "result", subtype: "success", is_error: false,
+    structured_output: { outcome: "AI_DONE", context_summary: "durable state", user_message } });
+  output(handoff("First turn."));
+  output({ type: "system", subtype: "init" });
+  output(handoff("Steered: " + input.message.content));
+  continue;
+}
 appendFileSync("calls", JSON.stringify({
   session, resume, name: args.find(arg => arg.startsWith("--name=")),
   model: flag("--model"), effort: flag("--effort"),
@@ -30,7 +47,6 @@ appendFileSync("calls", JSON.stringify({
   nested: process.env.CLAUDECODE ?? null, queueKey: process.env.API_KEY ?? null,
   autoUpdater: process.env.DISABLE_AUTOUPDATER, content: input.message.content
 }) + "\n");
-const scenario = process.env.FIXTURE_SCENARIO;
 if (resume && !existsSync(session)) {
   output({ type: "result", subtype: "error_during_execution", is_error: true,
     errors: [scenario === "ambiguous" ? "Synthetic provider error" : "No conversation found with session ID: " + session] });
@@ -64,6 +80,7 @@ if (resume && !existsSync(session)) {
     } }),
     usage: { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, output_tokens: 5 }
   });
+}
 }
 `;
 const outputSchema = { type: "object", required: ["outcome", "context_summary", "user_message"] };
@@ -196,6 +213,27 @@ describe.skipIf(process.platform === "win32")("Claude Code runtime", () => {
           content: "Here is a follow-up."
         }
       ]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("delivers a message sent mid-turn to the running conversation and returns its handoff", async () => {
+    const { runtime, options } = await fixture("steer");
+    try {
+      const thread = runtime.startThread(options);
+      expect(await thread.steer?.("Too early.")).toBe(false);
+      const events = (await thread.runStreamed("Finish the ticket.", { outputSchema })).events;
+      const seen: WorkerThreadEvent[] = [];
+      for await (const event of events) {
+        seen.push(event);
+        if (event.type === "turn.started") expect(await thread.steer?.("Check the footer too.")).toBe(true);
+      }
+      expect(seen.find(event => event.type === "item.completed")).toMatchObject({ item: {
+        type: "agent_message",
+        text: '{"outcome":"AI_DONE","context_summary":"durable state","user_message":"Steered: Check the footer too."}'
+      } });
+      expect(await thread.steer?.("Too late.")).toBe(false);
     } finally {
       await runtime.close();
     }

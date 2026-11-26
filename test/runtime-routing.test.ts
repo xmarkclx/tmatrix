@@ -23,15 +23,33 @@ describe("subscription-first runtime routing", () => {
     await expect(resolve(policy, exhausted, unavailable)).resolves.toBe("codex-credits");
   });
 
-  it("requires confirmed exhaustion of the Codex subscription and a positive credit signal", async () => {
-    for (const [codex, claude] of [[unknown, exhausted], [exhausted, unknown],
-      [unknown, unavailable], [{ plan: "exhausted", credits: false }, unavailable],
+  it("requires confirmed Codex exhaustion and a positive credit signal before spending credits", async () => {
+    for (const [codex, claude] of [[unknown, exhausted], [unknown, unavailable],
+      [{ plan: "exhausted", credits: false }, unavailable],
       [{ plan: "exhausted", credits: false }, exhausted]] satisfies [RuntimeQuota, RuntimeQuota][]) {
       await expect(resolve("subscriptions-first", codex, claude)).rejects.toMatchObject({
         code: "RUNTIME_QUOTA_UNAVAILABLE", retryable: false
       });
     }
     await expect(resolve("subscriptions-first", unknown, available)).resolves.toBe("claude-plan");
+  });
+
+  it.each(["subscriptions-first", "claude-first", "subscriptions-only"] as const)(
+    "lets Claude try the turn when its account usage cannot be read under %s", async (policy) => {
+      await expect(resolve(policy, exhausted, unknown)).resolves.toBe("claude-plan");
+      await expect(resolve(policy, unknown, unknown)).resolves.toBe("claude-plan");
+      await expect(resolve(policy, available, unknown)).resolves.toBe("codex-plan");
+    });
+
+  it("keeps the runtime that holds the ticket's conversation while its plan is not spent", async () => {
+    const prefer = (policy: RuntimePolicy, runtime: "codex" | "claude", codex: RuntimeQuota, claude: RuntimeQuota) =>
+      chooseFundingRoute({ policy, prefer: runtime, codex: async () => codex, claude: async () => claude });
+    await expect(prefer("subscriptions-first", "claude", available, available)).resolves.toBe("claude-plan");
+    await expect(prefer("subscriptions-first", "claude", available, unknown)).resolves.toBe("claude-plan");
+    await expect(prefer("subscriptions-first", "claude", available, exhausted)).resolves.toBe("codex-plan");
+    await expect(prefer("claude-first", "codex", available, available)).resolves.toBe("codex-plan");
+    await expect(prefer("claude-first", "codex", unknown, available)).resolves.toBe("claude-plan");
+    await expect(prefer("subscriptions-first", "codex", exhausted, exhausted)).resolves.toBe("codex-credits");
   });
 
   it("respects Claude-first and no credit fallback policies", async () => {

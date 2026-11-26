@@ -77,7 +77,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.syncActivity()
 		}
-		return m, nextRefresh()
+		screen := m.startScreenLoop()
+		return m, tea.Batch(nextRefresh(), screen)
+	case screenMsg:
+		return m.handleScreen(msg)
+	case screenTickMsg:
+		return m.handleScreenTick()
 	case resultMsg:
 		m.busy = false
 		if msg.kind == "service" || msg.kind == "restart" {
@@ -428,6 +433,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "m":
 		return m, m.enterMatrix()
+	case "v":
+		return m.toggleTerminal()
+	case "a":
+		return m.attachTerminal()
 	case "right", "tab", "l":
 		m.selectWorker(m.selectedIndex() + 1)
 	case "left", "shift+tab", "h":
