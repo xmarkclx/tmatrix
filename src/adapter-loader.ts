@@ -5,7 +5,8 @@ import type { AdapterContext, AdapterSetup, AdapterSetupContext, ReadRuntimeQuot
 
 const bundledAdapters = new Map<string, () => Promise<{ default: RuntimeAdapter }>>([
   ["codex", () => import("./adapters/codex/index.js")],
-  ["claude", () => import("./adapters/claude/index.js")]
+  ["claude", () => import("./adapters/claude/index.js")],
+  ["gemini", () => import("./adapters/gemini/index.js")]
 ]);
 
 export const adapterIdPattern = /^[a-z][a-z0-9-]{0,63}$/;

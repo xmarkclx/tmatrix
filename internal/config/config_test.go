@@ -200,19 +200,23 @@ func TestCustomAdapterConfigurationRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBundledClaudeConfigurationRoundTrip(t *testing.T) {
-	dir := privateTestDir(t)
-	cfg := Default()
-	cfg.WorkerType = "claude"
-	if err := Save(dir, cfg); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := Load(dir)
-	if err != nil || loaded.WorkerType != "claude" || loaded.AdapterModule != "" {
-		t.Fatalf("Claude settings were not restored: %v", err)
-	}
-	cfg.AdapterModule = filepath.Join(dir, "replacement.mjs")
-	if err := Save(dir, cfg); err == nil {
-		t.Fatal("accepted a module override for the bundled Claude adapter")
+func TestBundledStandaloneConfigurationRoundTrip(t *testing.T) {
+	for _, adapter := range []string{"claude", "gemini"} {
+		t.Run(adapter, func(t *testing.T) {
+			dir := privateTestDir(t)
+			cfg := Default()
+			cfg.WorkerType = adapter
+			if err := Save(dir, cfg); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := Load(dir)
+			if err != nil || loaded.WorkerType != adapter || loaded.AdapterModule != "" {
+				t.Fatalf("settings were not restored: %v", err)
+			}
+			cfg.AdapterModule = filepath.Join(dir, "replacement.mjs")
+			if err := Save(dir, cfg); err == nil {
+				t.Fatal("accepted a module override for the bundled adapter")
+			}
+		})
 	}
 }

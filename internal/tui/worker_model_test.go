@@ -58,9 +58,10 @@ func TestWorkerCardsShowModelAcrossSizes(t *testing.T) {
 
 func TestWorkerCardModelIsSanitizedAndDoesNotBorrowAnotherModel(t *testing.T) {
 	m, _ := testModel()
-	m.snapshot.Workers[0].Model = "claude-opus-5-5\x1b]52;c;UNSAFE\x07\n"
+	m.snapshot.Workers[0].WorkerType = "gemini"
+	m.snapshot.Workers[0].Model = "gemini-4-neon-high\x1b]52;c;UNSAFE\x07\n"
 	cards := ansi.Strip(strings.Join(m.workerCards().lines, "\n"))
-	if !strings.Contains(cards, "Model · claude-opus-5-5") || !strings.Contains(cards, "Model unavailable") || strings.Contains(cards, "UNSAFE") {
+	if !strings.Contains(cards, "Model · gemini-4-neon-high") || !strings.Contains(cards, "Model unavailable") || strings.Contains(cards, "UNSAFE") {
 		t.Fatalf("model missing, borrowed, or unsafe:\n%s", cards)
 	}
 	m.selectWorker(1)

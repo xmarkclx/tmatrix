@@ -6,7 +6,7 @@ import { z } from "zod";
 import { CGROUP_ENV } from "../../conversation-cgroup.js";
 import { LEASE_ENV } from "../../conversation-recovery.js";
 import type { RuntimeQuota } from "../../runtime-adapter.js";
-import { ClaudeProcess } from "./process.js";
+import { RuntimeProcess } from "../process.js";
 
 const unknownQuota = { plan: "unknown" } satisfies RuntimeQuota;
 
@@ -92,7 +92,7 @@ async function readOutput(options: {
   signal: AbortSignal;
   input?: string;
 }): Promise<Output> {
-  const child = new ClaudeProcess(options.executable, options.args, options.cwd, options.environment);
+  const child = new RuntimeProcess(options.executable, options.args, options.cwd, options.environment, "Claude Code");
   const stop = () => { void child.stop().catch(() => undefined); };
   options.signal.addEventListener("abort", stop, { once: true });
   try {

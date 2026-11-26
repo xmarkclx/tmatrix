@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeQuota } from "../src/runtime-adapter.js";
-import { chooseFundingRoute, modelProvider, type Provider, type RuntimePolicy } from "../src/runtime-routing.js";
+import { chooseFundingRoute, geminiModel, modelProvider, type Provider, type RuntimePolicy } from "../src/runtime-routing.js";
 
 const available = { plan: "available", credits: true } satisfies RuntimeQuota;
 const exhausted = { plan: "exhausted", credits: true } satisfies RuntimeQuota;
@@ -85,6 +85,33 @@ describe("model-selected runtime routing", () => {
     expect(["claude-opus-5-5", "sonnet", "opus", "haiku-5"].map(modelProvider)).toEqual(["claude", "claude", "claude", "claude"]);
     expect(["gpt-6.2-sol", "codex", "codex-mini", "o3"].map(modelProvider)).toEqual(["codex", "codex", "codex", "codex"]);
     expect([undefined, "custom-model", "sonnetish"].map(modelProvider)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("maps direct Neon IDs without rewriting their model setting", () => {
+    const models = ["gemini-4-neon-high", "gemini-4-neon-low", "gemini-4-neon-medium", "gemini-4-neon-xhigh"];
+    for (const model of models) {
+      expect(modelProvider(model)).toBe("gemini");
+      expect(geminiModel(model)).toBe(model);
+    }
+    expect(geminiModel("gpt-6.2-sol")).toBe("gemini-4-neon-high");
+  });
+
+  it.each(["subscriptions-first", "claude-first"] as const)("selects Gemini via agy under %s without checking Codex or Claude", async policy => {
+    const probe = async (): Promise<RuntimeQuota> => { throw new Error("Unexpected quota probe"); };
+    await expect(chooseFundingRoute({ policy, requested: "gemini", prefer: "codex", codex: probe, claude: probe })).resolves.toBe("gemini");
+    await expect(chooseFundingRoute({ policy, prefer: "gemini", codex: probe, claude: probe })).resolves.toBe("gemini");
+    await expect(chooseFundingRoute({ policy, requested: "codex", prefer: "gemini",
+      codex: async () => available, claude: probe })).resolves.toBe("codex-plan");
+  });
+
+  it.each(["codex-only", "claude-only", "subscriptions-only"] as const)("rejects Gemini under %s before trying any provider", async policy => {
+    const probe = async (): Promise<RuntimeQuota> => { throw new Error("Unexpected quota probe"); };
+    await expect(chooseFundingRoute({ policy, requested: "gemini", codex: probe, claude: probe })).rejects.toMatchObject({
+      code: "GEMINI_ROUTING_POLICY_INCOMPATIBLE"
+    });
+    await expect(chooseFundingRoute({ policy, prefer: "gemini", codex: probe, claude: probe })).rejects.toMatchObject({
+      code: "GEMINI_ROUTING_POLICY_INCOMPATIBLE"
+    });
   });
 
   it("runs a Claude model on Claude even when the policy prefers Codex", async () => {
