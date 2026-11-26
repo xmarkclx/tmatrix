@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
-import { chooseFundingRoute, modelProvider, type FundingRoute, type RuntimePolicy } from "./runtime-routing.js";
+import { chooseFundingRoute, modelProvider, type FundingRoute, type Provider, type RuntimePolicy } from "./runtime-routing.js";
 import type { ReadRuntimeQuota, RuntimeAdapter, RuntimeQuota } from "./runtime-adapter.js";
 
 const fundingLabels = {
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
       });
       const conversationStore = storeFor(adapter.id);
       const claudeStore = claudeFallback ? storeFor("claude") : undefined;
-      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string, prefer?: string): Promise<RuntimeSelection> => {
+      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string, prefer?: string, exclude?: Provider): Promise<RuntimeSelection> => {
         let policy: RuntimePolicy;
         let route: FundingRoute | undefined;
         do {
@@ -125,8 +125,10 @@ async function main(): Promise<void> {
           route = await chooseFundingRoute({
             policy,
             requested: modelProvider(model),
-            codex: () => checkQuota(primary.readQuota, signal, cwd),
-            claude: () => claudeFallback
+            codex: () => exclude === "codex"
+              ? Promise.resolve({ plan: "unavailable" })
+              : checkQuota(primary.readQuota, signal, cwd),
+            claude: () => claudeFallback && exclude !== "claude"
               ? checkQuota(claudeFallback.readQuota, signal, cwd, claudeModel(model ?? "sonnet"))
               : Promise.resolve({ plan: "unavailable" }),
             ...(prefer === "codex" || prefer === "claude" ? { prefer } : {}),
@@ -136,6 +138,10 @@ async function main(): Promise<void> {
             return undefined;
           });
         } while (route === undefined || policy !== runtimePolicy);
+        if (route === exclude) throw new WorkerError({
+          code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route",
+          message: "No alternate runtime is available under the selected routing policy."
+        });
         const assertPolicy = () => {
           if (policy !== runtimePolicy) throw new WorkerError({
             code: "RUNTIME_POLICY_CHANGED", stage: "runtime.route",
