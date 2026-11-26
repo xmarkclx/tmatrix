@@ -68,6 +68,9 @@ describe.skipIf(process.platform === "win32")("Gemini Antigravity runtime", () =
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
     const executable = join(dir, "fake-agy.mjs");
     await writeFile(executable, cli, { mode: 0o700 });
+    const bin = join(dir, "bin");
+    await mkdir(bin);
+    await symlink(process.execPath, join(bin, "node"));
     const home = join(dir, "home");
     if (userInstall) {
       const userBin = join(home, ".local", "bin");
@@ -77,7 +80,7 @@ describe.skipIf(process.platform === "win32")("Gemini Antigravity runtime", () =
     const runtime = adapter.create({
       environment: {
         HOME: home,
-        PATH: dirname(process.execPath),
+        PATH: bin,
         ...(userInstall ? {} : { TMATRIX_AGY_PATH: executable }),
         API_KEY: "synthetic queue credential",
         FIXTURE_SCENARIO: scenario,
