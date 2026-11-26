@@ -7,15 +7,29 @@ export const runtimePolicySchema = z.enum([
 ]);
 export type RuntimePolicy = z.infer<typeof runtimePolicySchema>;
 export const defaultRuntimePolicy: RuntimePolicy = "subscriptions-first";
-export type FundingRoute = "codex-plan" | "claude-plan" | "codex-credits" | "codex" | "claude";
-export type Provider = "codex" | "claude";
+export type FundingRoute = "codex-plan" | "claude-plan" | "codex-credits" | "codex" | "claude" | "gemini";
 
-/** The provider an explicit model ID belongs to, or undefined when the ID names neither. */
+export const providers = {
+  codex: { label: "Codex", model: /^(?:gpt-|codex(?:-|$)|o[1-4](?:-|$))/ },
+  claude: { label: "Claude", model: /^(?:claude-|sonnet(?:$|-)|opus(?:$|-)|haiku(?:$|-))/ },
+  gemini: { label: "Gemini", model: /^gemini-/ }
+} as const;
+export type Provider = keyof typeof providers;
+
+export function isProvider(id: string): id is Provider {
+  return Object.hasOwn(providers, id);
+}
+
 export function modelProvider(model: string | undefined): Provider | undefined {
   if (model === undefined) return undefined;
-  if (/^(?:claude-|sonnet(?:$|-)|opus(?:$|-)|haiku(?:$|-))/.test(model)) return "claude";
-  if (/^(?:gpt-|codex(?:-|$)|o[1-4](?:-|$))/.test(model)) return "codex";
+  for (const id in providers) {
+    if (isProvider(id) && providers[id].model.test(model)) return id;
+  }
   return undefined;
+}
+
+export function geminiModel(model: string): string {
+  return providers.gemini.model.test(model) ? model : "gemini-4-neon-high";
 }
 
 function once<T>(probe: () => Promise<T>): () => Promise<T> {
@@ -45,6 +59,16 @@ export async function chooseFundingRoute({ policy, requested, prefer, signal, ..
   signal?: AbortSignal;
 }): Promise<FundingRoute> {
   signal?.throwIfAborted();
+  if (requested === "gemini" || (requested === undefined && prefer === "gemini")) {
+    // agy does not provide a verified included-allowance check.
+    if (policy !== "subscriptions-first" && policy !== "claude-first") {
+      throw new WorkerError({
+        code: "GEMINI_ROUTING_POLICY_INCOMPATIBLE", stage: "runtime.route",
+        message: "The selected routing policy does not allow Gemini via Antigravity. Choose an automatic subscription priority or select a compatible model."
+      });
+    }
+    return "gemini";
+  }
   const codex = once(probes.codex);
   const claude = once(probes.claude);
   if (requested !== undefined && policy !== `${requested}-only`) {

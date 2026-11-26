@@ -78,22 +78,26 @@ func TestRestartRefusesUnverifiedEngine(t *testing.T) {
 	}
 }
 
-func TestRestartKeepsCurrentEngineWhenBundleLacksClaude(t *testing.T) {
-	s, requested := drainingService(t)
-	cfg := saveFixtureSource(t, s, "https://original.invalid/poll", "original-fixture")
-	cfg.WorkerType = "claude"
-	if err := config.Save(s.Dir, cfg); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := s.Restart(ctx); err == nil || !strings.Contains(err.Error(), "engine update needed for Claude") {
-		t.Fatalf("expected Claude bundle error: %v", err)
-	}
-	select {
-	case <-requested:
-		t.Fatal("requested shutdown without a compatible replacement")
-	default:
+func TestRestartKeepsCurrentEngineWhenBundleLacksStandaloneAdapter(t *testing.T) {
+	for _, tt := range []struct{ adapter, label string }{{"claude", "Claude"}, {"gemini", "Gemini"}} {
+		t.Run(tt.adapter, func(t *testing.T) {
+			s, requested := drainingService(t)
+			cfg := saveFixtureSource(t, s, "https://original.invalid/poll", "original-fixture")
+			cfg.WorkerType = tt.adapter
+			if err := config.Save(s.Dir, cfg); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := s.Restart(ctx); err == nil || !strings.Contains(err.Error(), "engine update needed for "+tt.label) {
+				t.Fatalf("expected bundle error: %v", err)
+			}
+			select {
+			case <-requested:
+				t.Fatal("requested shutdown without a compatible replacement")
+			default:
+			}
+		})
 	}
 }
 

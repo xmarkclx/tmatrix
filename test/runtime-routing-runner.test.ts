@@ -9,6 +9,7 @@ import { LocalWorkerState } from "../src/local-worker-state.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
 import { SteeringMailbox, TicketRunner, type RuntimeSelection } from "../src/runner.js";
+import { chooseFundingRoute, geminiModel, isProvider, modelProvider } from "../src/runtime-routing.js";
 import type { Input, ThreadLike, WorkerThreadEvent } from "../src/runtime-adapter.js";
 import type { TicketResult } from "../src/types.js";
 import { makeTicket } from "./helpers.js";
@@ -36,6 +37,7 @@ async function fixture() {
   });
   const codex = store("codex");
   const claude = store("claude");
+  const gemini = store("gemini");
   const calls: string[] = [];
   const inputs: string[] = [];
   const results: TicketResult[] = [];
@@ -55,7 +57,7 @@ async function fixture() {
     })
   };
 
-  function route(id: "codex" | "claude", options: {
+  function route(id: "codex" | "claude" | "gemini", options: {
     thread?: string;
     followUp?: string;
     failTurn?: boolean;
@@ -93,10 +95,10 @@ async function fixture() {
     });
     return {
       id,
-      label: id === "codex" ? "Codex plan" : "Claude plan",
-      conversationStore: id === "codex" ? codex : claude,
+      label: { codex: "Codex plan", claude: "Claude plan", gemini: "Gemini" }[id],
+      conversationStore: { codex, claude, gemini }[id],
       ...(options.assertCurrent ? { assertCurrent: options.assertCurrent } : {}),
-      ...(id === "claude" ? { model: () => "sonnet" } : {}),
+      ...(id === "claude" ? { model: () => "sonnet" } : id === "gemini" ? { model: geminiModel } : {}),
       runtimeFactory() {
         return {
           startThread({ model }) {
@@ -117,11 +119,11 @@ async function fixture() {
     };
   }
 
-  function run(selected: (RuntimeSelection | WorkerError)[], recovered = false) {
-    const pending = [...selected];
+  function run(selected: (RuntimeSelection | WorkerError)[] | NonNullable<ConstructorParameters<typeof TicketRunner>[0]["selectRuntime"]>, recovered = false) {
+    const pending = Array.isArray(selected) ? [...selected] : [];
     const local = new LocalWorkerState();
     local.start(ticket);
-    const selectRuntime = vi.fn(async () => {
+    const selectRuntime = vi.fn(typeof selected === "function" ? selected : async () => {
       const next = pending.shift();
       if (!next) throw new Error("Unexpected selection");
       if (next instanceof WorkerError) throw next;
@@ -138,8 +140,57 @@ async function fixture() {
     return { local, result, selectRuntime };
   }
 
-  return { codex, claude, store, ticket, api, calls, inputs, results, route, run };
+  return { codex, claude, gemini, store, ticket, api, calls, inputs, results, route, run };
 }
+
+describe("Gemini model selection through the ticket runner", () => {
+  it("dispatches a Neon model with its original ID and resumes the provider-scoped conversation", async () => {
+    const { gemini, ticket, api, calls, inputs, results, route, run } = await fixture();
+    ticket.model = "gemini-4-neon-xhigh";
+    vi.mocked(api.getHistory).mockResolvedValue({
+      conversation: gemini.reference("prior-gemini"), context_summary: "Gemini context."
+    });
+    const otherProviderProbe = vi.fn(async () => ({ plan: "available" as const }));
+    const { result } = run(async (signal, _cwd, model, prefer) => {
+      const funding = await chooseFundingRoute({ policy: "subscriptions-first", requested: modelProvider(model),
+        ...(prefer && isProvider(prefer) ? { prefer } : {}), ...(signal ? { signal } : {}),
+        codex: otherProviderProbe, claude: otherProviderProbe });
+      if (funding !== "gemini") throw new Error(`Unexpected provider: ${funding}`);
+      return route(funding);
+    });
+
+    await expect(result).resolves.toMatchObject({ status: "completed" });
+    expect(otherProviderProbe).not.toHaveBeenCalled();
+    expect(calls).toEqual(["resume prior-gemini", "close gemini"]);
+    expect(inputs[0]).toContain("Read the release requirements.");
+    expect(results[0]).toMatchObject({
+      user_message: "Finished with gemini-4-neon-xhigh.", conversation: gemini.reference("prior-gemini")
+    });
+  });
+
+  it("resumes a Gemini attempt after recovering the shared task lease", async () => {
+    const { gemini, store, ticket, calls, results, route, run } = await fixture();
+    ticket.model = "gemini-4-neon-low";
+    const previous = await store("codex", previousBoot).acquire(ticket);
+    await previous.rememberRuntime?.("gemini", gemini.reference("interrupted-gemini"));
+    const { result, selectRuntime } = run([route("gemini")], true);
+    await expect(result).resolves.toMatchObject({ status: "completed", threadId: "interrupted-gemini" });
+    expect(selectRuntime).toHaveBeenCalledWith(undefined, expect.any(String), "gemini-4-neon-low", "gemini", undefined);
+    expect(calls).toEqual(["resume interrupted-gemini", "close gemini"]);
+    expect(results[0]).toMatchObject({ conversation: gemini.reference("interrupted-gemini") });
+  });
+
+  it("reports an agy turn failure without changing providers", async () => {
+    const { ticket, calls, results, route, run } = await fixture();
+    ticket.model = "gemini-4-neon-high";
+    const unavailable = new WorkerError({ code: "GEMINI_UNAVAILABLE", stage: "gemini.run", message: "Could not start Antigravity." });
+    const { result, selectRuntime } = run([route("gemini", { turnError: unavailable }), route("codex")]);
+    await expect(result).resolves.toMatchObject({ status: "failed" });
+    expect(selectRuntime).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["start gemini-fresh", "close gemini"]);
+    expect(results[0]).toMatchObject({ error: { code: "GEMINI_UNAVAILABLE" } });
+  });
+});
 
 describe("automatic runtime routing at turn boundaries", () => {
   it("explains a fresh conversation on another provider when the saved one's plan is spent", async () => {

@@ -423,7 +423,8 @@ func (s *Service) Restart(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if (cfg.WorkerType == "claude" || cfg.RuntimePolicy != "") && len(cfg.Sources) > 0 {
+	_, standalone := standaloneAdapterLabels[cfg.WorkerType]
+	if (standalone || cfg.RuntimePolicy != "") && len(cfg.Sources) > 0 {
 		if _, err := sourceEngine(cfg); err != nil {
 			return err
 		}

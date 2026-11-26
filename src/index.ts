@@ -18,16 +18,14 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
-import { chooseFundingRoute, modelProvider, type FundingRoute, type Provider, type RuntimePolicy } from "./runtime-routing.js";
+import { chooseFundingRoute, geminiModel, isProvider, modelProvider, providers, type FundingRoute, type Provider, type RuntimePolicy } from "./runtime-routing.js";
 import type { ReadRuntimeQuota, RuntimeAdapter, RuntimeQuota } from "./runtime-adapter.js";
 
 const fundingLabels = {
-  "codex-plan": "Codex subscription",
-  "claude-plan": "Claude subscription",
-  "codex-credits": "Codex credits",
-  codex: "Codex",
-  claude: "Claude"
-};
+  "codex-plan": `${providers.codex.label} subscription`,
+  "claude-plan": `${providers.claude.label} subscription`,
+  "codex-credits": `${providers.codex.label} credits`
+} satisfies Record<Exclude<FundingRoute, Provider>, string>;
 
 async function checkQuota(probe: ReadRuntimeQuota | undefined, signal?: AbortSignal, cwd?: string, model?: string): Promise<RuntimeQuota> {
   try {
@@ -82,6 +80,9 @@ async function main(): Promise<void> {
 
   const primary = claudeSetup ?? await prepare(adapter);
   const multiProvider = adapter.id === "codex";
+  const dedicatedGemini = adapter.id === "gemini";
+  let geminiSetup: Promise<Awaited<ReturnType<typeof prepare>>> | undefined;
+  const geminiRuntime = () => geminiSetup ??= loadAdapter("gemini").then(prepare);
   let runtimePolicy = config.runtime_policy;
   const secondary = multiProvider ? await prepare(await loadAdapter("claude")) : undefined;
   const claudeFallback = secondary?.readQuota ? secondary : undefined;
@@ -110,14 +111,27 @@ async function main(): Promise<void> {
         directory: conversationDirectory,
         namespace: source.metadata.conversation_namespace,
         adapterId: id,
-        trackRuntime: id === "codex" || id === "claude",
+        trackRuntime: isProvider(id),
         runtimeHome: id === "codex" ? (runtimeEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex"))
-          : id === "claude" ? (runtimeEnvironment.CLAUDE_CONFIG_DIR || resolve(homedir(), ".claude")) : homedir(),
+          : id === "claude" ? (runtimeEnvironment.CLAUDE_CONFIG_DIR || resolve(homedir(), ".claude"))
+            : id === "gemini" ? resolve(runtimeEnvironment.HOME || homedir(), ".gemini", "antigravity-cli") : homedir(),
         referenceKey: sourceConfig.api_key
       });
       const conversationStore = storeFor(adapter.id);
       const claudeStore = claudeFallback ? storeFor("claude") : undefined;
-      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string, prefer?: string, exclude?: Provider): Promise<RuntimeSelection> => {
+      let geminiStore: ConversationStore | undefined;
+      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string, prefer?: string, exclude?: Provider): Promise<RuntimeSelection | undefined> => {
+        if (dedicatedGemini) {
+          return { id: "gemini", runtimeFactory: primary.runtimeFactory, conversationStore,
+            model: geminiModel, label: providers.gemini.label };
+        }
+        if (!multiProvider) {
+          if (modelProvider(model) === "gemini") throw new WorkerError({
+            code: "GEMINI_ROUTING_UNAVAILABLE", stage: "runtime.route",
+            message: "The selected Gemini model needs a Codex engine with automatic routing or a dedicated Gemini engine."
+          });
+          return undefined;
+        }
         let policy: RuntimePolicy;
         let route: FundingRoute | undefined;
         do {
@@ -131,7 +145,7 @@ async function main(): Promise<void> {
             claude: () => claudeFallback && exclude !== "claude"
               ? checkQuota(claudeFallback.readQuota, signal, cwd, claudeModel(model ?? "sonnet"))
               : Promise.resolve({ plan: "unavailable" }),
-            ...(prefer === "codex" || prefer === "claude" ? { prefer } : {}),
+            ...(prefer && isProvider(prefer) ? { prefer } : {}),
             ...(signal ? { signal } : {})
           }).catch(error => {
             if (policy === runtimePolicy) throw error;
@@ -142,6 +156,7 @@ async function main(): Promise<void> {
           code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route",
           message: "No alternate runtime is available under the selected routing policy."
         });
+        const label = isProvider(route) ? providers[route].label : fundingLabels[route];
         const assertPolicy = () => {
           if (policy !== runtimePolicy) throw new WorkerError({
             code: "RUNTIME_POLICY_CHANGED", stage: "runtime.route",
@@ -159,25 +174,32 @@ async function main(): Promise<void> {
             message: "Codex plan allowance is unavailable. Retry to check the next subscription."
           });
         };
+        if (route === "gemini") {
+          const gemini = await geminiRuntime();
+          signal?.throwIfAborted();
+          assertPolicy();
+          return { id: "gemini", runtimeFactory: gemini.runtimeFactory, conversationStore: geminiStore ??= storeFor("gemini"),
+            model: geminiModel, label, assertCurrent };
+        }
         if (route === "claude" || route === "claude-plan") {
           if (!claudeFallback || !claudeStore) throw new WorkerError({
             code: "CLAUDE_INSTALL_REQUIRED", stage: "runtime.route", message: CLAUDE_INSTALL_REQUIRED
           });
           return { id: "claude", runtimeFactory: claudeFallback.runtimeFactory, conversationStore: claudeStore,
-            model: claudeModel, label: fundingLabels[route], assertCurrent };
+            model: claudeModel, label, assertCurrent };
         }
         return { id: "codex", runtimeFactory: primary.runtimeFactory, conversationStore,
-          model: codexModel, label: fundingLabels[route], assertCurrent };
+          model: codexModel, label, assertCurrent };
       };
       const runner = new TicketRunner({ runtimeFactory: primary.runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
-        ...(multiProvider ? { selectRuntime } : {}),
+        ...(isProvider(adapter.id) ? { selectRuntime } : {}),
         alertSecurityWarning: (alert, signal) => api.alertUserEmergency(alert, signal) });
       let child!: Supervisor;
       const control = new ControlClient({ config: sourceConfig, logger: sourceLogger, metrics,
         onCancellation: request => { child.handleCancellation(request, "push"); } });
       child = new Supervisor({ config: sourceConfig, poller: api, runner, cancellationApi: api,
         control, logger: sourceLogger, metrics, sharedCapacity,
-        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id, adapter.id === "claude" ? claudeModel : undefined) } : {}) });
+        ...(process.env.TMATRIX_CONTROL_FILE ? { localState: new LocalWorkerState(adapter.id, adapter.id === "claude" ? claudeModel : dedicatedGemini ? geminiModel : undefined) } : {}) });
       return child;
     }
   });

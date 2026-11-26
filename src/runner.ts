@@ -30,7 +30,7 @@ import { ProgressReporter } from "./progress.js";
 import { deliverResult } from "./result-delivery.js";
 import { prepareCodexInput } from "./adapters/codex/prepare-input.js";
 import { conversationReferenceSchema } from "./types.js";
-import { modelProvider, type Provider } from "./runtime-routing.js";
+import { isProvider, modelProvider, providers, type Provider } from "./runtime-routing.js";
 import type {
   ExecutionProfile,
   ReasoningEffort,
@@ -144,7 +144,7 @@ export interface RuntimeSelection {
 }
 
 /** `prefer` names the runtime holding this ticket's conversation so routing can keep its context. */
-type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string, prefer?: string, exclude?: Provider) => Promise<RuntimeSelection>;
+type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string, prefer?: string, exclude?: Provider) => Promise<RuntimeSelection | undefined>;
 
 interface TurnOutcome {
   finalResponse: string;
@@ -354,7 +354,8 @@ export class TicketRunner {
             const previousRuntime = switching ? activeSelection?.id : savedRuntime;
             if (selected && previousRuntime && previousRuntime !== selected.id && isProvider(previousRuntime) && isProvider(selected.id)) {
               const reason = previousRuntime === excludedProvider ? "limit"
-                : !switching && modelProvider(profile.model) === selected.id ? "model" : "plan";
+                : !switching && modelProvider(profile.model) === selected.id ? "model"
+                  : previousRuntime === "gemini" ? "model-changed" : "plan";
               runtimeInput = `${providerChangeNote(previousRuntime, selected.id, selected.label, reason)}\n\n${runtimeInput}`;
               options.observe?.({ kind: "runtime.switched", text: providerChangeSummary(previousRuntime, selected.id, reason) });
             }
@@ -953,27 +954,22 @@ function recoverInterruptedRuntime(fullPrompt: string): string {
   ].join("\n\n");
 }
 
-function isProvider(id: string): id is Provider {
-  return id === "codex" || id === "claude";
-}
-
-const providerNames: Record<Provider, string> = { codex: "Codex", claude: "Claude" };
-
-type ProviderChangeReason = "model" | "plan" | "limit";
+type ProviderChangeReason = "model" | "model-changed" | "plan" | "limit";
 
 function providerChangeSummary(from: Provider, to: Provider, reason: ProviderChangeReason): string {
-  if (reason === "limit") return `Continued on ${providerNames[to]} because ${providerNames[from]} stopped with a usage-limit error.`;
+  if (reason === "limit") return `Continued on ${providers[to].label} because ${providers[from].label} stopped with a usage-limit error.`;
+  if (reason === "model-changed") return `Continued on ${providers[to].label} because the task now selects a model outside ${providers[from].label}.`;
   return reason === "model"
-    ? `Continued on ${providerNames[to]} because the task's selected model runs there; the earlier conversation was on ${providerNames[from]}.`
-    : `Continued on ${providerNames[to]} because the ${providerNames[from]} plan allowance was unavailable or could not be confirmed.`;
+    ? `Continued on ${providers[to].label} because the task's selected model runs there; the earlier conversation was on ${providers[from].label}.`
+    : `Continued on ${providers[to].label} because the ${providers[from].label} plan allowance was unavailable or could not be confirmed.`;
 }
 
 export function providerChangeNote(from: Provider, to: Provider, label: string | undefined, reason: ProviderChangeReason): string {
   return [
     "# Provider change",
     `${providerChangeSummary(from, to, reason)}${label ? ` Current route: ${label}.` : ""}`,
-    `The earlier ${providerNames[from]} conversation's turns are not available here. Rely on the durable ticket history, AI comments and saved handoff in this message, and verify the workspace before acting.`,
-    `Start user_message with one short sentence telling the person that this reply continued on ${providerNames[to]} and why.`
+    `The earlier ${providers[from].label} conversation's turns are not available here. Rely on the durable ticket history, AI comments and saved handoff in this message, and verify the workspace before acting.`,
+    `Start user_message with one short sentence telling the person that this reply continued on ${providers[to].label} and why.`
   ].join("\n");
 }
 

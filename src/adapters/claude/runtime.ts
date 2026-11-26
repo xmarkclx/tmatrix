@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { z } from "zod";
-import { CGROUP_ENV, stopLeaseCgroup } from "../../conversation-cgroup.js";
-import { LEASE_ENV, processStart, stopLeaseProcesses } from "../../conversation-recovery.js";
+import { CGROUP_ENV } from "../../conversation-cgroup.js";
+import { LEASE_ENV } from "../../conversation-recovery.js";
 import { WorkerError } from "../../errors.js";
 import type {
   AdapterContext, Input, RuntimeCreator, RuntimeThreadOptions, ThreadLike, WorkerThreadEvent
 } from "../../runtime-adapter.js";
 import { assistantActivity, toolResultActivity, type ToolNames } from "./activity.js";
-import { ClaudeProcess } from "./process.js";
+import { RuntimeProcess, confirmLeaseStopped } from "../process.js";
 import { modelProvider } from "../../runtime-routing.js";
 
 const sessionIdSchema = z.uuid();
@@ -62,14 +62,14 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
   const ownerToken = environment[LEASE_ENV] ?? "";
   const cgroup = environment[CGROUP_ENV];
   let threadClaimed = false;
-  let current: ClaudeProcess | undefined;
+  let current: RuntimeProcess | undefined;
   let closePromise: Promise<void> | undefined;
 
   async function close(): Promise<void> {
     try {
       await current?.stop();
     } finally {
-      await confirmLeaseStopped(cgroup, ownerToken);
+      await confirmLeaseStopped(cgroup, ownerToken, "Claude Code");
     }
   }
 
@@ -86,7 +86,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     let running = false;
     const tools: ToolNames = new Map();
     /** Open while the current process still reads stdin; each written message yields one result. */
-    let inbox: { child: ClaudeProcess; pending: number } | undefined;
+    let inbox: { child: RuntimeProcess; pending: number } | undefined;
 
     async function steer(input: Input, turn: { signal?: AbortSignal } = {}): Promise<boolean> {
       if (!inbox) return false;
@@ -144,7 +144,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
       ensureOpen(turn.signal);
 
       try {
-        current = new ClaudeProcess(executable, argumentsFor(options, sessionId, resume, turn), options.workingDirectory, environment);
+        current = new RuntimeProcess(executable, argumentsFor(options, sessionId, resume, turn), options.workingDirectory, environment, "Claude Code");
       } catch {
         throw turnFailure("Unable to start Claude Code");
       }
@@ -242,20 +242,6 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     },
     close: () => closePromise ??= close()
   };
-}
-
-/** Rejects unless every process in the worker's lease or cgroup is confirmed stopped. */
-export async function confirmLeaseStopped(cgroup: string | undefined, ownerToken: string): Promise<void> {
-  if (cgroup && !await stopLeaseCgroup(cgroup, ownerToken)) {
-    throw new Error("Claude Code runtime cgroup shutdown could not be confirmed");
-  }
-  if (!cgroup && ownerToken && process.platform === "linux") {
-    const startedAfter = await processStart(process.pid);
-    if (!sessionIdSchema.safeParse(ownerToken).success || !startedAfter ||
-        !await stopLeaseProcesses(ownerToken, undefined, startedAfter)) {
-      throw new Error("Claude Code runtime lease shutdown could not be confirmed");
-    }
-  }
 }
 
 function argumentsFor(options: RuntimeThreadOptions, id: string, resume: boolean, turn: TurnOptions): string[] {

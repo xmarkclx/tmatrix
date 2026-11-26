@@ -21,6 +21,7 @@ func TestLaunchAgentPlist(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/Users/a & b/codex")
 	t.Setenv("CLAUDE_CONFIG_DIR", "/Users/a & b/claude config")
 	t.Setenv("TMATRIX_CLAUDE_PATH", "/Users/a & b/bin/claude")
+	t.Setenv("TMATRIX_AGY_PATH", "/Users/a & b/bin/agy")
 	t.Setenv("XDG_STATE_HOME", "/Users/a/state")
 	t.Setenv("API_KEY", "must-not-be-captured")
 	t.Setenv("ANTHROPIC_API_KEY", "must-not-be-captured")
@@ -37,6 +38,7 @@ assert p['EnvironmentVariables']=={
     'CODEX_HOME':'/Users/a & b/codex',
     'CLAUDE_CONFIG_DIR':'/Users/a & b/claude config',
     'TMATRIX_CLAUDE_PATH':'/Users/a & b/bin/claude',
+    'TMATRIX_AGY_PATH':'/Users/a & b/bin/agy',
     'XDG_STATE_HOME':'/Users/a/state',
 }
 assert p['KeepAlive']=={'SuccessfulExit':False}

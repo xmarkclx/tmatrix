@@ -57,6 +57,16 @@ func findEngine(configured, executable string) (string, error) {
 	return "", errors.New("compatible TMatrix engine not found; run sh scripts/stage-engine.sh in the tmatrix directory or set TMATRIX_ENGINE_DIR to a release engine")
 }
 
+var standaloneAdapterLabels = map[string]string{
+	"claude": "Claude",
+	"gemini": "Gemini",
+}
+
+var serviceRuntimeEnvironment = []string{
+	"CODEX_HOME", "CLAUDE_CONFIG_DIR", "TMATRIX_CLAUDE_PATH", "TMATRIX_AGY_PATH",
+	"TMATRIX_USAGE_SOURCE_ID", "XDG_STATE_HOME",
+}
+
 func sourceEngine(cfg config.Config) (string, error) {
 	engine, err := FindEngine(cfg.EngineDir)
 	if err != nil {
@@ -66,10 +76,10 @@ func sourceEngine(cfg config.Config) (string, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return "", errors.New("engine update needed for multiple sources; install or build the matching TMatrix engine")
 	}
-	if cfg.WorkerType == "claude" {
-		info, err := os.Stat(filepath.Join(engine, "dist", "adapters", "claude", "index.js"))
+	if label, standalone := standaloneAdapterLabels[cfg.WorkerType]; standalone {
+		info, err := os.Stat(filepath.Join(engine, "dist", "adapters", cfg.WorkerType, "index.js"))
 		if err != nil || !info.Mode().IsRegular() {
-			return "", errors.New("engine update needed for Claude. Install or build a TMatrix engine with the Claude adapter")
+			return "", fmt.Errorf("engine update needed for %s. Install or build a TMatrix engine with the %s adapter", label, label)
 		}
 	}
 	if cfg.EffectiveRuntimePolicy() != "" {

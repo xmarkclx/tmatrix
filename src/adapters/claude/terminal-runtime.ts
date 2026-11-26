@@ -10,7 +10,8 @@ import type {
   AdapterContext, Input, RuntimeCreator, RuntimeThreadOptions, ThreadLike, Usage, WorkerThreadEvent
 } from "../../runtime-adapter.js";
 import { assistantActivity, toolResultActivity, type ToolNames } from "./activity.js";
-import { claudeModel, confirmLeaseStopped, turnFailure, usageLimitFailure, USAGE_LIMIT } from "./runtime.js";
+import { claudeModel, turnFailure, usageLimitFailure, USAGE_LIMIT } from "./runtime.js";
+import { confirmLeaseStopped } from "../process.js";
 import { TmuxSession } from "./tmux.js";
 
 /*
@@ -142,7 +143,7 @@ export function createClaudeTerminalRuntime(context: AdapterContext, executable:
   async function close(): Promise<void> {
     try {
       await stopSession();
-      await confirmLeaseStopped(cgroup, ownerToken);
+      await confirmLeaseStopped(cgroup, ownerToken, "Claude Code");
     } finally {
       if (stateDirectory) await rm(stateDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
