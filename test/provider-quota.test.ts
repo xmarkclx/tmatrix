@@ -182,6 +182,28 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     });
   });
 
+  it("reports no reset when a tied exhausted account window has an unknown reset", async () => {
+    expect(await quota({ limits: {
+      five_hour: activeWindow(100),
+      seven_day: { utilization: 100, resets_at: null },
+      extra_usage: { is_enabled: false }
+    } })).toEqual({ plan: "exhausted", display: {
+      plan_remaining_percent: 0, plan_resets_at: null, credits: { kind: "disabled" }
+    } });
+  });
+
+  it.each([
+    { utilization: 100, resets_at: "2000-01-01T00:00:00.000Z" },
+    { utilization: 90, resets_at: null }
+  ])("reports the current exhausted account reset when the other window is %j", async (seven_day) => {
+    const five_hour = activeWindow(100);
+    expect(await quota({ limits: { five_hour, seven_day, extra_usage: { is_enabled: false } } })).toEqual({
+      plan: "exhausted", display: {
+        plan_remaining_percent: 0, plan_resets_at: five_hour.resets_at, credits: { kind: "disabled" }
+      }
+    });
+  });
+
   it("uses the reported model-specific limits for the selected Claude model", async () => {
     const limits = { ...subscriptionLimits, seven_day_sonnet: activeWindow(100), seven_day_opus: activeWindow(20),
       model_scoped: [{ display_name: "Fable 5", ...activeWindow(100) }] };
