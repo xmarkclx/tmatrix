@@ -30,6 +30,7 @@ import { ProgressReporter } from "./progress.js";
 import { deliverResult } from "./result-delivery.js";
 import { prepareCodexInput } from "./adapters/codex/prepare-input.js";
 import { conversationReferenceSchema } from "./types.js";
+import { modelProvider, type Provider } from "./runtime-routing.js";
 import type {
   ExecutionProfile,
   ReasoningEffort,
@@ -346,7 +347,14 @@ export class TicketRunner {
             const updates = Object.keys(changes).length ? `# Updated task context\n${JSON.stringify(changes, null, 2)}\n\n` : "";
             turnInput = switching && handoff ? continueOnNewRuntime(fullPrompt, handoff, turnInput)
               : previousAttempt ? recoverInterruptedRuntime(fullPrompt)
-                : commentPrompt === undefined ? fullPrompt : updates + commentPrompt;
+                : commentPrompt === undefined ? fullPrompt : resumedCommentPrompt(updates, commentPrompt);
+            // Tell the runtime, and through its reply the person, why the task moved providers.
+            const previousRuntime = switching ? activeSelection?.id : savedRuntime;
+            if (selected && previousRuntime && previousRuntime !== selected.id && isProvider(previousRuntime) && isProvider(selected.id)) {
+              const reason = !switching && modelProvider(profile.model) === selected.id ? "model" : "plan";
+              turnInput = `${providerChangeNote(previousRuntime, selected.id, selected.label, reason)}\n\n${turnInput}`;
+              options.observe?.({ kind: "runtime.switched", text: providerChangeSummary(previousRuntime, selected.id, reason) });
+            }
             missingConversationText = previousAttempt || commentPrompt === undefined ? undefined : fullPrompt;
 
             log.info({
@@ -930,6 +938,41 @@ function recoverInterruptedRuntime(fullPrompt: string): string {
     "Inspect this conversation and the workspace to find the last completed step. Verify earlier side effects before acting and do not repeat completed work.",
     fullPrompt
   ].join("\n\n");
+}
+
+function isProvider(id: string): id is Provider {
+  return id === "codex" || id === "claude";
+}
+
+const providerNames: Record<Provider, string> = { codex: "Codex", claude: "Claude" };
+
+function providerChangeSummary(from: Provider, to: Provider, reason: "model" | "plan"): string {
+  return reason === "model"
+    ? `Continued on ${providerNames[to]} because the task's selected model runs there; the earlier conversation was on ${providerNames[from]}.`
+    : `Continued on ${providerNames[to]} because the ${providerNames[from]} plan allowance was used up or could not be confirmed.`;
+}
+
+export function providerChangeNote(from: Provider, to: Provider, label: string | undefined, reason: "model" | "plan"): string {
+  return [
+    "# Provider change",
+    `${providerChangeSummary(from, to, reason)}${label ? ` Current route: ${label}.` : ""}`,
+    `The earlier ${providerNames[from]} conversation's turns are not available here. Rely on the durable ticket history, AI comments and saved handoff in this message, and verify the workspace before acting.`,
+    `Start user_message with one short sentence telling the person that this reply continued on ${providerNames[to]} and why.`
+  ].join("\n");
+}
+
+/** Frames a new comment on a resumed conversation so the runtime treats earlier turns as this task's context. */
+export function resumedCommentPrompt(updates: string, comment: string): string {
+  return [
+    "# New human comment on this task",
+    "This continues the same conversation for this task. The earlier turns in this conversation (the ticket, its durable history and AI comments, and your previous handoffs) are this task's context: use them, and do not treat this as a new or unrelated request.",
+    "",
+    updates + comment,
+    "",
+    "Return the required structured handoff for this comment.",
+    "",
+    USER_MESSAGE_FORMAT_INSTRUCTION
+  ].join("\n");
 }
 
 function continueOnNewRuntime(fullPrompt: string, handoff: Handoff, nextInput: string): string {

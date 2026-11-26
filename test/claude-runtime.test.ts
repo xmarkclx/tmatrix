@@ -71,8 +71,12 @@ if (resume && !existsSync(session)) {
   output({ type: "assistant", message: { content: [
     { type: "thinking", thinking: "hidden reasoning" },
     { type: "text", text: "Working on it." },
-    { type: "tool_use", name: "Read", input: { file_path: "private-path" } },
-    { type: "tool_use", name: "StructuredOutput", input: { context_summary: "durable state" } },
+    { type: "tool_use", id: "tool-read", name: "Read", input: { file_path: "src/footer.php" } },
+    { type: "tool_use", id: "tool-handoff", name: "StructuredOutput", input: { context_summary: "durable state" } },
+  ] } });
+  output({ type: "user", message: { role: "user", content: [
+    { type: "tool_result", tool_use_id: "tool-read", content: [{ type: "text", text: "<footer>\n</footer>" }] },
+    { type: "tool_result", tool_use_id: "tool-handoff", content: "Structured output provided" }
   ] } });
   output({ type: "result", subtype: "success", is_error: false, result: "fallback chat",
     ...(scenario === "unstructured" ? {} : { structured_output: {
@@ -187,7 +191,8 @@ describe.skipIf(process.platform === "win32")("Claude Code runtime", () => {
         { type: "thread.started", thread_id: connected.thread_id },
         { type: "turn.started" },
         { type: "local.activity", kind: "claude.assistant", text: "Working on it." },
-        { type: "local.activity", kind: "claude.tool", text: "Read" },
+        { type: "local.activity", kind: "claude.tool", text: "Read src/footer.php" },
+        { type: "local.activity", kind: "claude.output", text: "Read result\n<footer>\n</footer>" },
         { type: "item.completed", item: {
           type: "agent_message", id: expect.any(String),
           text: '{"outcome":"AI_DONE","context_summary":"durable state","user_message":"All set."}'

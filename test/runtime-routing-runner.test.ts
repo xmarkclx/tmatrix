@@ -140,6 +140,15 @@ async function fixture() {
 }
 
 describe("automatic runtime routing at turn boundaries", () => {
+  it("explains a fresh conversation on another provider when the saved one's plan is spent", async () => {
+    const { calls, inputs, route, run } = await fixture();
+    const { result } = run([route("claude")]);
+    await expect(result).resolves.toMatchObject({ status: "completed" });
+    expect(calls[0]).toBe("start claude-fresh");
+    expect(inputs[0]).toMatch(/^# Provider change\nContinued on Claude because the Codex plan allowance/);
+    expect(inputs[0]).toContain("Previously verified staging.");
+  });
+
   it("uses one claim and continues from the previous handoff when switching providers", async () => {
     const { codex, claude, ticket, api, calls, inputs, results, route, run } = await fixture();
     const first = route("codex", { followUp: "Add the staging summary." });
@@ -154,6 +163,12 @@ describe("automatic runtime routing at turn boundaries", () => {
     expect(calls).toEqual([
       "resume prior-codex", "close codex", "start claude-fresh", "close claude", "start codex-credits", "close codex"
     ]);
+    // Each switch tells the runtime why the task moved and asks it to tell the person.
+    expect(inputs[0]).not.toContain("# Provider change");
+    expect(inputs[1]).toContain("# Provider change\nContinued on Claude because the Codex plan allowance was used up or could not be confirmed. Current route: Claude plan.");
+    expect(inputs[1]).toContain("Start user_message with one short sentence telling the person that this reply continued on Claude and why.");
+    expect(inputs[2]).toContain("Continued on Codex because the Claude plan allowance was used up or could not be confirmed. Current route: Codex credits.");
+    expect(local.snapshot()[0]?.activity.filter(entry => entry.kind === "runtime.switched")).toHaveLength(2);
     expect(inputs[1]).toContain("Previously verified staging.");
     expect(inputs[1]).toContain("Completed fixture step on prior-codex.");
     expect(inputs[1]).toContain("Add the staging summary.");

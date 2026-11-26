@@ -10,7 +10,8 @@ import { WorkerError } from "../../errors.js";
 import type {
   AdapterContext, Input, RuntimeCreator, RuntimeThreadOptions, ThreadLike, Usage, WorkerThreadEvent
 } from "../../runtime-adapter.js";
-import { assistantActivity, claudeModel, confirmLeaseStopped, turnFailure } from "./runtime.js";
+import { assistantActivity, toolResultActivity, type ToolNames } from "./activity.js";
+import { claudeModel, confirmLeaseStopped, turnFailure } from "./runtime.js";
 import { TmuxSession } from "./tmux.js";
 
 /*
@@ -48,7 +49,7 @@ const transcriptSchema = z.looseObject({
   type: z.string(),
   message: z.looseObject({
     id: z.string().optional(),
-    content: z.array(z.unknown()).optional().catch(undefined),
+    content: z.union([z.string(), z.array(z.unknown())]).optional().catch(undefined),
     usage: z.object({
       input_tokens: tokenCount,
       output_tokens: tokenCount,
@@ -164,6 +165,7 @@ export function createClaudeTerminalRuntime(context: AdapterContext, executable:
     let turnNumber = 0;
     let messageNumber = 0;
     let transcript: { path: string; offset: number; partial: string } | undefined;
+    const tools: ToolNames = new Map();
     /** Present while a turn accepts more messages. */
     let inbox: { handoffPath: string; pending: number } | undefined;
 
@@ -270,10 +272,12 @@ export function createClaudeTerminalRuntime(context: AdapterContext, executable:
       transcript.partial = lines.pop() ?? "";
       for (const line of lines) {
         const entry = transcriptSchema.safeParse(parseJson(line));
-        if (!entry.success || entry.data.type !== "assistant" || !entry.data.message) continue;
+        if (!entry.success || !entry.data.message) continue;
         const { id, content, usage: tokens } = entry.data.message;
+        if (entry.data.type === "user" && Array.isArray(content)) yield* toolResultActivity(content, tools);
+        if (entry.data.type !== "assistant") continue;
         if (id && tokens) usage.set(id, tokens);
-        if (content) yield* assistantActivity(content);
+        if (Array.isArray(content)) yield* assistantActivity(content, tools);
       }
     }
 

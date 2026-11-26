@@ -8,6 +8,7 @@ import { WorkerError } from "../../errors.js";
 import type {
   AdapterContext, Input, RuntimeCreator, RuntimeThreadOptions, ThreadLike, WorkerThreadEvent
 } from "../../runtime-adapter.js";
+import { assistantActivity, toolResultActivity, type ToolNames } from "./activity.js";
 import { ClaudeProcess } from "./process.js";
 import { modelProvider } from "../../runtime-routing.js";
 
@@ -18,8 +19,10 @@ const assistantSchema = z.object({
   session_id: sessionIdSchema,
   message: z.object({ content: z.array(z.unknown()) })
 });
-const textBlock = z.object({ type: z.literal("text"), text: z.string() });
-const toolBlock = z.object({ type: z.literal("tool_use"), name: z.string().regex(/^[a-zA-Z0-9_-]{1,120}$/) });
+const userSchema = z.object({
+  session_id: sessionIdSchema,
+  message: z.object({ content: z.union([z.string(), z.array(z.unknown())]) })
+});
 const tokenCount = z.int().nonnegative().optional().catch(undefined);
 const resultSchema = z.object({
   session_id: sessionIdSchema,
@@ -79,6 +82,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     let sessionId = savedId ?? randomUUID();
     let resume = savedId !== undefined;
     let running = false;
+    const tools: ToolNames = new Map();
     /** Open while the current process still reads stdin; each written message yields one result. */
     let inbox: { child: ClaudeProcess; pending: number } | undefined;
 
@@ -171,7 +175,12 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
           } else if (event.type === "assistant" && connected) {
             const assistant = assistantSchema.safeParse(event);
             if (assistant.success && assistant.data.session_id === sessionId) {
-              yield* assistantActivity(assistant.data.message.content);
+              yield* assistantActivity(assistant.data.message.content, tools);
+            }
+          } else if (event.type === "user" && connected) {
+            const user = userSchema.safeParse(event);
+            if (user.success && user.data.session_id === sessionId && Array.isArray(user.data.message.content)) {
+              yield* toolResultActivity(user.data.message.content, tools);
             }
           } else if (event.type === "result") {
             const parsed = resultSchema.safeParse(event);
@@ -264,19 +273,6 @@ function decode(line: string): z.infer<typeof eventHeader> | undefined {
   }
 }
 
-export function* assistantActivity(blocks: unknown[]): Iterable<WorkerThreadEvent> {
-  for (const block of blocks) {
-    const text = textBlock.safeParse(block);
-    if (text.success && text.data.text.trim()) {
-      yield { type: "local.activity", kind: "claude.assistant", text: text.data.text };
-      continue;
-    }
-    const tool = toolBlock.safeParse(block);
-    if (tool.success && tool.data.name !== "StructuredOutput") {
-      yield { type: "local.activity", kind: "claude.tool", text: tool.data.name };
-    }
-  }
-}
 
 async function encodeInput(input: Input, signal?: AbortSignal): Promise<string> {
   const message = (content: unknown) => JSON.stringify({
