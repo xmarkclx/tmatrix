@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
-import { chooseFundingRoute, type FundingRoute, type RuntimePolicy } from "./runtime-routing.js";
+import { chooseFundingRoute, modelProvider, type FundingRoute, type RuntimePolicy } from "./runtime-routing.js";
 import type { ReadRuntimeQuota, RuntimeAdapter, RuntimeQuota } from "./runtime-adapter.js";
 
 const fundingLabels = {
@@ -39,7 +39,7 @@ async function checkQuota(probe: ReadRuntimeQuota | undefined, signal?: AbortSig
 }
 
 function codexModel(model: string): string {
-  return /^(?:claude-|sonnet(?:$|-)|opus(?:$|-)|haiku(?:$|-))/.test(model) ? "gpt-6.2-sol" : model;
+  return modelProvider(model) === "claude" ? "gpt-6.2-sol" : model;
 }
 
 async function main(): Promise<void> {
@@ -124,6 +124,7 @@ async function main(): Promise<void> {
           policy = runtimePolicy;
           route = await chooseFundingRoute({
             policy,
+            requested: modelProvider(model),
             codex: () => checkQuota(primary.readQuota, signal, cwd),
             claude: () => claudeFallback
               ? checkQuota(claudeFallback.readQuota, signal, cwd, claudeModel(model ?? "sonnet"))
