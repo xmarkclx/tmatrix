@@ -70,7 +70,7 @@ func (s *Service) Snapshot(ctx context.Context) (snapshot backend.Snapshot, snap
 	}
 	return backend.Snapshot{
 		Version: 2, InstanceID: cfg.InstanceID, MaxWorkers: cfg.MaxWorkers, RuntimeAdapter: cfg.WorkerType,
-		PollIntervalMS: cfg.PollIntervalMS, IntakePaused: true, RuntimePolicy: cfg.EffectiveRuntimePolicy(),
+		PollIntervalMS: cfg.PollIntervalMS, IntakePaused: true,
 		Pollers: savedPollers(cfg),
 		Workers: []backend.Worker{},
 	}, nil
@@ -152,12 +152,6 @@ func (s *Service) Configure(ctx context.Context, settings backend.Settings) erro
 	}
 	if settings.WorkerType != nil && *settings.WorkerType != cfg.WorkerType {
 		return errors.New("set worker_type in config.json, then restart the engine. Custom workers also need adapter_module")
-	}
-	if settings.RuntimePolicy != nil {
-		if cfg.WorkerType != "codex" {
-			return errors.New("runtime routing requires a built-in Codex engine")
-		}
-		cfg.RuntimePolicy = *settings.RuntimePolicy
 	}
 	if err := config.Save(s.Dir, cfg); err != nil {
 		return err
@@ -424,7 +418,7 @@ func (s *Service) Restart(ctx context.Context) error {
 		return err
 	}
 	_, standalone := standaloneAdapterLabels[cfg.WorkerType]
-	if (standalone || cfg.RuntimePolicy != "") && len(cfg.Sources) > 0 {
+	if standalone && len(cfg.Sources) > 0 {
 		if _, err := sourceEngine(cfg); err != nil {
 			return err
 		}

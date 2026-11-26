@@ -7,7 +7,6 @@ import { LocalWorkerState } from "../src/local-worker-state.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
 import { Supervisor } from "../src/supervisor.js";
-import type { RuntimePolicy } from "../src/runtime-routing.js";
 import type { RunOutcome, TicketRunner } from "../src/runner.js";
 import { deferred, makeConfig, makeTicket } from "./helpers.js";
 
@@ -16,7 +15,7 @@ afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await 
 
 async function connect(supervisor: Supervisor, adapterUpdates?: import("../src/runtime-adapter.js").AdapterUpdateControl,
   addSource?: NonNullable<Parameters<typeof startLocalControlServer>[0]["addSource"]>,
-  extras: Pick<Parameters<typeof startLocalControlServer>[0], "additionalAdapterUpdates" | "routing"> = {}) {
+  extras: Pick<Parameters<typeof startLocalControlServer>[0], "additionalAdapterUpdates"> = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tmatrix-control-test-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "control.json");
@@ -161,31 +160,28 @@ describe("local console bridge", () => {
     expect((await client.request("/v1/adapter/rollback", {})).status).toBe(409);
   });
 
-  it("applies the routing policy locally and targets the selected provider's updater", async () => {
+  it("targets the selected provider's updater and rejects a routing policy setting", async () => {
     const { supervisor } = pausedSupervisor();
-    let policy: RuntimePolicy = "subscriptions-first";
     let updated = "";
     const updater = (id: string) => ({
       snapshot: () => ({ status: "idle" as const, adapter_id: id, display_name: id, can_rollback: false, current_version: "1.0.0" }),
       async checkNow() { updated = id; }
     });
     const client = await connect(supervisor, updater("codex"), undefined, {
-      additionalAdapterUpdates: [updater("claude")],
-      routing: { get: () => policy, set: (next) => { policy = next; } }
+      additionalAdapterUpdates: [updater("claude")]
     });
-    expect((await (await client.request("/v1/snapshot")).json())).toMatchObject({
-      runtime_policy: "subscriptions-first", adapter_update: { adapter_id: "codex" },
+    const snapshot = await (await client.request("/v1/snapshot")).json();
+    expect(snapshot).toMatchObject({
+      adapter_update: { adapter_id: "codex" },
       adapter_updates: [{ adapter_id: "codex" }, { adapter_id: "claude" }]
     });
-    expect((await client.request("/v1/settings", { runtime_policy: "claude-first" })).status).toBe(200);
-    expect(await (await client.request("/v1/snapshot")).json()).toMatchObject({ runtime_policy: "claude-first" });
-    expect((await client.request("/v1/settings", { runtime_policy: "arbitrary" })).status).toBe(400);
+    expect(snapshot).not.toHaveProperty("runtime_policy");
+    expect((await client.request("/v1/settings", { runtime_policy: "claude-first" })).status).toBe(400);
     expect((await client.request("/v1/adapter/check-now", { adapter_id: "claude" })).status).toBe(202);
     expect(updated).toBe("claude");
     expect((await client.request("/v1/adapter/check-now", {})).status).toBe(202);
     expect(updated).toBe("codex");
     expect((await client.request("/v1/adapter/check-now", { adapter_id: "unknown" })).status).toBe(409);
-    expect((await (await connect(supervisor)).request("/v1/settings", { runtime_policy: "claude-first" })).status).toBe(409);
   });
 
   it("lists an additional updater without advertising it as the primary", async () => {

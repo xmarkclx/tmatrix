@@ -1,159 +1,49 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeQuota } from "../src/runtime-adapter.js";
-import { chooseFundingRoute, geminiModel, modelProvider, type Provider, type RuntimePolicy } from "../src/runtime-routing.js";
+import { chooseFundingRoute, geminiModel, modelProvider } from "../src/runtime-routing.js";
 
-const available = { plan: "available", credits: true } satisfies RuntimeQuota;
-const exhausted = { plan: "exhausted", credits: true } satisfies RuntimeQuota;
-const unknown = { plan: "unknown", credits: true } satisfies RuntimeQuota;
-const unavailable = { plan: "unavailable" } satisfies RuntimeQuota;
+const unexpectedProbe = async (): Promise<RuntimeQuota> => { throw new Error("Unexpected quota probe"); };
 
-function resolve(policy: RuntimePolicy, codex: RuntimeQuota, claude: RuntimeQuota) {
-  return chooseFundingRoute({ policy, codex: async () => codex, claude: async () => claude });
+function route(model: string | undefined, codex: RuntimeQuota | (() => Promise<RuntimeQuota>) = unexpectedProbe) {
+  return chooseFundingRoute({ model, codex: typeof codex === "function" ? codex : async () => codex });
 }
 
-describe("subscription-first runtime routing", () => {
-  it("selects included Codex, then included Claude, then Codex credits", async () => {
-    await expect(resolve("subscriptions-first", available, available)).resolves.toBe("codex-plan");
-    await expect(resolve("subscriptions-first", exhausted, available)).resolves.toBe("claude-plan");
-    await expect(resolve("subscriptions-first", exhausted, exhausted)).resolves.toBe("codex-credits");
-  });
-
-  it.each(["subscriptions-first", "claude-first"] as const)("skips an unavailable Claude plan under %s", async (policy) => {
-    await expect(resolve(policy, available, unavailable)).resolves.toBe("codex-plan");
-    await expect(resolve(policy, exhausted, unavailable)).resolves.toBe("codex-credits");
-  });
-
-  it("requires confirmed Codex exhaustion and a positive credit signal before spending credits", async () => {
-    for (const [codex, claude] of [[unknown, exhausted], [unknown, unavailable],
-      [{ plan: "exhausted", credits: false }, unavailable],
-      [{ plan: "exhausted", credits: false }, exhausted]] satisfies [RuntimeQuota, RuntimeQuota][]) {
-      await expect(resolve("subscriptions-first", codex, claude)).rejects.toMatchObject({
-        code: "RUNTIME_QUOTA_UNAVAILABLE", retryable: false
-      });
-    }
-    await expect(resolve("subscriptions-first", unknown, available)).resolves.toBe("claude-plan");
-  });
-
-  it.each(["subscriptions-first", "claude-first", "subscriptions-only"] as const)(
-    "lets Claude try the turn when its account usage cannot be read under %s", async (policy) => {
-      await expect(resolve(policy, exhausted, unknown)).resolves.toBe("claude-plan");
-      await expect(resolve(policy, unknown, unknown)).resolves.toBe("claude-plan");
-      await expect(resolve(policy, available, unknown)).resolves.toBe("codex-plan");
-    });
-
-  it("keeps a Claude conversation unless Claude is unavailable", async () => {
-    const prefer = (policy: RuntimePolicy, runtime: "codex" | "claude", codex: RuntimeQuota, claude: RuntimeQuota) =>
-      chooseFundingRoute({ policy, prefer: runtime, codex: async () => codex, claude: async () => claude });
-    await expect(prefer("subscriptions-first", "claude", available, available)).resolves.toBe("claude-plan");
-    await expect(prefer("subscriptions-first", "claude", available, unknown)).resolves.toBe("claude-plan");
-    await expect(prefer("subscriptions-first", "claude", available, exhausted)).resolves.toBe("claude-plan");
-    await expect(prefer("subscriptions-first", "claude", available, unavailable)).resolves.toBe("codex-plan");
-    await expect(prefer("claude-first", "codex", available, available)).resolves.toBe("codex-plan");
-    await expect(prefer("claude-first", "codex", unknown, available)).resolves.toBe("claude-plan");
-    await expect(prefer("subscriptions-first", "codex", exhausted, exhausted)).resolves.toBe("codex-credits");
-  });
-
-  it("respects Claude-first and no credit fallback policies", async () => {
-    await expect(resolve("claude-first", available, available)).resolves.toBe("claude-plan");
-    await expect(resolve("claude-first", available, exhausted)).resolves.toBe("codex-plan");
-    await expect(resolve("claude-first", exhausted, exhausted)).resolves.toBe("codex-credits");
-    await expect(resolve("subscriptions-only", exhausted, exhausted)).rejects.toMatchObject({ code: "RUNTIME_QUOTA_UNAVAILABLE" });
-    await expect(resolve("subscriptions-only", exhausted, unavailable)).rejects.toMatchObject({ code: "RUNTIME_QUOTA_UNAVAILABLE" });
-  });
-
-  it("allows a directly selected provider without automatic funding checks", async () => {
-    const probe = async (): Promise<RuntimeQuota> => { throw new Error("Unexpected quota probe"); };
-    await expect(chooseFundingRoute({ policy: "codex-only", codex: probe, claude: probe })).resolves.toBe("codex");
-    await expect(chooseFundingRoute({ policy: "claude-only", codex: probe, claude: probe })).resolves.toBe("claude");
-  });
-
-  it("observes cancellation after an account check and before choosing a runtime", async () => {
-    const controller = new AbortController();
-    const stop = new Error("Fixture stopped");
-    const codex = async () => { controller.abort(stop); return available; };
-    await expect(chooseFundingRoute({ policy: "subscriptions-first", codex, claude: async () => available,
-      signal: controller.signal })).rejects.toBe(stop);
-  });
-});
-
-describe("model-selected runtime routing", () => {
-  function route(policy: RuntimePolicy, requested: Provider, codex: RuntimeQuota, claude: RuntimeQuota) {
-    return chooseFundingRoute({ policy, requested, codex: async () => codex, claude: async () => claude });
-  }
-
+describe("exact-model runtime routing", () => {
   it("maps model IDs to their provider", () => {
     expect(["claude-opus-5-5", "sonnet", "opus", "haiku-5"].map(modelProvider)).toEqual(["claude", "claude", "claude", "claude"]);
     expect(["gpt-6.2-sol", "codex", "codex-mini", "o3"].map(modelProvider)).toEqual(["codex", "codex", "codex", "codex"]);
+    expect(["gemini-4-neon-high", "gemini-3.8-flash-low"].map(modelProvider)).toEqual(["gemini", "gemini"]);
     expect([undefined, "custom-model", "sonnetish"].map(modelProvider)).toEqual([undefined, undefined, undefined]);
   });
 
   it("maps direct Neon IDs without rewriting their model setting", () => {
-    const models = ["gemini-4-neon-high", "gemini-4-neon-low", "gemini-4-neon-medium", "gemini-4-neon-xhigh"];
-    for (const model of models) {
-      expect(modelProvider(model)).toBe("gemini");
+    for (const model of ["gemini-4-neon-high", "gemini-4-neon-low", "gemini-4-neon-medium", "gemini-4-neon-xhigh"]) {
       expect(geminiModel(model)).toBe(model);
     }
     expect(geminiModel("gpt-6.2-sol")).toBe("gemini-4-neon-high");
   });
 
-  it.each(["subscriptions-first", "claude-first"] as const)("selects Gemini via agy under %s without checking Codex or Claude", async policy => {
-    const probe = async (): Promise<RuntimeQuota> => { throw new Error("Unexpected quota probe"); };
-    await expect(chooseFundingRoute({ policy, requested: "gemini", prefer: "codex", codex: probe, claude: probe })).resolves.toBe("gemini");
-    await expect(chooseFundingRoute({ policy, prefer: "gemini", codex: probe, claude: probe })).resolves.toBe("gemini");
-    await expect(chooseFundingRoute({ policy, requested: "codex", prefer: "gemini",
-      codex: async () => available, claude: probe })).resolves.toBe("codex-plan");
+  it("runs Gemini and Claude models on their own provider without checking Codex", async () => {
+    await expect(route("gemini-4-neon-high")).resolves.toBe("gemini");
+    await expect(route("claude-opus-5-5")).resolves.toBe("claude");
+    await expect(route("sonnet")).resolves.toBe("claude");
   });
 
-  it.each(["codex-only", "claude-only", "subscriptions-only"] as const)("rejects Gemini under %s before trying any provider", async policy => {
-    const probe = async (): Promise<RuntimeQuota> => { throw new Error("Unexpected quota probe"); };
-    await expect(chooseFundingRoute({ policy, requested: "gemini", codex: probe, claude: probe })).rejects.toMatchObject({
-      code: "GEMINI_ROUTING_POLICY_INCOMPATIBLE"
-    });
-    await expect(chooseFundingRoute({ policy, prefer: "gemini", codex: probe, claude: probe })).rejects.toMatchObject({
-      code: "GEMINI_ROUTING_POLICY_INCOMPATIBLE"
-    });
+  it("runs a Codex model on its plan, then on paid credits", async () => {
+    await expect(route("gpt-6.2-sol", { plan: "available", credits: true })).resolves.toBe("codex-plan");
+    await expect(route("gpt-6.2-sol", { plan: "exhausted", credits: true })).resolves.toBe("codex-credits");
+    await expect(route("gpt-6.2-sol", { plan: "exhausted", credits: false })).resolves.toBe("codex");
+    await expect(route("gpt-6.2-sol", { plan: "unknown" })).resolves.toBe("codex");
   });
 
-  it("runs a Claude model on Claude even when the policy prefers Codex", async () => {
-    for (const policy of ["subscriptions-first", "subscriptions-only", "codex-only"] as const) {
-      await expect(route(policy, "claude", available, available)).resolves.toBe("claude-plan");
-    }
+  it.each([undefined, "custom-model", "deepseek-r2"])("fails instead of guessing a provider for %s", async model => {
+    await expect(route(model)).rejects.toMatchObject({ code: "MODEL_PROVIDER_UNKNOWN", retryable: false });
   });
 
-  it("runs a Codex model on Codex even when the policy prefers Claude", async () => {
-    for (const policy of ["claude-first", "claude-only"] as const) {
-      await expect(route(policy, "codex", available, available)).resolves.toBe("codex-plan");
-    }
-  });
-
-  it("falls back to Codex under codex-only when the requested Claude plan is not available", async () => {
-    for (const claude of [exhausted, unknown, unavailable]) {
-      await expect(route("codex-only", "claude", exhausted, claude)).resolves.toBe("codex");
-    }
-  });
-
-  it("uses the policy's order when the requested Codex plan is exhausted", async () => {
-    await expect(route("subscriptions-first", "codex", exhausted, available)).resolves.toBe("claude-plan");
-    await expect(route("subscriptions-first", "codex", exhausted, exhausted)).resolves.toBe("codex-credits");
-  });
-
-  it("tries a requested Claude model unless Claude is unavailable", async () => {
-    await expect(route("subscriptions-first", "claude", available, exhausted)).resolves.toBe("claude-plan");
-    await expect(route("subscriptions-first", "claude", available, unknown)).resolves.toBe("claude-plan");
-    await expect(route("claude-first", "claude", available, unavailable)).resolves.toBe("codex-plan");
-  });
-
-  it("checks each provider at most once", async () => {
-    const calls: string[] = [];
-    await chooseFundingRoute({ policy: "subscriptions-first", requested: "claude",
-      codex: async () => { calls.push("codex"); return exhausted; },
-      claude: async () => { calls.push("claude"); return unavailable; } });
-    expect(calls).toEqual(["claude", "codex"]);
-  });
-
-  it("skips quota checks when the requested provider matches a single-provider policy", async () => {
-    const probe = async (): Promise<RuntimeQuota> => { throw new Error("Unexpected quota probe"); };
-    await expect(chooseFundingRoute({ policy: "codex-only", requested: "codex", codex: probe, claude: probe })).resolves.toBe("codex");
-    await expect(chooseFundingRoute({ policy: "claude-only", requested: "claude", codex: probe, claude: probe })).resolves.toBe("claude");
+  it("observes cancellation after the Codex account check", async () => {
+    const controller = new AbortController();
+    const stop = new Error("Fixture stopped");
+    await expect(chooseFundingRoute({ model: "gpt-6.2-sol", signal: controller.signal,
+      codex: async () => { controller.abort(stop); return { plan: "available" }; } })).rejects.toBe(stop);
   });
 });

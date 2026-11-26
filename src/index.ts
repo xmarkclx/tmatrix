@@ -18,12 +18,11 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
-import { chooseFundingRoute, geminiModel, isProvider, modelProvider, providers, type FundingRoute, type Provider, type RuntimePolicy } from "./runtime-routing.js";
+import { chooseFundingRoute, geminiModel, isProvider, modelProvider, providers, type FundingRoute, type Provider } from "./runtime-routing.js";
 import type { ReadRuntimeQuota, RuntimeAdapter, RuntimeQuota } from "./runtime-adapter.js";
 
 const fundingLabels = {
   "codex-plan": `${providers.codex.label} subscription`,
-  "claude-plan": `${providers.claude.label} subscription`,
   "codex-credits": `${providers.codex.label} credits`
 } satisfies Record<Exclude<FundingRoute, Provider>, string>;
 
@@ -34,10 +33,6 @@ async function checkQuota(probe: ReadRuntimeQuota | undefined, signal?: AbortSig
     signal?.throwIfAborted();
     return { plan: "unknown" };
   }
-}
-
-function codexModel(model: string): string {
-  return modelProvider(model) === "claude" ? "gpt-6.2-sol" : model;
 }
 
 async function main(): Promise<void> {
@@ -83,11 +78,10 @@ async function main(): Promise<void> {
   const dedicatedGemini = adapter.id === "gemini";
   let geminiSetup: Promise<Awaited<ReturnType<typeof prepare>>> | undefined;
   const geminiRuntime = () => geminiSetup ??= loadAdapter("gemini").then(prepare);
-  let runtimePolicy = config.runtime_policy;
   const secondary = multiProvider ? await prepare(await loadAdapter("claude")) : undefined;
-  const claudeFallback = secondary?.readQuota ? secondary : undefined;
-  const updaters = [primary.updates, claudeFallback?.updates].filter(updates => updates !== undefined);
-  const claudeQuota = adapter.id === "claude" ? primary.readQuota : claudeFallback?.readQuota;
+  const claudeEngine = secondary?.readQuota ? secondary : undefined;
+  const updaters = [primary.updates, claudeEngine?.updates].filter(updates => updates !== undefined);
+  const claudeQuota = adapter.id === "claude" ? primary.readQuota : claudeEngine?.readQuota;
   const usageReporter = new WorkerUsageReporter({
     ...(adapter.id === "codex" && primary.readQuota ? { codex: primary.readQuota } : {}),
     ...(claudeQuota ? { claude: claudeQuota } : {})
@@ -118,9 +112,9 @@ async function main(): Promise<void> {
         referenceKey: sourceConfig.api_key
       });
       const conversationStore = storeFor(adapter.id);
-      const claudeStore = claudeFallback ? storeFor("claude") : undefined;
+      const claudeStore = claudeEngine ? storeFor("claude") : undefined;
       let geminiStore: ConversationStore | undefined;
-      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string, prefer?: string, exclude?: Provider): Promise<RuntimeSelection | undefined> => {
+      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string): Promise<RuntimeSelection | undefined> => {
         if (dedicatedGemini) {
           return { id: "gemini", runtimeFactory: primary.runtimeFactory, conversationStore,
             model: geminiModel, label: providers.gemini.label };
@@ -128,68 +122,28 @@ async function main(): Promise<void> {
         if (!multiProvider) {
           if (modelProvider(model) === "gemini") throw new WorkerError({
             code: "GEMINI_ROUTING_UNAVAILABLE", stage: "runtime.route",
-            message: "The selected Gemini model needs a Codex engine with automatic routing or a dedicated Gemini engine."
+            message: "The selected Gemini model needs the default Codex engine or a dedicated Gemini engine."
           });
           return undefined;
         }
-        let policy: RuntimePolicy;
-        let route: FundingRoute | undefined;
-        do {
-          policy = runtimePolicy;
-          route = await chooseFundingRoute({
-            policy,
-            requested: modelProvider(model),
-            codex: () => exclude === "codex"
-              ? Promise.resolve({ plan: "unavailable" })
-              : checkQuota(primary.readQuota, signal, cwd),
-            claude: () => claudeFallback && exclude !== "claude"
-              ? checkQuota(claudeFallback.readQuota, signal, cwd, claudeModel(model ?? "sonnet"))
-              : Promise.resolve({ plan: "unavailable" }),
-            ...(prefer && isProvider(prefer) ? { prefer } : {}),
-            ...(signal ? { signal } : {})
-          }).catch(error => {
-            if (policy === runtimePolicy) throw error;
-            return undefined;
-          });
-        } while (route === undefined || policy !== runtimePolicy);
-        if (route === exclude) throw new WorkerError({
-          code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route",
-          message: "No alternate runtime is available under the selected routing policy."
+        const route = await chooseFundingRoute({
+          model,
+          codex: () => checkQuota(primary.readQuota, signal, cwd),
+          ...(signal ? { signal } : {})
         });
         const label = isProvider(route) ? providers[route].label : fundingLabels[route];
-        const assertPolicy = () => {
-          if (policy !== runtimePolicy) throw new WorkerError({
-            code: "RUNTIME_POLICY_CHANGED", stage: "runtime.route",
-            message: "The routing policy changed before the turn started. Retry with the new policy."
-          });
-        };
-        const assertCurrent = async () => {
-          assertPolicy();
-          if (policy !== "subscriptions-only" || route !== "codex-plan") return;
-          const quota = await checkQuota(primary.readQuota, signal, cwd);
-          signal?.throwIfAborted();
-          assertPolicy();
-          if (quota.plan !== "available") throw new WorkerError({
-            code: "RUNTIME_QUOTA_UNAVAILABLE", stage: "runtime.route",
-            message: "Codex plan allowance is unavailable. Retry to check the next subscription."
-          });
-        };
         if (route === "gemini") {
           const gemini = await geminiRuntime();
           signal?.throwIfAborted();
-          assertPolicy();
-          return { id: "gemini", runtimeFactory: gemini.runtimeFactory, conversationStore: geminiStore ??= storeFor("gemini"),
-            model: geminiModel, label, assertCurrent };
+          return { id: "gemini", runtimeFactory: gemini.runtimeFactory, conversationStore: geminiStore ??= storeFor("gemini"), label };
         }
-        if (route === "claude" || route === "claude-plan") {
-          if (!claudeFallback || !claudeStore) throw new WorkerError({
+        if (route === "claude") {
+          if (!claudeEngine || !claudeStore) throw new WorkerError({
             code: "CLAUDE_INSTALL_REQUIRED", stage: "runtime.route", message: CLAUDE_INSTALL_REQUIRED
           });
-          return { id: "claude", runtimeFactory: claudeFallback.runtimeFactory, conversationStore: claudeStore,
-            model: claudeModel, label, assertCurrent };
+          return { id: "claude", runtimeFactory: claudeEngine.runtimeFactory, conversationStore: claudeStore, label };
         }
-        return { id: "codex", runtimeFactory: primary.runtimeFactory, conversationStore,
-          model: codexModel, label, assertCurrent };
+        return { id: "codex", runtimeFactory: primary.runtimeFactory, conversationStore, label };
       };
       const runner = new TicketRunner({ runtimeFactory: primary.runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
         ...(isProvider(adapter.id) ? { selectRuntime } : {}),
@@ -233,11 +187,7 @@ async function main(): Promise<void> {
     localControl = await startLocalControlServer({
       supervisor,
       ...(primary.updates ? { adapterUpdates: primary.updates } : {}),
-      ...(claudeFallback?.updates ? { additionalAdapterUpdates: [claudeFallback.updates] } : {}),
-      ...(multiProvider ? { routing: {
-        get: () => runtimePolicy,
-        set: (policy) => { runtimePolicy = policy; }
-      } } : {}),
+      ...(claudeEngine?.updates ? { additionalAdapterUpdates: [claudeEngine.updates] } : {}),
       ...(managedSources ? { async addSource(id: string) {
         const source = await loadSavedSource({ file: settingsFile, id, engine: config }).catch(() => undefined);
         if (!source) return "invalid";
