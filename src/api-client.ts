@@ -1,6 +1,7 @@
 import { workerUsageEndpoint, type ProviderUsage } from "./worker-usage.js";
 import type { SecurityAlert } from "./security-warning.js";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { IDENTITY_CONTRACT_HEADERS, parseIdentityJson, stringifyIdentityJson } from "./identity-transport.js";
 import type { Logger } from "pino";
 import type { WorkerConfig } from "./config.js";
@@ -40,7 +41,34 @@ interface RequestOptions {
   body?: unknown;
   expectJson?: boolean;
   optional?: boolean;
+  resetCompatibilityProviders?: number;
   signal?: AbortSignal;
+}
+
+const legacyUsageSchema = Symbol("legacy worker usage schema");
+const legacyUsageRejectionSchema = z.object({
+  defined: z.literal(false),
+  code: z.literal("BAD_REQUEST"),
+  status: z.literal(400),
+  message: z.literal("Input validation failed"),
+  data: z.object({
+    issues: z.array(z.object({
+      code: z.literal("unrecognized_keys"),
+      keys: z.tuple([z.literal("plan_resets_at")]),
+      path: z.tuple([z.literal("providers"), z.number().int().nonnegative()])
+    }))
+  })
+});
+
+function rejectedUsageResets(responseText: string, providerCount: number): boolean {
+  try {
+    const rejection = legacyUsageRejectionSchema.safeParse(parseIdentityJson(responseText));
+    if (!rejection.success) return false;
+    const { issues } = rejection.data.data;
+    return issues.length === providerCount && issues.every((issue, index) => issue.path[1] === index);
+  } catch {
+    return false;
+  }
 }
 
 export interface TicketApi {
@@ -91,8 +119,14 @@ export class ApiClient implements TicketApi {
   async reportWorkerUsage(providers: ProviderUsage[], signal: AbortSignal): Promise<void> {
     const url = workerUsageEndpoint(this.config.poll_url);
     if (!url || !providers.length) return;
-    await this.request({ operation: "worker_usage", method: "POST", url: url.href, path: url.pathname,
-      body: { providers }, optional: true, signal });
+    const request = { operation: "worker_usage", method: "POST", url: url.href, path: url.pathname,
+      optional: true, signal } satisfies RequestOptions;
+    const result = await this.request({ ...request, body: { providers }, resetCompatibilityProviders: providers.length });
+    if (result === legacyUsageSchema) {
+      const supported = providers.map(({ provider, plan_remaining_percent, credits }) =>
+        ({ provider, plan_remaining_percent, credits }));
+      await this.request({ ...request, body: { providers: supported } });
+    }
   }
 
   async poll(request: PollRequest, signal?: AbortSignal): Promise<PollResponse> {
@@ -321,6 +355,9 @@ export class ApiClient implements TicketApi {
         }
 
         const responseText = await response.text();
+        if (options.resetCompatibilityProviders !== undefined && response.status === 400 &&
+          response.headers.get("content-type")?.includes("application/json") &&
+          rejectedUsageResets(responseText, options.resetCompatibilityProviders)) return legacyUsageSchema;
         if (!response.ok) {
           const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
           throw new WorkerError({
