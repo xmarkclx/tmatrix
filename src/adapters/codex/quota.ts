@@ -13,7 +13,11 @@ const quotaSchema = z.object({
   rateLimitsByLimitId: z.object({ codex: z.unknown().optional() }).nullish(),
   rateLimits: z.unknown().optional()
 });
-const planWindowSchema = z.object({ usedPercent: z.number().min(0).max(100), resetsAt: z.number().nullish() });
+const firstExpandedYearSeconds = Date.UTC(10_000, 0, 1) / 1000;
+const planWindowSchema = z.object({
+  usedPercent: z.number().min(0).max(100),
+  resetsAt: z.number().lt(firstExpandedYearSeconds).nullish().catch(null)
+});
 const balancePattern = /^\d{1,15}(?:\.\d{1,15})?$/;
 const bucketSchema = z.object({
   limitId: z.string().nullish(),
