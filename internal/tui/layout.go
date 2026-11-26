@@ -28,7 +28,7 @@ func (m Model) compact() bool { return m.height < 28 || m.width < 60 }
 func (m Model) headerHeight() int {
 	cardGrowth := 0
 	if m.screen == workersScreen {
-		cardGrowth = 1
+		cardGrowth = m.workerCardHeight() - 4
 		if m.compact() {
 			cardGrowth = m.workerCardHeight() - 3
 		}
