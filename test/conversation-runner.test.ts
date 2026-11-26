@@ -269,6 +269,51 @@ describe("conversation continuity across worker tickets", () => {
     expect(retry.calls).toEqual([{ kind: "resume", id: "thread-interrupted" }]);
   });
 
+  it("starts sibling work items from compact handoffs without resuming the parent", async () => {
+    const store = await stores("fictional-reference-key");
+    const parent = ticket("parent");
+    const root = harness(store(), { threadId: "parent-thread", commentId: "parent-result" });
+    await root.runner.run(parent, { runId: "parent", recovered: false });
+    const history = {
+      conversation_mode: "work_item",
+      conversation: store().reference("parent-thread"),
+      task: { description: "Current authoritative task brief" },
+      trigger_comment: { id: "new-comment", content: "Follow this branch" },
+      inherited_context: { sourceCommentId: "parent-result", content: root.results[0]?.context_summary },
+      comments: [{ id: "parent-result", content: "Parent response", isAI: true }]
+    };
+    for (const id of ["branch-a", "branch-b"]) {
+      const branch = harness(store(), { history, threadId: `thread-${id}`, commentId: `result-${id}` });
+      await branch.runner.run({ ...ticket(id, "parent-result"), conversation_mode: "work_item", trigger_comment_id: "new-comment" }, { runId: id, recovered: false });
+      expect(branch.calls).toEqual([{ kind: "start", id: `thread-${id}` }]);
+      expect(branch.prompts[0]).toContain("Current authoritative task brief");
+      expect(branch.prompts[0]).toContain("Follow this branch");
+      expect(branch.prompts[0]).toContain("Saved handoff");
+      expect(branch.results[0]).toMatchObject({ status: "completed", conversation: { thread_id: `thread-${id}` } });
+    }
+    expect(await store().resolve({ ...parent, conversation_mode: "work_item" }, {})).toBe("parent-thread");
+  });
+
+  it("resumes only the interrupted work item's thread after another branch becomes active", async () => {
+    const store = await stores();
+    const interrupted: Ticket = { ...ticket("interrupted-branch", "parent-result"), conversation_mode: "work_item", trigger_comment_id: "new-comment" };
+    const history = {
+      conversation: null,
+      input_revision: 1,
+      trigger_comment: { id: "new-comment", content: "Continue this branch" },
+      inherited_context: { sourceCommentId: "parent-result", content: "Parent compact handoff" }
+    };
+    const first = harness(store(), { history, threadId: "interrupted-thread", failTurn: true });
+    await first.runner.run(interrupted, { runId: "failed", recovered: false });
+    expect(first.calls).toEqual([{ kind: "start", id: "interrupted-thread" }]);
+    await store().remember(ticket("sibling"), "sibling-thread");
+    const retry = harness(store(), { history });
+    await retry.runner.run(interrupted, { runId: "retry", recovered: true });
+    expect(retry.calls).toEqual([{ kind: "resume", id: "interrupted-thread" }]);
+    expect(retry.prompts[0]).toBe("Continue this branch");
+    expect(retry.results[0]).toMatchObject({ status: "completed", thread_id: "interrupted-thread" });
+  });
+
   it("does not overwrite successful reply mappings with a failed result receipt", async () => {
     const store = await stores();
     await harness(store(), { threadId: "thread-success" }).runner.run(ticket("success"), { runId: "success", recovered: false });
