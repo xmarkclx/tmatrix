@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
+import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { CGROUP_ENV, stopLeaseCgroup, validLeaseCgroup } from "../conversation-cgroup.js";
 import { LEASE_ENV, processStart, stopLeaseProcesses } from "../conversation-recovery.js";
@@ -17,10 +18,12 @@ export class RuntimeProcess {
   private exitStatus?: Exit;
   private stopping?: Promise<void>;
   private transportError = false;
+  private stdoutLimitExceeded = false;
+  private readonly cappedStdout?: Transform;
   private readonly tracked: boolean;
 
   constructor(executable: string, args: string[], cwd: string, environment: Record<string, string>,
-    private readonly runtimeName: string) {
+    private readonly runtimeName: string, maxOutputBytes?: number) {
     const cgroup = environment[CGROUP_ENV];
     this.tracked = process.platform === "linux" && !!environment[LEASE_ENV];
     if (cgroup && !validLeaseCgroup(cgroup, environment[LEASE_ENV] ?? "")) {
@@ -36,15 +39,30 @@ export class RuntimeProcess {
       detached: process.platform !== "win32",
       windowsHide: true
     });
-    this.lines = createInterface({ input: this.child.stdout, crlfDelay: Infinity });
+    if (maxOutputBytes !== undefined) {
+      let outputBytes = 0;
+      this.cappedStdout = new Transform({
+        transform: (chunk: Buffer, _encoding, callback) => {
+          outputBytes += chunk.length;
+          if (outputBytes > maxOutputBytes) {
+            this.stdoutLimitExceeded = true;
+            void this.stop().catch(() => undefined);
+            callback();
+          } else {
+            callback(null, chunk);
+          }
+        }
+      });
+      this.child.stdout.pipe(this.cappedStdout);
+    }
+    this.lines = createInterface({ input: this.cappedStdout ?? this.child.stdout, crlfDelay: Infinity });
     this.exit = new Promise<Exit>((resolve) => {
       this.child.once("exit", (code) => {
         resolve(this.exitStatus = { kind: "exited", code });
         if (this.child.stdout.readableEnded || this.child.stdout.destroyed) return;
         // A detached descendant can keep the inherited pipe open after the runtime exits.
         const timer = setTimeout(() => {
-          this.lines.close();
-          this.child.stdout.destroy();
+          this.closeOutput();
         }, PIPE_DRAIN_TIMEOUT_MS).unref();
         this.lines.once("close", () => clearTimeout(timer));
       });
@@ -74,14 +92,23 @@ export class RuntimeProcess {
     return this.transportError;
   }
 
+  get outputLimitExceeded(): boolean {
+    return this.stdoutLimitExceeded;
+  }
+
   stop(): Promise<void> {
     return this.stopping ??= this.terminate();
   }
 
-  private async terminate(): Promise<void> {
+  private closeOutput(): void {
     this.lines.close();
-    this.child.stdin.destroy();
+    this.cappedStdout?.destroy();
     this.child.stdout.destroy();
+  }
+
+  private async terminate(): Promise<void> {
+    this.closeOutput();
+    this.child.stdin.destroy();
     this.child.stderr.destroy();
 
     const pid = this.child.pid;

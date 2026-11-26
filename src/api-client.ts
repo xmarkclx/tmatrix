@@ -121,11 +121,25 @@ export class ApiClient implements TicketApi {
     if (!url || !providers.length) return;
     const request = { operation: "worker_usage", method: "POST", url: url.href, path: url.pathname,
       optional: true, signal } satisfies RequestOptions;
-    const result = await this.request({ ...request, body: { providers }, resetCompatibilityProviders: providers.length });
-    if (result === legacyUsageSchema) {
-      const supported = providers.map(({ provider, plan_remaining_percent, credits }) =>
+    let readings = providers;
+    let includeResets = true;
+    for (;;) {
+      signal.throwIfAborted();
+      const supported = includeResets ? readings : readings.map(({ provider, plan_remaining_percent, credits }) =>
         ({ provider, plan_remaining_percent, credits }));
-      await this.request({ ...request, body: { providers: supported } });
+      try {
+        const result = await this.request({ ...request, body: { providers: supported },
+          ...(includeResets ? { resetCompatibilityProviders: readings.length } : {}) });
+        if (result !== legacyUsageSchema) return;
+        includeResets = false;
+      } catch (error) {
+        if (!(error instanceof WorkerError) || error.code !== "HTTP_STATUS_ERROR" ||
+            (error.details.status !== 400 && error.details.status !== 422)) throw error;
+        // Older schemas reject the entire report when it contains an unknown provider.
+        const legacy = readings.filter(({ provider }) => provider === "codex" || provider === "claude");
+        if (legacy.length === 0 || legacy.length === readings.length) throw error;
+        readings = legacy;
+      }
     }
   }
 

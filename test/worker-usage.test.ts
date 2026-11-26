@@ -12,6 +12,10 @@ const codexUsage = {
 const claudeUsage = {
   provider: "claude", plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" }
 } satisfies ProviderUsage;
+const geminiUsage = {
+  provider: "gemini", plan_remaining_percent: 43, plan_resets_at: null,
+  credits: { kind: "amount", amount: "51.25", unit: "credits" }
+} satisfies ProviderUsage;
 
 function clientAt(pollUrl: string, fetch: typeof globalThis.fetch) {
   return new ApiClient({
@@ -100,6 +104,48 @@ describe("worker usage reports", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps legacy meters fresh on servers that reject the Gemini provider", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await client.reportWorkerUsage([codexUsage, claudeUsage, geminiUsage], new AbortController().signal);
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { providers: [codexUsage, claudeUsage, geminiUsage] },
+      { providers: [codexUsage, claudeUsage] }
+    ]);
+  });
+
+  it("keeps Gemini credits when the API supports Gemini but rejects reset fields", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(inputError([resetIssue(0), resetIssue(1), resetIssue(2)]), { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await client.reportWorkerUsage([codexUsage, claudeUsage, geminiUsage], new AbortController().signal);
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { providers: [codexUsage, claudeUsage, geminiUsage] },
+      { providers: [codexUsage, claudeUsage, geminiUsage].map(({ plan_resets_at, ...usage }) => usage) }
+    ]);
+  });
+
+  it("keeps Codex and Claude readings on servers that reject both Gemini and reset fields", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(inputError([
+        resetIssue(0), resetIssue(1),
+        { code: "invalid_value", path: ["providers", 2, "provider"], values: ["codex", "claude"] },
+        resetIssue(2), { code: "too_big", path: ["providers"], maximum: 2 }
+      ]), { status: 400 }))
+      .mockResolvedValueOnce(Response.json(inputError([resetIssue(0), resetIssue(1)]), { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await client.reportWorkerUsage([codexUsage, claudeUsage, geminiUsage], new AbortController().signal);
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { providers: [codexUsage, claudeUsage, geminiUsage] },
+      { providers: [codexUsage, claudeUsage] },
+      { providers: [codexUsage, claudeUsage].map(({ plan_resets_at, ...usage }) => usage) }
+    ]);
+  });
+
   it("refreshes the sole production source while idle and aborts on close", async () => {
     vi.useFakeTimers();
     const first = deferred<void>();
@@ -120,7 +166,10 @@ describe("worker usage reports", () => {
       claude: async () => {
         claudeReads += 1;
         return { plan: "unknown", display: { plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" } } };
-      }
+      },
+      gemini: async () => ({ plan: "unknown", display: {
+        plan_remaining_percent: geminiUsage.plan_remaining_percent, plan_resets_at: null, credits: geminiUsage.credits
+      } })
     });
     reporter.addSource({ id: "production", pollUrl: "https://tzudo.app/api/v1/ai/poll",
       async publish(providers) { history.push({ source: "production", providers }); } });
@@ -131,7 +180,7 @@ describe("worker usage reports", () => {
       await vi.advanceTimersByTimeAsync(300_001);
       first.resolve();
       await vi.advanceTimersByTimeAsync(0);
-      expect(history).toEqual([{ source: "production", providers: [codexUsage, claudeUsage] }]);
+      expect(history).toEqual([{ source: "production", providers: [codexUsage, claudeUsage, geminiUsage] }]);
       expect([codexReads, claudeReads]).toEqual([1, 1]);
       await vi.advanceTimersByTimeAsync(300_000);
       expect([codexReads, claudeReads]).toEqual([2, 2]);

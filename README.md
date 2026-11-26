@@ -64,6 +64,8 @@ The default TMatrix worker sends the exact ID to `agy` and uses its existing sig
 
 The default worker runs any `gemini-*` model through `agy`. Gemini is also available as a dedicated worker with `"worker_type": "gemini"` in the TMatrix configuration. [Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
 
+Tzu Do’s **AI usage** indicator shows the lowest remaining percentage across the Gemini quota windows in `agy -p /usage` and the account credit balance from `agy -p /credits`. TMatrix refreshes both readings on its five-minute reporting schedule. You can check either command as the user that runs TMatrix.
+
 ## Watch and talk to Claude workers
 
 Open a worker to follow it live: the activity log shows Claude's replies, each tool call with its input (commands, file paths, edits), a preview of each tool result, and todo updates. Press `Enter` to send a message into the running conversation; Claude handles it after its current step, in the same session. Each new Tzu Do comment resumes the task's Claude conversation, so context and the prompt cache carry over. If a follow-up moves the task to another provider's model, the worker says so in its reply.
