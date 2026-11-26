@@ -30,14 +30,15 @@ const planOrder = {
 } as const;
 
 /**
- * The requested model's provider runs first on its included plan; next the runtime that
- * holds the ticket's conversation; then the policy decides the fallback.
- * Without a recognizable model, the policy alone decides.
+ * Try the requested model's provider first, then the provider that holds the
+ * ticket's conversation, then the policy's plan order.
+ * Claude can use extra usage after its plan is spent, so try it for a requested
+ * Claude model or an existing Claude conversation when routing permits it.
  */
 export async function chooseFundingRoute({ policy, requested, prefer, signal, ...probes }: {
   policy: RuntimePolicy;
   requested?: Provider | undefined;
-  /** Runtime that holds this ticket's conversation; kept while its plan is not confirmed spent. */
+  /** Provider that holds this ticket's conversation. */
   prefer?: Provider | undefined;
   codex: () => Promise<RuntimeQuota>;
   claude: () => Promise<RuntimeQuota>;
@@ -50,8 +51,7 @@ export async function chooseFundingRoute({ policy, requested, prefer, signal, ..
     const quota = await (requested === "codex" ? codex() : claude());
     signal?.throwIfAborted();
     if (quota.plan === "available") return `${requested}-plan`;
-    // An explicitly chosen Claude model still runs when Claude's usage report is unreadable.
-    if (requested === "claude" && quota.plan === "unknown" && policy !== "codex-only") return "claude-plan";
+    if (requested === "claude" && quota.plan !== "unavailable" && policy !== "codex-only") return "claude-plan";
   }
   if (policy === "codex-only") return "codex";
   if (policy === "claude-only") return "claude";
@@ -69,8 +69,7 @@ export async function chooseFundingRoute({ policy, requested, prefer, signal, ..
       claudeQuota = await claude();
       signal?.throwIfAborted();
       if (claudeQuota.plan === "available") return route;
-      // Resuming the saved Claude conversation beats switching runtimes on an unreadable usage report.
-      if (route === preferred && claudeQuota.plan === "unknown") return route;
+      if (route === preferred && claudeQuota.plan !== "unavailable") return route;
     }
   }
 

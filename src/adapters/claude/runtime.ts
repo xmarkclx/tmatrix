@@ -42,6 +42,8 @@ const resultSchema = z.object({
 type ClaudeResult = z.infer<typeof resultSchema>;
 type TurnOptions = NonNullable<Parameters<ThreadLike["runStreamed"]>[1]>;
 
+export const USAGE_LIMIT = /usage limit|limit reached|hit your limit|rate limit|out of (?:extra )?usage|credit balance/i;
+
 const imageTypes = new Map([
   [".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"],
   [".gif", "image/gif"], [".webp", "image/webp"]
@@ -206,6 +208,10 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
             result.errors?.includes(`No conversation found with session ID: ${sessionId}`)) {
           return "missing";
         }
+        if (result?.is_error && (result.api_error_status === 429 || USAGE_LIMIT.test(result.result ?? "") ||
+            result.errors?.some(error => USAGE_LIMIT.test(error)))) {
+          throw usageLimitFailure();
+        }
         if (result?.api_error_status === 401 || result?.api_error_status === 403 ||
             result?.result === "Not logged in · Please run /login") {
           throw turnFailure("Claude Code authentication failed. Check the worker account's Claude Code sign-in or API credentials.");
@@ -304,4 +310,11 @@ async function encodeInput(input: Input, signal?: AbortSignal): Promise<string> 
 
 export function turnFailure(message: string): WorkerError {
   return new WorkerError({ message, code: "CLAUDE_TURN_FAILED", stage: "claude.turn" });
+}
+
+export function usageLimitFailure(): WorkerError {
+  return new WorkerError({
+    code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn",
+    message: "Claude Code reported that its usage limit was reached."
+  });
 }

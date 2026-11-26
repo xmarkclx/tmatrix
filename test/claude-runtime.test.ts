@@ -51,6 +51,13 @@ if (resume && !existsSync(session)) {
   output({ type: "result", subtype: "error_during_execution", is_error: true,
     errors: [scenario === "ambiguous" ? "Synthetic provider error" : "No conversation found with session ID: " + session] });
   process.exitCode = 1;
+} else if (["status-429", "limit-result", "limit-errors"].includes(scenario)) {
+  output({ type: "system", subtype: "init" });
+  output({ type: "result", subtype: "error_during_execution", is_error: true,
+    ...(scenario === "status-429" ? { api_error_status: 429 }
+      : scenario === "limit-result" ? { result: "You've hit your limit" }
+        : { errors: ["Out of extra usage"] }) });
+  process.exitCode = 1;
 } else if (scenario === "cancel") {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
   process.on("SIGTERM", () => { child.kill(); });
@@ -284,6 +291,17 @@ describe.skipIf(process.platform === "win32")("Claude Code runtime", () => {
     const { runtime, options } = await fixture("unstructured");
     try {
       await expect(run(runtime.startThread(options))).rejects.toThrow("Claude Code finished without a structured handoff");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it.each(["status-429", "limit-result", "limit-errors"])("classifies a Claude usage limit from %s", async (scenario) => {
+    const { runtime, options } = await fixture(scenario);
+    try {
+      await expect(run(runtime.startThread(options))).rejects.toMatchObject({
+        code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn"
+      });
     } finally {
       await runtime.close();
     }

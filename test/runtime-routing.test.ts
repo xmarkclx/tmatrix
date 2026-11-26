@@ -41,12 +41,13 @@ describe("subscription-first runtime routing", () => {
       await expect(resolve(policy, available, unknown)).resolves.toBe("codex-plan");
     });
 
-  it("keeps the runtime that holds the ticket's conversation while its plan is not spent", async () => {
+  it("keeps a Claude conversation unless Claude is unavailable", async () => {
     const prefer = (policy: RuntimePolicy, runtime: "codex" | "claude", codex: RuntimeQuota, claude: RuntimeQuota) =>
       chooseFundingRoute({ policy, prefer: runtime, codex: async () => codex, claude: async () => claude });
     await expect(prefer("subscriptions-first", "claude", available, available)).resolves.toBe("claude-plan");
     await expect(prefer("subscriptions-first", "claude", available, unknown)).resolves.toBe("claude-plan");
-    await expect(prefer("subscriptions-first", "claude", available, exhausted)).resolves.toBe("codex-plan");
+    await expect(prefer("subscriptions-first", "claude", available, exhausted)).resolves.toBe("claude-plan");
+    await expect(prefer("subscriptions-first", "claude", available, unavailable)).resolves.toBe("codex-plan");
     await expect(prefer("claude-first", "codex", available, available)).resolves.toBe("codex-plan");
     await expect(prefer("claude-first", "codex", unknown, available)).resolves.toBe("claude-plan");
     await expect(prefer("subscriptions-first", "codex", exhausted, exhausted)).resolves.toBe("codex-credits");
@@ -104,17 +105,22 @@ describe("model-selected runtime routing", () => {
     }
   });
 
-  it("uses the policy's order when the requested plan is exhausted", async () => {
+  it("uses the policy's order when the requested Codex plan is exhausted", async () => {
     await expect(route("subscriptions-first", "codex", exhausted, available)).resolves.toBe("claude-plan");
     await expect(route("subscriptions-first", "codex", exhausted, exhausted)).resolves.toBe("codex-credits");
-    await expect(route("claude-first", "claude", available, exhausted)).resolves.toBe("codex-plan");
+  });
+
+  it("tries a requested Claude model unless Claude is unavailable", async () => {
+    await expect(route("subscriptions-first", "claude", available, exhausted)).resolves.toBe("claude-plan");
+    await expect(route("subscriptions-first", "claude", available, unknown)).resolves.toBe("claude-plan");
+    await expect(route("claude-first", "claude", available, unavailable)).resolves.toBe("codex-plan");
   });
 
   it("checks each provider at most once", async () => {
     const calls: string[] = [];
     await chooseFundingRoute({ policy: "subscriptions-first", requested: "claude",
       codex: async () => { calls.push("codex"); return exhausted; },
-      claude: async () => { calls.push("claude"); return exhausted; } });
+      claude: async () => { calls.push("claude"); return unavailable; } });
     expect(calls).toEqual(["claude", "codex"]);
   });
 

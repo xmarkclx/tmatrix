@@ -59,6 +59,7 @@ async function fixture() {
     thread?: string;
     followUp?: string;
     failTurn?: boolean;
+    turnError?: WorkerError;
     failClose?: boolean;
     replacementOnResume?: string;
     assertCurrent?: () => Promise<void>;
@@ -72,6 +73,7 @@ async function fixture() {
             yield { type: "thread.started", thread_id: threadId };
             await turnOptions?.beforeStart?.();
             yield { type: "turn.started" };
+            if (options.turnError) throw options.turnError;
             if (options.followUp) steering.enqueueLocal(`follow-up-${threadId}`, options.followUp);
             if (options.failTurn) {
               yield { type: "item.completed", item: {
@@ -165,9 +167,9 @@ describe("automatic runtime routing at turn boundaries", () => {
     ]);
     // Each switch tells the runtime why the task moved and asks it to tell the person.
     expect(inputs[0]).not.toContain("# Provider change");
-    expect(inputs[1]).toContain("# Provider change\nContinued on Claude because the Codex plan allowance was used up or could not be confirmed. Current route: Claude plan.");
+    expect(inputs[1]).toContain("# Provider change\nContinued on Claude because the Codex plan allowance was unavailable or could not be confirmed. Current route: Claude plan.");
     expect(inputs[1]).toContain("Start user_message with one short sentence telling the person that this reply continued on Claude and why.");
-    expect(inputs[2]).toContain("Continued on Codex because the Claude plan allowance was used up or could not be confirmed. Current route: Codex credits.");
+    expect(inputs[2]).toContain("Continued on Codex because the Claude plan allowance was unavailable or could not be confirmed. Current route: Codex credits.");
     expect(local.snapshot()[0]?.activity.filter(entry => entry.kind === "runtime.switched")).toHaveLength(2);
     expect(inputs[1]).toContain("Previously verified staging.");
     expect(inputs[1]).toContain("Completed fixture step on prior-codex.");
@@ -198,6 +200,56 @@ describe("automatic runtime routing at turn boundaries", () => {
     expect(results[0]).toMatchObject({
       conversation: claude.reference("claude-fresh"), user_message: "Finished with sonnet."
     });
+  });
+
+  it("reselects with Claude excluded after a usage-limit error and delivers the comment on Codex", async () => {
+    const { api, calls, claude, inputs, route, run, ticket } = await fixture();
+    ticket.trigger_comment_id = "fixture-comment";
+    const comment = "Check the release checklist again.";
+    vi.mocked(api.getHistory).mockResolvedValueOnce({
+      conversation: claude.reference("prior-claude"),
+      trigger_comment: { id: ticket.trigger_comment_id, content: comment },
+      inherited_context: { content: "Previously verified staging." }
+    });
+    const limit = new WorkerError({ code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn", message: "Usage limit reached" });
+    const { local, result, selectRuntime } = run([route("claude", { turnError: limit }), route("codex")]);
+    await expect(result).resolves.toEqual({ status: "completed", threadId: "codex-fresh" });
+    expect(selectRuntime).toHaveBeenCalledTimes(2);
+    expect(selectRuntime).toHaveBeenLastCalledWith(undefined, expect.any(String), expect.any(String), "claude", "claude");
+    expect(calls).toEqual(["resume prior-claude", "close claude", "start codex-fresh", "close codex"]);
+    expect(inputs[0]).toContain(comment);
+    const summary = "Continued on Codex because Claude stopped with a usage-limit error.";
+    expect(inputs[1]).toContain(`# Provider change\n${summary}`);
+    expect(inputs[1]).toContain(comment);
+    expect(inputs[1]).toContain("Read the release requirements.");
+    expect(inputs[1]).toContain("Previously verified staging.");
+    expect(local.snapshot()[0]?.activity).toContainEqual(expect.objectContaining({ kind: "runtime.switched", text: summary }));
+  });
+
+  it("does not start another runtime after a non-limit Claude failure", async () => {
+    const { calls, results, route, run } = await fixture();
+    const error = new WorkerError({ code: "CLAUDE_TURN_FAILED", stage: "claude.turn", message: "Claude Code disconnected" });
+    const { result, selectRuntime } = run([route("claude", { turnError: error }), route("codex")]);
+    await expect(result).resolves.toEqual({ status: "failed", threadId: "claude-fresh" });
+    expect(selectRuntime).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["start claude-fresh", "close claude"]);
+    expect(results[0]).toMatchObject({ status: "failed", error: { code: "CLAUDE_TURN_FAILED" } });
+  });
+
+  it("replays the pending local message with the last handoff after a Claude usage-limit error", async () => {
+    const { inputs, route, run } = await fixture();
+    const limit = new WorkerError({ code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn", message: "Usage limit reached" });
+    const { local, result } = run([
+      route("codex", { followUp: "Add the staging summary." }),
+      route("claude", { turnError: limit }),
+      route("codex")
+    ]);
+    await expect(result).resolves.toEqual({ status: "completed", threadId: "codex-fresh" });
+    expect(inputs[2]).toContain("Completed fixture step on prior-codex.");
+    expect(inputs[2]).toContain("Add the staging summary.");
+    expect(inputs[2]).toContain("Continued on Codex because Claude stopped with a usage-limit error.");
+    expect(inputs[2]).not.toContain("Continued on Claude");
+    expect(local.snapshot()[0]?.activity).toContainEqual(expect.objectContaining({ kind: "steering.response_observed" }));
   });
 
   it("does not start another runtime after a failed turn that may have written changes", async () => {
