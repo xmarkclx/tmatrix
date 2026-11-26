@@ -56,11 +56,47 @@ describe("Codex subscription and purchased credits", () => {
   });
 
   it("reports the tightest current plan window and preserves an exact zero balance", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3 * 86_400;
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: true,
-      rateLimits: { primary: { usedPercent: 20 }, secondary: { usedPercent: 59 }, credits: { ...credits, balance: "0.00" } }
+      rateLimits: { primary: { usedPercent: 20, resetsAt: resetsAt - 86_400 }, secondary: { usedPercent: 59, resetsAt }, credits: { ...credits, balance: "0.00" } }
     } })).toEqual({ plan: "available", credits: false, display: {
-      plan_remaining_percent: 41, credits: { kind: "amount", amount: "0.00", unit: "credits" }
+      plan_remaining_percent: 41, plan_resets_at: new Date(resetsAt * 1000).toISOString(),
+      credits: { kind: "amount", amount: "0.00", unit: "credits" }
+    } });
+  });
+
+  it("reports no reset when it cannot explain the shown percentage", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 80, resetsAt }, secondary: { usedPercent: 80, resetsAt: null } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 20, plan_resets_at: null } });
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: false,
+      rateLimits: { primary: { usedPercent: 40, resetsAt } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 0, plan_resets_at: null } });
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: false,
+      rateLimits: { primary: { usedPercent: 100, resetsAt } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 0, plan_resets_at: new Date(resetsAt * 1000).toISOString() } });
+  });
+
+  it("reports the later reset when windows are equally used", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 30, resetsAt }, secondary: { usedPercent: 30, resetsAt: resetsAt + 7200 } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 70, plan_resets_at: new Date((resetsAt + 7200) * 1000).toISOString() } });
+  });
+
+  it.each([1e12, 1e20])("preserves usage and credits when reset seconds %s cannot be reported", async (resetsAt) => {
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 80, resetsAt }, credits }
+    } })).toEqual({ plan: "available", credits: true, display: {
+      plan_remaining_percent: 20, plan_resets_at: null,
+      credits: { kind: "amount", amount: "20.2500012345", unit: "credits" }
     } });
   });
 
@@ -117,8 +153,8 @@ if (process.argv[2] === 'auth') {
   return { executable, directory, async close() { await rm(directory, { recursive: true }); } };
 }
 
-function activeWindow(utilization: number) {
-  return { utilization, resets_at: new Date(Date.now() + 60_000).toISOString() };
+function activeWindow(utilization: number, resetsInMs = 60_000) {
+  return { utilization, resets_at: new Date(Date.now() + resetsInMs).toISOString() };
 }
 
 const subscriptionLimits = {
@@ -135,13 +171,50 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
 
   it("reports included usage from a no-prompt control request", async () => {
     expect(await quota({ limits: subscriptionLimits })).toEqual({ plan: "available", display: {
-      plan_remaining_percent: 80, credits: { kind: "disabled" }
+      plan_remaining_percent: 80, plan_resets_at: subscriptionLimits.five_hour.resets_at, credits: { kind: "disabled" }
     } });
   });
 
+  it("reports included usage before the five-hour session starts", async () => {
+    const seven_day = activeWindow(17);
+    const limits = {
+      ...subscriptionLimits,
+      five_hour: { utilization: 0, resets_at: null },
+      seven_day
+    };
+    expect(await quota({ limits }, "claude-opus-5-5")).toEqual({
+      plan: "available", display: {
+        plan_remaining_percent: 83, plan_resets_at: seven_day.resets_at, credits: { kind: "disabled" }
+      }
+    });
+  });
+
   it("reports an exhausted subscription even when Claude's purchased credits are enabled", async () => {
-    expect(await quota({ limits: { ...subscriptionLimits, seven_day: activeWindow(100), extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 750 } } })).toEqual({
-      plan: "exhausted", display: { plan_remaining_percent: 0, credits: { kind: "unavailable" } }
+    const seven_day = activeWindow(100, 3 * 86_400_000);
+    expect(await quota({ limits: { ...subscriptionLimits, seven_day, extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 750 } } })).toEqual({
+      plan: "exhausted", display: { plan_remaining_percent: 0, plan_resets_at: seven_day.resets_at, credits: { kind: "unavailable" } }
+    });
+  });
+
+  it("reports no reset when a tied exhausted account window has an unknown reset", async () => {
+    expect(await quota({ limits: {
+      five_hour: activeWindow(100),
+      seven_day: { utilization: 100, resets_at: null },
+      extra_usage: { is_enabled: false }
+    } })).toEqual({ plan: "exhausted", display: {
+      plan_remaining_percent: 0, plan_resets_at: null, credits: { kind: "disabled" }
+    } });
+  });
+
+  it.each([
+    { utilization: 100, resets_at: "2000-01-01T00:00:00.000Z" },
+    { utilization: 90, resets_at: null }
+  ])("reports the current exhausted account reset when the other window is %j", async (seven_day) => {
+    const five_hour = activeWindow(100);
+    expect(await quota({ limits: { five_hour, seven_day, extra_usage: { is_enabled: false } } })).toEqual({
+      plan: "exhausted", display: {
+        plan_remaining_percent: 0, plan_resets_at: five_hour.resets_at, credits: { kind: "disabled" }
+      }
     });
   });
 

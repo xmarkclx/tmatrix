@@ -88,7 +88,7 @@ else {
 
     await expect(read(undefined, directory)).resolves.toEqual({
       plan: "unknown",
-      display: { plan_remaining_percent: 25, credits: { kind: "amount", amount: "120.007500", unit: "credits" } }
+      display: { plan_remaining_percent: 25, plan_resets_at: null, credits: { kind: "amount", amount: "120.007500", unit: "credits" } }
     });
     const readProcess = async (command: string) => JSON.parse(await readFile(join(directory, command + ".json"), "utf8"));
     for (const child of await Promise.all([readProcess("usage"), readProcess("credits")])) {
@@ -108,7 +108,7 @@ else {
     });
     await expect(read()).resolves.toEqual({
       plan: "unknown",
-      display: { plan_remaining_percent: null, credits: { kind: "amount", amount: "0", unit: "credits" } }
+      display: { plan_remaining_percent: null, plan_resets_at: null, credits: { kind: "amount", amount: "0", unit: "credits" } }
     });
   });
 
@@ -126,7 +126,7 @@ else {
     });
     await expect(read()).resolves.toEqual({
       plan: "unknown",
-      display: { plan_remaining_percent: 25, credits: { kind: "unavailable" } }
+      display: { plan_remaining_percent: 25, plan_resets_at: null, credits: { kind: "unavailable" } }
     });
   });
 
@@ -150,7 +150,7 @@ else {
     await expect(read()).resolves.toEqual({
       plan: "unknown",
       display: {
-        plan_remaining_percent: 25,
+        plan_remaining_percent: 25, plan_resets_at: null,
         credits: expected === null ? { kind: "unavailable" } : { kind: "amount", amount: expected, unit: "credits" }
       }
     });
@@ -163,7 +163,7 @@ else {
     });
     await expect(read()).resolves.toEqual({
       plan: "unknown",
-      display: { plan_remaining_percent: null, credits: { kind: "amount", amount: "0", unit: "credits" } }
+      display: { plan_remaining_percent: null, plan_resets_at: null, credits: { kind: "amount", amount: "0", unit: "credits" } }
     });
     const child = JSON.parse(await readFile(join(directory, "usage.json"), "utf8"));
     expect(() => process.kill(child.pid, 0)).toThrow(/ESRCH/);

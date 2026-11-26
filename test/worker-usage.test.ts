@@ -6,14 +6,14 @@ import { WorkerUsageReporter, type ProviderUsage } from "../src/worker-usage.js"
 import { deferred, makeConfig } from "./helpers.js";
 
 const codexUsage = {
-  provider: "codex", plan_remaining_percent: 0,
+  provider: "codex", plan_remaining_percent: 0, plan_resets_at: "2026-11-26T18:25:03.000Z",
   credits: { kind: "amount", amount: "1203.1250001234", unit: "credits" }
 } satisfies ProviderUsage;
 const claudeUsage = {
-  provider: "claude", plan_remaining_percent: 71.5, credits: { kind: "unavailable" }
+  provider: "claude", plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" }
 } satisfies ProviderUsage;
 const geminiUsage = {
-  provider: "gemini", plan_remaining_percent: 43,
+  provider: "gemini", plan_remaining_percent: 43, plan_resets_at: null,
   credits: { kind: "amount", amount: "51.25", unit: "credits" }
 } satisfies ProviderUsage;
 
@@ -37,7 +37,7 @@ describe("worker usage reports", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ providers: [codexUsage, claudeUsage] });
   });
 
-  it("rejects generic queue endpoints and never retries an optional report", async () => {
+  it("rejects generic queue endpoints and does not retry service failures", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(null, { status: 503 }));
     const signal = new AbortController().signal;
     for (const url of [
@@ -49,6 +49,61 @@ describe("worker usage reports", () => {
     expect(fetch.mock.calls.map(([url]) => url)).toEqual(["https://tzudo.app/api/v1/ai/worker-usage"]);
   });
 
+  const resetIssue = (index: number) => ({
+    code: "unrecognized_keys", keys: ["plan_resets_at"], path: ["providers", index],
+    message: 'Unrecognized key: "plan_resets_at"'
+  });
+  const inputError = (issues: unknown[]) => ({
+    defined: false, code: "BAD_REQUEST", status: 400, message: "Input validation failed", data: { issues }
+  });
+
+  it("retries only the report fields supported by the older Tzu Do schema and checks again on the next report", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(inputError([resetIssue(0), resetIssue(1)]), { status: 400 }))
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    const signal = new AbortController().signal;
+    await client.reportWorkerUsage([codexUsage, claudeUsage], signal);
+    await client.reportWorkerUsage([codexUsage, claudeUsage], signal);
+    expect(fetch.mock.calls.map(([url, init]) => [
+      url, init?.method, init?.redirect, new Headers(init?.headers).get("authorization"), JSON.parse(String(init?.body))
+    ])).toEqual([
+      ["https://tzudo.app/api/v1/ai/worker-usage", "POST", "error", "Bearer test-secret-key", { providers: [codexUsage, claudeUsage] }],
+      ["https://tzudo.app/api/v1/ai/worker-usage", "POST", "error", "Bearer test-secret-key", { providers: [
+        { provider: "codex", plan_remaining_percent: 0, credits: { kind: "amount", amount: "1203.1250001234", unit: "credits" } },
+        { provider: "claude", plan_remaining_percent: 71.5, credits: { kind: "unavailable" } }
+      ] }],
+      ["https://tzudo.app/api/v1/ai/worker-usage", "POST", "error", "Bearer test-secret-key", { providers: [codexUsage, claudeUsage] }]
+    ]);
+  });
+
+  it.each([
+    { status: 401, payload: { code: "UNAUTHORIZED" } },
+    { status: 403, payload: { code: "FORBIDDEN" } },
+    { status: 400, payload: { code: "BAD_REQUEST", message: "Bad request" } },
+    { status: 400, payload: inputError([{ code: "invalid_format", path: ["providers", 0, "plan_resets_at"] }]) },
+    { status: 400, payload: inputError([resetIssue(0), { code: "invalid_type", path: ["providers", 0, "credits"] }]) },
+    { status: 400, payload: inputError([{ ...resetIssue(0), keys: ["plan_resets_at", "unknown"] }]) },
+    { status: 400, payload: inputError([resetIssue(1)]) }
+  ])("preserves unrelated usage errors at status $status", async ({ status, payload }) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(payload, { status }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await expect(client.reportWorkerUsage([codexUsage], new AbortController().signal))
+      .rejects.toMatchObject({ code: "HTTP_STATUS_ERROR", details: { status } });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes at most one fallback request and surfaces its error", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(inputError([resetIssue(0)]), { status: 400 }))
+      .mockResolvedValueOnce(Response.json({ code: "FORBIDDEN" }, { status: 403 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await expect(client.reportWorkerUsage([codexUsage], new AbortController().signal))
+      .rejects.toMatchObject({ code: "HTTP_STATUS_ERROR", details: { status: 403 } });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps legacy meters fresh on servers that reject the Gemini provider", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 400 }))
@@ -58,6 +113,36 @@ describe("worker usage reports", () => {
     expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
       { providers: [codexUsage, claudeUsage, geminiUsage] },
       { providers: [codexUsage, claudeUsage] }
+    ]);
+  });
+
+  it("keeps Gemini credits when the API supports Gemini but rejects reset fields", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(inputError([resetIssue(0), resetIssue(1), resetIssue(2)]), { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await client.reportWorkerUsage([codexUsage, claudeUsage, geminiUsage], new AbortController().signal);
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { providers: [codexUsage, claudeUsage, geminiUsage] },
+      { providers: [codexUsage, claudeUsage, geminiUsage].map(({ plan_resets_at, ...usage }) => usage) }
+    ]);
+  });
+
+  it("keeps Codex and Claude readings on servers that reject both Gemini and reset fields", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(inputError([
+        resetIssue(0), resetIssue(1),
+        { code: "invalid_value", path: ["providers", 2, "provider"], values: ["codex", "claude"] },
+        resetIssue(2), { code: "too_big", path: ["providers"], maximum: 2 }
+      ]), { status: 400 }))
+      .mockResolvedValueOnce(Response.json(inputError([resetIssue(0), resetIssue(1)]), { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await client.reportWorkerUsage([codexUsage, claudeUsage, geminiUsage], new AbortController().signal);
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { providers: [codexUsage, claudeUsage, geminiUsage] },
+      { providers: [codexUsage, claudeUsage] },
+      { providers: [codexUsage, claudeUsage].map(({ plan_resets_at, ...usage }) => usage) }
     ]);
   });
 
@@ -76,14 +161,14 @@ describe("worker usage reports", () => {
           signal?.addEventListener("abort", () => { aborted = true; last.resolve(); }, { once: true });
           await last.promise;
         }
-        return { plan: "exhausted", display: { plan_remaining_percent: 0, credits: codexUsage.credits } };
+        return { plan: "exhausted", display: { plan_remaining_percent: 0, plan_resets_at: codexUsage.plan_resets_at, credits: codexUsage.credits } };
       },
       claude: async () => {
         claudeReads += 1;
-        return { plan: "unknown", display: { plan_remaining_percent: 71.5, credits: { kind: "unavailable" } } };
+        return { plan: "unknown", display: { plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" } } };
       },
       gemini: async () => ({ plan: "unknown", display: {
-        plan_remaining_percent: geminiUsage.plan_remaining_percent, credits: geminiUsage.credits
+        plan_remaining_percent: geminiUsage.plan_remaining_percent, plan_resets_at: null, credits: geminiUsage.credits
       } })
     });
     reporter.addSource({ id: "production", pollUrl: "https://tzudo.app/api/v1/ai/poll",
@@ -119,7 +204,7 @@ describe("worker usage reports", () => {
     const reporter = new WorkerUsageReporter({ codex: async () => {
       checks += 1;
       if (checks === 2) await first.promise;
-      return { plan: "exhausted", display: { plan_remaining_percent: 0, credits: codexUsage.credits } };
+      return { plan: "exhausted", display: { plan_remaining_percent: 0, plan_resets_at: codexUsage.plan_resets_at, credits: codexUsage.credits } };
     } });
     const add = (id: string) => reporter.addSource({ id, pollUrl: "https://tzudo.app/api/v1/ai/poll",
       async publish() { reports.push(id); } });
@@ -144,7 +229,7 @@ describe("worker usage reports", () => {
     vi.useFakeTimers();
     const reports: string[] = [];
     const reporter = new WorkerUsageReporter({ codex: async () => ({ plan: "exhausted", display: {
-      plan_remaining_percent: 0, credits: codexUsage.credits
+      plan_remaining_percent: 0, plan_resets_at: null, credits: codexUsage.credits
     } }) }, chosen);
     try {
       for (const [id, host] of [["production", "tzudo.app"], ["preview", "pr-43.tzd.mc-lopez.com"]] as const) {

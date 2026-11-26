@@ -8,8 +8,6 @@ import (
 	"errors"
 	"regexp"
 	"strings"
-
-	"tmatrix/internal/config"
 )
 
 type Backend interface {
@@ -52,20 +50,19 @@ type AdapterUpdate struct {
 }
 
 type Snapshot struct {
-	AdapterUpdate  *AdapterUpdate       `json:"adapter_update,omitempty"`
-	RuntimeAdapter string               `json:"runtime_adapter"`
-	AdapterUpdates []AdapterUpdate      `json:"adapter_updates,omitempty"`
-	RuntimePolicy  config.RuntimePolicy `json:"runtime_policy,omitempty"`
-	RestartPending bool                 `json:"restart_pending,omitempty"`
-	LiveSourceAdd  bool                 `json:"live_source_add,omitempty"`
-	Version        int                  `json:"version"`
-	InstanceID     string               `json:"instance_id"`
-	MaxWorkers     int                  `json:"max_workers"`
-	RunningWorkers int                  `json:"running_workers"`
-	PollIntervalMS int                  `json:"poll_interval_ms"`
-	IntakePaused   bool                 `json:"intake_paused"`
-	Pollers        []Poller             `json:"pollers"`
-	Workers        []Worker             `json:"workers"`
+	AdapterUpdate  *AdapterUpdate  `json:"adapter_update,omitempty"`
+	RuntimeAdapter string          `json:"runtime_adapter"`
+	AdapterUpdates []AdapterUpdate `json:"adapter_updates,omitempty"`
+	RestartPending bool            `json:"restart_pending,omitempty"`
+	LiveSourceAdd  bool            `json:"live_source_add,omitempty"`
+	Version        int             `json:"version"`
+	InstanceID     string          `json:"instance_id"`
+	MaxWorkers     int             `json:"max_workers"`
+	RunningWorkers int             `json:"running_workers"`
+	PollIntervalMS int             `json:"poll_interval_ms"`
+	IntakePaused   bool            `json:"intake_paused"`
+	Pollers        []Poller        `json:"pollers"`
+	Workers        []Worker        `json:"workers"`
 }
 
 type Poller struct {
@@ -133,12 +130,11 @@ type Steering struct {
 }
 
 type Settings struct {
-	MaxWorkers     *int                  `json:"max_workers,omitempty"`
-	IntakePaused   *bool                 `json:"intake_paused,omitempty"`
-	PollIntervalMS *int                  `json:"poll_interval_ms,omitempty"`
-	WorkerType     *string               `json:"-"`
-	RuntimePolicy  *config.RuntimePolicy `json:"runtime_policy,omitempty"`
-	PollerType     *string               `json:"-"`
+	MaxWorkers     *int    `json:"max_workers,omitempty"`
+	IntakePaused   *bool   `json:"intake_paused,omitempty"`
+	PollIntervalMS *int    `json:"poll_interval_ms,omitempty"`
+	WorkerType     *string `json:"-"`
+	PollerType     *string `json:"-"`
 }
 
 // Connection is never included in snapshots or persisted alongside settings.
@@ -158,11 +154,6 @@ func ValidateSettings(s Settings) error {
 	}
 	if s.WorkerType != nil && !regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`).MatchString(*s.WorkerType) {
 		return errors.New("invalid worker adapter ID")
-	}
-	if s.RuntimePolicy != nil {
-		if err := s.RuntimePolicy.Validate(); err != nil {
-			return err
-		}
 	}
 	if s.PollerType != nil && *s.PollerType != "tzudo" {
 		return errors.New("only the tzudo poller is available")

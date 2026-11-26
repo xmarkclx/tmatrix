@@ -6,7 +6,22 @@ export type UsageCredits =
   | { kind: "disabled" | "unavailable" | "unlimited" };
 export interface UsageDisplay {
   plan_remaining_percent: number | null;
+  /** When the window that sets plan_remaining_percent resets. */
+  plan_resets_at: string | null;
   credits: UsageCredits;
+}
+export interface PlanWindow { usedPercent: number; resetsAtMs: number | null }
+
+/** Picks the most-used window. A tie picks the later (or unknown) reset, the earliest the shown percentage can rise. */
+export function tightestPlanWindow(windows: PlanWindow[]): PlanWindow | undefined {
+  return windows.reduce<PlanWindow | undefined>((tightest, window) => !tightest ||
+    window.usedPercent > tightest.usedPercent ||
+    (window.usedPercent === tightest.usedPercent && (window.resetsAtMs ?? Infinity) > (tightest.resetsAtMs ?? Infinity))
+    ? window : tightest, undefined);
+}
+
+export function planResetsAt(window: PlanWindow | undefined): string | null {
+  return window?.resetsAtMs == null ? null : new Date(window.resetsAtMs).toISOString();
 }
 export type ProviderUsage = UsageDisplay & { provider: Provider };
 type PublishUsage = (providers: ProviderUsage[], signal: AbortSignal) => Promise<void>;
@@ -61,8 +76,8 @@ export class WorkerUsageReporter {
     const checks = await Promise.allSettled(Object.keys(this.probes).filter(isProvider).map(async provider => {
       const quota = await this.probes[provider]?.(signal);
       if (!quota?.display) return;
-      const { plan_remaining_percent, credits } = quota.display;
-      return { provider, plan_remaining_percent, credits };
+      const { plan_remaining_percent, plan_resets_at, credits } = quota.display;
+      return { provider, plan_remaining_percent, plan_resets_at, credits };
     }));
     const providers = checks.flatMap(check => check.status === "fulfilled" && check.value ? [check.value] : []);
     if (!providers.length || signal.aborted || this.selectedSource() !== source) return;

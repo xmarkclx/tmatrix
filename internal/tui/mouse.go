@@ -51,9 +51,6 @@ func (m Model) activateTarget(target hitTarget) (tea.Model, tea.Cmd) {
 	}
 	if m.screen == connectScreen || m.screen == settingsScreen {
 		switch target.action {
-		case "runtime-policy":
-			m.focusField(runtimePolicyField)
-			return m.handleKey(mouseKey(target.key))
 		case "field":
 			if target.field >= 0 && target.field < len(m.form) {
 				return m, m.focusField(target.field)

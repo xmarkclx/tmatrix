@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RuntimeLike, RuntimeQuota } from "../../runtime-adapter.js";
+import { planResetsAt, tightestPlanWindow, type PlanWindow } from "../../worker-usage.js";
 import { AppServerCodex } from "./app-server.js";
 
 type CodexQuota = RuntimeQuota & { credits: boolean };
@@ -12,7 +13,11 @@ const quotaSchema = z.object({
   rateLimitsByLimitId: z.object({ codex: z.unknown().optional() }).nullish(),
   rateLimits: z.unknown().optional()
 });
-const planWindowSchema = z.object({ usedPercent: z.number().min(0).max(100), resetsAt: z.number().nullish() });
+const firstExpandedYearSeconds = Date.UTC(10_000, 0, 1) / 1000;
+const planWindowSchema = z.object({
+  usedPercent: z.number().min(0).max(100),
+  resetsAt: z.number().lt(firstExpandedYearSeconds).nullish().catch(null)
+});
 const balancePattern = /^\d{1,15}(?:\.\d{1,15})?$/;
 const bucketSchema = z.object({
   limitId: z.string().nullish(),
@@ -36,16 +41,20 @@ function parseQuota(payload: unknown): CodexQuota {
 
   const { primary, secondary, spendControlReached, credits } = bucket.data;
   const balance = credits?.balance?.trim() ?? "";
-  const measured = [primary, secondary].flatMap(window =>
-    window && (window.resetsAt == null || window.resetsAt * 1000 > Date.now()) ? [window.usedPercent] : []
-  );
-  const remaining = plan === "exhausted" ? 0 : measured.length ? 100 - Math.max(...measured) : null;
+  const measured = [primary, secondary].flatMap((window): PlanWindow[] => {
+    const resetsAtMs = window?.resetsAt == null ? null : window.resetsAt * 1000;
+    return window && (resetsAtMs == null || resetsAtMs > Date.now()) ? [{ usedPercent: window.usedPercent, resetsAtMs }] : [];
+  });
+  const limiting = tightestPlanWindow(measured);
+  const remaining = plan === "exhausted" ? 0 : limiting ? 100 - limiting.usedPercent : null;
   return {
     plan,
     credits: ordinary != null && !spendControlReached && credits?.hasCredits === true &&
       (credits.unlimited || (/^\d+(?:\.\d+)?$/.test(balance) && Number(balance) > 0)),
     display: {
       plan_remaining_percent: remaining,
+      // An exhausted plan below 100% usage was not set by a window, so its reset is unknown.
+      plan_resets_at: plan === "exhausted" && limiting?.usedPercent !== 100 ? null : planResetsAt(limiting),
       credits: credits?.unlimited === true && credits.hasCredits ? { kind: "unlimited" }
         : balancePattern.test(balance) ? { kind: "amount", amount: balance, unit: "credits" } : { kind: "unavailable" }
     }

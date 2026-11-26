@@ -141,5 +141,5 @@ export async function readGeminiQuota(
     runNativeCommand({ ...probe, command: "credits" })
   ]);
   signal?.throwIfAborted();
-  return { plan: "unknown", display: { plan_remaining_percent: planRemaining(usage), credits: readCredits(credits) } };
+  return { plan: "unknown", display: { plan_remaining_percent: planRemaining(usage), plan_resets_at: null, credits: readCredits(credits) } };
 }

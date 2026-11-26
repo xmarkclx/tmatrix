@@ -34,11 +34,19 @@ Press `s` to open Settings and view the TMatrix version, build number, and commi
 
 Sign Codex in to ChatGPT under the user that runs TMatrix. To add Claude, [install Claude Code](https://code.claude.com/docs/en/setup) 2.1.220 or newer and run `claude auth login` under that same user. In Claude's account settings, turn off **Usage credits** so Claude can report when its subscription is exhausted. TMatrix looks for `claude` on `PATH` and in `~/.local/bin`. Set `TMATRIX_CLAUDE_PATH` in the engine environment for a different location.
 
-TMatrix checks allowance before routing a Codex or Claude turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. When Codex reports an exhausted plan and available credits, TMatrix uses credits if Claude's plan is exhausted or unavailable, including when Claude Code is signed out or has no paid subscription. If Claude's usage report cannot be read, Claude still gets the turn and fails clearly if its plan is spent; other unverifiable routes report the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
+TMatrix runs each turn on the provider that owns the task's model ID. It never substitutes another model. A Codex model uses the Codex plan, then Codex credits when the plan is exhausted and credits are available. A Claude model runs on Claude Code and a Gemini model runs on Antigravity. Each uses its own account limits. If that provider is signed out or out of allowance, the turn fails with the reason. Any completed handoff is saved. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
 
-Press `s` to open **Settings**, move to **Routing policy**, and use Left or Right to choose a policy. Press `Ctrl+S` to save. You can put Claude first, omit the Codex credits fallback, or choose a single provider. A policy change applies to new turns.
+TMatrix finds the provider from the start of the model ID:
 
-Open a worker to see which provider and allowance TMatrix selected. A task stays on the provider that holds its conversation while that plan has allowance, so follow-ups keep their context. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows Codex and Claude responses and tool activity. Active turns stay with their current provider.
+| Model ID starts with | Provider |
+| --- | --- |
+| `gpt-`, `codex`, `o1` to `o4` | Codex |
+| `claude-`, `sonnet`, `opus`, `haiku` | Claude Code |
+| `gemini-` | Antigravity (`agy`) |
+
+A task without a model, or with an ID that matches none of these, fails before any turn starts.
+
+Open a worker to see which provider and allowance TMatrix selected. When a follow-up selects a model from another provider, TMatrix starts a conversation there with the task's saved handoff and the new input. The terminal shows Codex and Claude responses and tool activity.
 
 TMatrix checks Anthropic's stable npm channel at startup and daily. Open **Settings**, press `o` for **Runtime updates**, and use Left or Right to choose a provider. TMatrix verifies each Claude Code release in its private runtime store before selecting it. Active workers keep the version they started with. Set `DISABLE_UPDATES=1` in the engine environment to turn off Claude update checks.
 
@@ -54,13 +62,13 @@ To report to one account when several production sources are configured, set `TM
 
 The default TMatrix worker sends the exact ID to `agy` and uses its existing sign-in and tool permissions. For Neon, the model suffix selects the reasoning level. Run `agy models` again to discover new IDs. For a nonstandard installation, set `TMATRIX_AGY_PATH` to the absolute path of the executable.
 
-Tzu Do’s **AI usage** indicator shows the lowest remaining percentage across the Gemini quota windows in `agy -p /usage` and the account credit balance from `agy -p /credits`. TMatrix refreshes both readings on its five-minute reporting schedule. You can check either command as the user that runs TMatrix.
+The default worker runs any `gemini-*` model through `agy`. Gemini is also available as a dedicated worker with `"worker_type": "gemini"` in the TMatrix configuration. [Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
 
-The default worker allows Gemini under `subscriptions-first` and `claude-first`. The `subscriptions-only` policy skips Gemini because `agy` does not identify which allowance will fund a particular turn. Gemini is also available as a dedicated worker with `"worker_type": "gemini"` in the TMatrix configuration. [Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
+Tzu Do’s **AI usage** indicator shows the lowest remaining percentage across the Gemini quota windows in `agy -p /usage` and the account credit balance from `agy -p /credits`. TMatrix refreshes both readings on its five-minute reporting schedule. You can check either command as the user that runs TMatrix.
 
 ## Watch and talk to Claude workers
 
-Open a worker to follow it live: the activity log shows Claude's replies, each tool call with its input (commands, file paths, edits), a preview of each tool result, and todo updates. Press `Enter` to send a message into the running conversation; Claude handles it after its current step, in the same session. Each new Tzu Do comment resumes the task's Claude conversation, so context and the prompt cache carry over. If a task moves to the other provider because a plan ran out, the worker says so in its reply.
+Open a worker to follow it live: the activity log shows Claude's replies, each tool call with its input (commands, file paths, edits), a preview of each tool result, and todo updates. Press `Enter` to send a message into the running conversation; Claude handles it after its current step, in the same session. Each new Tzu Do comment resumes the task's Claude conversation, so context and the prompt cache carry over. If a follow-up moves the task to another provider's model, the worker says so in its reply.
 
 To run interactive Claude Code in a private tmux session instead, set `TMATRIX_CLAUDE_TERMINAL=1` in the engine environment (Linux and macOS with `tmux`). The worker panel then mirrors Claude's screen: `v` switches to the activity log and `a` attaches (`Ctrl+B` then `D` returns). Workers answer only Claude Code's known startup dialogs; attach to answer anything else.
 
