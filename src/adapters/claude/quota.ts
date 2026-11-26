@@ -76,11 +76,13 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const accountExhausted = account.some(window => window.usedPercent === 100);
     const limiting = accountExhausted || (account.length > 0 && account.length === accountWindows.length)
       ? tightestPlanWindow(account) : undefined;
+    const tiedResetUnknown = limiting && accountWindows.some(window =>
+      window.utilization === limiting.usedPercent && window.resets_at === null);
     return {
       plan: exhausted ? "exhausted" : complete && extraDisabled ? "available" : "unknown",
       display: {
         plan_remaining_percent: limiting ? 100 - limiting.usedPercent : null,
-        plan_resets_at: planResetsAt(limiting),
+        plan_resets_at: tiedResetUnknown ? null : planResetsAt(limiting),
         credits: { kind: extraDisabled ? "disabled" : "unavailable" }
       }
     };
