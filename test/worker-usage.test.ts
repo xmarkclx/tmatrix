@@ -6,11 +6,11 @@ import { WorkerUsageReporter, type ProviderUsage } from "../src/worker-usage.js"
 import { deferred, makeConfig } from "./helpers.js";
 
 const codexUsage = {
-  provider: "codex", plan_remaining_percent: 0,
+  provider: "codex", plan_remaining_percent: 0, plan_resets_at: "2026-11-26T18:25:03.000Z",
   credits: { kind: "amount", amount: "1203.1250001234", unit: "credits" }
 } satisfies ProviderUsage;
 const claudeUsage = {
-  provider: "claude", plan_remaining_percent: 71.5, credits: { kind: "unavailable" }
+  provider: "claude", plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" }
 } satisfies ProviderUsage;
 
 function clientAt(pollUrl: string, fetch: typeof globalThis.fetch) {
@@ -60,11 +60,11 @@ describe("worker usage reports", () => {
           signal?.addEventListener("abort", () => { aborted = true; last.resolve(); }, { once: true });
           await last.promise;
         }
-        return { plan: "exhausted", display: { plan_remaining_percent: 0, credits: codexUsage.credits } };
+        return { plan: "exhausted", display: { plan_remaining_percent: 0, plan_resets_at: codexUsage.plan_resets_at, credits: codexUsage.credits } };
       },
       claude: async () => {
         claudeReads += 1;
-        return { plan: "unknown", display: { plan_remaining_percent: 71.5, credits: { kind: "unavailable" } } };
+        return { plan: "unknown", display: { plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" } } };
       }
     });
     reporter.addSource({ id: "production", pollUrl: "https://tzudo.app/api/v1/ai/poll",
@@ -100,7 +100,7 @@ describe("worker usage reports", () => {
     const reporter = new WorkerUsageReporter({ codex: async () => {
       checks += 1;
       if (checks === 2) await first.promise;
-      return { plan: "exhausted", display: { plan_remaining_percent: 0, credits: codexUsage.credits } };
+      return { plan: "exhausted", display: { plan_remaining_percent: 0, plan_resets_at: codexUsage.plan_resets_at, credits: codexUsage.credits } };
     } });
     const add = (id: string) => reporter.addSource({ id, pollUrl: "https://tzudo.app/api/v1/ai/poll",
       async publish() { reports.push(id); } });
@@ -125,7 +125,7 @@ describe("worker usage reports", () => {
     vi.useFakeTimers();
     const reports: string[] = [];
     const reporter = new WorkerUsageReporter({ codex: async () => ({ plan: "exhausted", display: {
-      plan_remaining_percent: 0, credits: codexUsage.credits
+      plan_remaining_percent: 0, plan_resets_at: null, credits: codexUsage.credits
     } }) }, chosen);
     try {
       for (const [id, host] of [["production", "tzudo.app"], ["preview", "pr-43.tzd.mc-lopez.com"]] as const) {

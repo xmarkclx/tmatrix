@@ -56,12 +56,38 @@ describe("Codex subscription and purchased credits", () => {
   });
 
   it("reports the tightest current plan window and preserves an exact zero balance", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3 * 86_400;
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: true,
-      rateLimits: { primary: { usedPercent: 20 }, secondary: { usedPercent: 59 }, credits: { ...credits, balance: "0.00" } }
+      rateLimits: { primary: { usedPercent: 20, resetsAt: resetsAt - 86_400 }, secondary: { usedPercent: 59, resetsAt }, credits: { ...credits, balance: "0.00" } }
     } })).toEqual({ plan: "available", credits: false, display: {
-      plan_remaining_percent: 41, credits: { kind: "amount", amount: "0.00", unit: "credits" }
+      plan_remaining_percent: 41, plan_resets_at: new Date(resetsAt * 1000).toISOString(),
+      credits: { kind: "amount", amount: "0.00", unit: "credits" }
     } });
+  });
+
+  it("reports no reset when it cannot explain the shown percentage", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 80, resetsAt }, secondary: { usedPercent: 80, resetsAt: null } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 20, plan_resets_at: null } });
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: false,
+      rateLimits: { primary: { usedPercent: 40, resetsAt } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 0, plan_resets_at: null } });
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: false,
+      rateLimits: { primary: { usedPercent: 100, resetsAt } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 0, plan_resets_at: new Date(resetsAt * 1000).toISOString() } });
+  });
+
+  it("reports the later reset when windows are equally used", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    expect(await codexQuota({ limits: {
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 30, resetsAt }, secondary: { usedPercent: 30, resetsAt: resetsAt + 7200 } }
+    } })).toMatchObject({ display: { plan_remaining_percent: 70, plan_resets_at: new Date((resetsAt + 7200) * 1000).toISOString() } });
   });
 
   it.each([undefined, null, "false"])("does not infer subscription state from percentages or credits without a boolean (%s)", async (permission) => {
@@ -117,8 +143,8 @@ if (process.argv[2] === 'auth') {
   return { executable, directory, async close() { await rm(directory, { recursive: true }); } };
 }
 
-function activeWindow(utilization: number) {
-  return { utilization, resets_at: new Date(Date.now() + 60_000).toISOString() };
+function activeWindow(utilization: number, resetsInMs = 60_000) {
+  return { utilization, resets_at: new Date(Date.now() + resetsInMs).toISOString() };
 }
 
 const subscriptionLimits = {
@@ -135,13 +161,14 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
 
   it("reports included usage from a no-prompt control request", async () => {
     expect(await quota({ limits: subscriptionLimits })).toEqual({ plan: "available", display: {
-      plan_remaining_percent: 80, credits: { kind: "disabled" }
+      plan_remaining_percent: 80, plan_resets_at: subscriptionLimits.five_hour.resets_at, credits: { kind: "disabled" }
     } });
   });
 
   it("reports an exhausted subscription even when Claude's purchased credits are enabled", async () => {
-    expect(await quota({ limits: { ...subscriptionLimits, seven_day: activeWindow(100), extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 750 } } })).toEqual({
-      plan: "exhausted", display: { plan_remaining_percent: 0, credits: { kind: "unavailable" } }
+    const seven_day = activeWindow(100, 3 * 86_400_000);
+    expect(await quota({ limits: { ...subscriptionLimits, seven_day, extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 750 } } })).toEqual({
+      plan: "exhausted", display: { plan_remaining_percent: 0, plan_resets_at: seven_day.resets_at, credits: { kind: "unavailable" } }
     });
   });
 

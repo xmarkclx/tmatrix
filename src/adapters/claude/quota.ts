@@ -6,6 +6,7 @@ import { z } from "zod";
 import { CGROUP_ENV } from "../../conversation-cgroup.js";
 import { LEASE_ENV } from "../../conversation-recovery.js";
 import type { RuntimeQuota } from "../../runtime-adapter.js";
+import { planResetsAt, tightestPlanWindow, type PlanWindow } from "../../worker-usage.js";
 import { ClaudeProcess } from "./process.js";
 
 const unknownQuota = { plan: "unknown" } satisfies RuntimeQuota;
@@ -63,18 +64,23 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const accountWindows = [usage.five_hour, usage.seven_day].filter(window => window != null);
     const modelWindows = [legacyWindow, ...applicable].filter(window => window != null);
     const now = Date.now();
-    const currentUsage = (windows: typeof accountWindows) => windows.flatMap(window =>
-      window.utilization != null && window.resets_at != null && Date.parse(window.resets_at) > now ? [window.utilization] : []);
+    const currentUsage = (windows: typeof accountWindows): PlanWindow[] => windows.flatMap(window => {
+      const resetsAtMs = window.resets_at == null ? Number.NaN : Date.parse(window.resets_at);
+      return window.utilization != null && resetsAtMs > now ? [{ usedPercent: window.utilization, resetsAtMs }] : [];
+    });
     const account = currentUsage(accountWindows);
     const active = [...account, ...currentUsage(modelWindows)];
-    const exhausted = active.includes(100);
+    const exhausted = active.some(window => window.usedPercent === 100);
     const complete = active.length > 0 && active.length === accountWindows.length + modelWindows.length;
     const extraDisabled = usage.extra_usage?.is_enabled === false;
+    const accountExhausted = account.some(window => window.usedPercent === 100);
+    const limiting = accountExhausted || (account.length > 0 && account.length === accountWindows.length)
+      ? tightestPlanWindow(account) : undefined;
     return {
       plan: exhausted ? "exhausted" : complete && extraDisabled ? "available" : "unknown",
       display: {
-        plan_remaining_percent: account.includes(100) ? 0
-          : account.length > 0 && account.length === accountWindows.length ? 100 - Math.max(...account) : null,
+        plan_remaining_percent: limiting ? 100 - limiting.usedPercent : null,
+        plan_resets_at: planResetsAt(limiting),
         credits: { kind: extraDisabled ? "disabled" : "unavailable" }
       }
     };
