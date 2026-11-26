@@ -175,6 +175,17 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     } });
   });
 
+  it("reports included usage before the five-hour session starts", async () => {
+    const limits = {
+      ...subscriptionLimits,
+      five_hour: { utilization: 0, resets_at: null },
+      seven_day: activeWindow(17)
+    };
+    expect(await quota({ limits }, "claude-opus-5-5")).toEqual({
+      plan: "available", display: { plan_remaining_percent: 83, credits: { kind: "disabled" } }
+    });
+  });
+
   it("reports an exhausted subscription even when Claude's purchased credits are enabled", async () => {
     const seven_day = activeWindow(100, 3 * 86_400_000);
     expect(await quota({ limits: { ...subscriptionLimits, seven_day, extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 750 } } })).toEqual({
