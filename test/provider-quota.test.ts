@@ -176,13 +176,16 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
   });
 
   it("reports included usage before the five-hour session starts", async () => {
+    const seven_day = activeWindow(17);
     const limits = {
       ...subscriptionLimits,
       five_hour: { utilization: 0, resets_at: null },
-      seven_day: activeWindow(17)
+      seven_day
     };
     expect(await quota({ limits }, "claude-opus-5-5")).toEqual({
-      plan: "available", display: { plan_remaining_percent: 83, credits: { kind: "disabled" } }
+      plan: "available", display: {
+        plan_remaining_percent: 83, plan_resets_at: seven_day.resets_at, credits: { kind: "disabled" }
+      }
     });
   });
 

@@ -69,7 +69,9 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
       return window.utilization != null && resetsAtMs > now ? [{ usedPercent: window.utilization, resetsAtMs }] : [];
     });
     const account = currentUsage(accountWindows);
-    if (usage.five_hour?.utilization === 0 && usage.five_hour.resets_at === null) account.push(0);
+    if (usage.five_hour?.utilization === 0 && usage.five_hour.resets_at === null) {
+      account.push({ usedPercent: 0, resetsAtMs: null });
+    }
     const active = [...account, ...currentUsage(modelWindows)];
     const exhausted = active.some(window => window.usedPercent === 100);
     const complete = active.length > 0 && active.length === accountWindows.length + modelWindows.length;
