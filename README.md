@@ -50,8 +50,6 @@ To report to one account when several production sources are configured, set `TM
 
 Open a worker to follow it live: the activity log shows Claude's replies, each tool call with its input (commands, file paths, edits), a preview of each tool result, and todo updates. Press `Enter` to send a message into the running conversation; Claude handles it after its current step, in the same session. Each new Tzu Do comment resumes the task's Claude conversation, so context and the prompt cache carry over. If a task moves to the other provider because a plan ran out, the worker says so in its reply.
 
-To run interactive Claude Code in a private tmux session instead, set `TMATRIX_CLAUDE_TERMINAL=1` in the engine environment (Linux and macOS with `tmux`). The worker panel then mirrors Claude's screen: `v` switches to the activity log and `a` attaches (`Ctrl+B` then `D` returns). Workers answer only Claude Code's known startup dialogs; attach to answer anything else.
-
 ## Connect multiple sources
 
 One TMatrix instance can poll several supported apps. Existing installations keep their saved connection, key, poller identity, and conversations when the settings upgrade.

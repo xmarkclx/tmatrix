@@ -213,16 +213,3 @@ describe("worker pins", () => {
     expect(state.snapshot()).toEqual([]);
   });
 });
-
-describe("local terminal reference", () => {
-  it("keeps the live terminal for the console and drops it when the runtime changes", () => {
-    const state = new LocalWorkerState("codex");
-    const ticket = makeTicket({ worker_id: "terminal-worker" });
-    state.start(ticket);
-    state.record(ticket.worker_id, { kind: "terminal.attached", text: "Claude Code is running in a terminal.",
-      terminal: { socket: "tmx-0123456789ab", session: "claude" } });
-    expect(state.snapshot()[0]?.terminal).toEqual({ socket: "tmx-0123456789ab", session: "claude" });
-    state.record(ticket.worker_id, { kind: "runtime.selected", text: "Codex plan", runtime_adapter: "claude" });
-    expect(state.snapshot()[0]?.terminal).toBeUndefined();
-  });
-});

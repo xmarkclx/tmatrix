@@ -1133,10 +1133,6 @@ function normalizeRunFailure(cause: unknown, signal?: AbortSignal): WorkerError 
 /** Local console text is separate from the metadata-only task progress path. */
 function observeRuntimeEvent(event: WorkerThreadEvent): WorkerObservation {
   if (event.type === "local.activity") return { kind: event.kind, text: event.text };
-  if (event.type === "local.terminal") {
-    return { kind: "terminal.attached", text: "Claude Code is running in a terminal. Press v to view it or a to attach.",
-      terminal: { socket: event.socket, session: event.session } };
-  }
   if (event.type === "thread.started") return { kind: event.type, text: "Conversation connected", thread_id: event.thread_id };
   if ("item" in event) {
     const item = event.item;
