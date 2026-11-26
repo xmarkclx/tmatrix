@@ -7,15 +7,29 @@ export const runtimePolicySchema = z.enum([
 ]);
 export type RuntimePolicy = z.infer<typeof runtimePolicySchema>;
 export const defaultRuntimePolicy: RuntimePolicy = "subscriptions-first";
-export type FundingRoute = "codex-plan" | "claude-plan" | "codex-credits" | "codex" | "claude";
-export type Provider = "codex" | "claude";
+export type FundingRoute = "codex-plan" | "claude-plan" | "codex-credits" | "codex" | "claude" | "gemini";
 
-/** The provider an explicit model ID belongs to, or undefined when the ID names neither. */
+export const providers = {
+  codex: { label: "Codex", model: /^(?:gpt-|codex(?:-|$)|o[1-4](?:-|$))/ },
+  claude: { label: "Claude", model: /^(?:claude-|sonnet(?:$|-)|opus(?:$|-)|haiku(?:$|-))/ },
+  gemini: { label: "Gemini", model: /^gemini-/ }
+} as const;
+export type Provider = keyof typeof providers;
+
+export function isProvider(id: string): id is Provider {
+  return Object.hasOwn(providers, id);
+}
+
 export function modelProvider(model: string | undefined): Provider | undefined {
   if (model === undefined) return undefined;
-  if (/^(?:claude-|sonnet(?:$|-)|opus(?:$|-)|haiku(?:$|-))/.test(model)) return "claude";
-  if (/^(?:gpt-|codex(?:-|$)|o[1-4](?:-|$))/.test(model)) return "codex";
+  for (const id in providers) {
+    if (isProvider(id) && providers[id].model.test(model)) return id;
+  }
   return undefined;
+}
+
+export function geminiModel(model: string): string {
+  return providers.gemini.model.test(model) ? model : "gemini-4-neon-high";
 }
 
 function once<T>(probe: () => Promise<T>): () => Promise<T> {
@@ -30,28 +44,38 @@ const planOrder = {
 } as const;
 
 /**
- * The requested model's provider runs first on its included plan; next the runtime that
- * holds the ticket's conversation; then the policy decides the fallback.
- * Without a recognizable model, the policy alone decides.
+ * Try the requested model's provider first, then the provider that holds the
+ * ticket's conversation, then the policy's plan order.
+ * Claude can use extra usage after its plan is spent, so try it for a requested
+ * Claude model or an existing Claude conversation when routing permits it.
  */
 export async function chooseFundingRoute({ policy, requested, prefer, signal, ...probes }: {
   policy: RuntimePolicy;
   requested?: Provider | undefined;
-  /** Runtime that holds this ticket's conversation; kept while its plan is not confirmed spent. */
+  /** Provider that holds this ticket's conversation. */
   prefer?: Provider | undefined;
   codex: () => Promise<RuntimeQuota>;
   claude: () => Promise<RuntimeQuota>;
   signal?: AbortSignal;
 }): Promise<FundingRoute> {
   signal?.throwIfAborted();
+  if (requested === "gemini" || (requested === undefined && prefer === "gemini")) {
+    // agy does not provide a verified included-allowance check.
+    if (policy !== "subscriptions-first" && policy !== "claude-first") {
+      throw new WorkerError({
+        code: "GEMINI_ROUTING_POLICY_INCOMPATIBLE", stage: "runtime.route",
+        message: "The selected routing policy does not allow Gemini via Antigravity. Choose an automatic subscription priority or select a compatible model."
+      });
+    }
+    return "gemini";
+  }
   const codex = once(probes.codex);
   const claude = once(probes.claude);
   if (requested !== undefined && policy !== `${requested}-only`) {
     const quota = await (requested === "codex" ? codex() : claude());
     signal?.throwIfAborted();
     if (quota.plan === "available") return `${requested}-plan`;
-    // An explicitly chosen Claude model still runs when Claude's usage report is unreadable.
-    if (requested === "claude" && quota.plan === "unknown" && policy !== "codex-only") return "claude-plan";
+    if (requested === "claude" && quota.plan !== "unavailable" && policy !== "codex-only") return "claude-plan";
   }
   if (policy === "codex-only") return "codex";
   if (policy === "claude-only") return "claude";
@@ -69,8 +93,7 @@ export async function chooseFundingRoute({ policy, requested, prefer, signal, ..
       claudeQuota = await claude();
       signal?.throwIfAborted();
       if (claudeQuota.plan === "available") return route;
-      // Resuming the saved Claude conversation beats switching runtimes on an unreadable usage report.
-      if (route === preferred && claudeQuota.plan === "unknown") return route;
+      if (route === preferred && claudeQuota.plan !== "unavailable") return route;
     }
   }
 

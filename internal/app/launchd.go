@@ -42,7 +42,7 @@ func launchAgentPlist(executable, dir string) (string, error) {
 		args.WriteString(item)
 	}
 	var env strings.Builder
-	for _, name := range []string{"PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "TMATRIX_CLAUDE_PATH", "TMATRIX_USAGE_SOURCE_ID", "XDG_STATE_HOME"} {
+	for _, name := range append([]string{"PATH"}, serviceRuntimeEnvironment...) {
 		if value := os.Getenv(name); value != "" {
 			item, err := plistString(value)
 			if err != nil {

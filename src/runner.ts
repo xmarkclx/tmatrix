@@ -30,7 +30,7 @@ import { ProgressReporter } from "./progress.js";
 import { deliverResult } from "./result-delivery.js";
 import { prepareCodexInput } from "./adapters/codex/prepare-input.js";
 import { conversationReferenceSchema } from "./types.js";
-import { modelProvider, type Provider } from "./runtime-routing.js";
+import { isProvider, modelProvider, providers, type Provider } from "./runtime-routing.js";
 import type {
   ExecutionProfile,
   ReasoningEffort,
@@ -144,7 +144,7 @@ export interface RuntimeSelection {
 }
 
 /** `prefer` names the runtime holding this ticket's conversation so routing can keep its context. */
-type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string, prefer?: string) => Promise<RuntimeSelection>;
+type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string, prefer?: string, exclude?: Provider) => Promise<RuntimeSelection | undefined>;
 
 interface TurnOutcome {
   finalResponse: string;
@@ -287,14 +287,16 @@ export class TicketRunner {
         let turnInput = "";
         let missingConversationText: string | undefined;
         let localSteeringId: string | undefined;
+        let excludedProvider: Provider | undefined;
         const savedRuntime = recoveredRuntime ?? savedConversation(ticket, history)?.runtime;
 
         while (true) {
           const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model,
-            activeSelection?.id ?? savedRuntime);
+            activeSelection?.id ?? savedRuntime, excludedProvider);
           options.signal?.throwIfAborted();
           const switching = !!activeThread && selected !== undefined && selected.id !== activeSelection?.id;
           const model = selected?.model?.(profile.model) ?? profile.model;
+          let runtimeInput = turnInput;
           if (!activeThread || switching) {
             if (switching) {
               await closeRuntime();
@@ -345,14 +347,16 @@ export class TicketRunner {
               ? await conversationStore?.contextChanges(ticket, resumeId, context) ?? {}
               : {};
             const updates = Object.keys(changes).length ? `# Updated task context\n${JSON.stringify(changes, null, 2)}\n\n` : "";
-            turnInput = switching && handoff ? continueOnNewRuntime(fullPrompt, handoff, turnInput)
+            runtimeInput = switching && handoff ? continueOnNewRuntime(fullPrompt, handoff, turnInput)
               : previousAttempt ? recoverInterruptedRuntime(fullPrompt)
                 : commentPrompt === undefined ? fullPrompt : resumedCommentPrompt(updates, commentPrompt);
             // Tell the runtime, and through its reply the person, why the task moved providers.
             const previousRuntime = switching ? activeSelection?.id : savedRuntime;
             if (selected && previousRuntime && previousRuntime !== selected.id && isProvider(previousRuntime) && isProvider(selected.id)) {
-              const reason = !switching && modelProvider(profile.model) === selected.id ? "model" : "plan";
-              turnInput = `${providerChangeNote(previousRuntime, selected.id, selected.label, reason)}\n\n${turnInput}`;
+              const reason = previousRuntime === excludedProvider ? "limit"
+                : !switching && modelProvider(profile.model) === selected.id ? "model"
+                  : previousRuntime === "gemini" ? "model-changed" : "plan";
+              runtimeInput = `${providerChangeNote(previousRuntime, selected.id, selected.label, reason)}\n\n${runtimeInput}`;
               options.observe?.({ kind: "runtime.switched", text: providerChangeSummary(previousRuntime, selected.id, reason) });
             }
             missingConversationText = previousAttempt || commentPrompt === undefined ? undefined : fullPrompt;
@@ -361,7 +365,7 @@ export class TicketRunner {
               event: resumeId ? "codex.thread_resuming" : "codex.thread_starting",
               stage: "codex.start",
               instruction_chars: ticket.instructions.length,
-              prompt_chars: turnInput.length,
+              prompt_chars: runtimeInput.length,
               working_directory: workingDirectory,
               used_project_path: workingDirectory === ticket.project_path,
               ...(selected ? { runtime_adapter: selected.id } : {})
@@ -412,23 +416,33 @@ export class TicketRunner {
           }
           activeSelection = selected;
           if (!handoff) {
-            options.observe?.({ kind: "prompt.prepared", text: turnInput, input_revision: processedInputRevision });
+            options.observe?.({ kind: "prompt.prepared", text: runtimeInput, input_revision: processedInputRevision });
           }
           reporter.setInputRevision(processedInputRevision);
-          const turn = await this.runPreparedTurn(
-            activeThread.thread,
-            turnInput,
-            ticket,
-            log,
-            reporter,
-            options.signal,
-            activeThread.observe,
-            localSteeringId,
-            missingConversationText,
-            steering,
-            warning,
-            selected?.assertCurrent
-          );
+          let turn: TurnOutcome;
+          try {
+            turn = await this.runPreparedTurn(
+              activeThread.thread,
+              runtimeInput,
+              ticket,
+              log,
+              reporter,
+              options.signal,
+              activeThread.observe,
+              localSteeringId,
+              missingConversationText,
+              steering,
+              warning,
+              selected?.assertCurrent
+            );
+          } catch (cause) {
+            if (!(cause instanceof WorkerError) || cause.code !== "CLAUDE_USAGE_LIMIT" ||
+                selected?.id !== "claude" || !this.selectRuntime || options.signal?.aborted || excludedProvider) throw cause;
+            excludedProvider = "claude";
+            log.warn({ event: "runtime.fallback_after_failure", runtime_adapter: selected.id, error_code: cause.code },
+              "Claude reached its usage limit. Selecting an alternate runtime.");
+            continue;
+          }
           missingConversationText = undefined;
           threadId = turn.threadId ?? threadId;
           usage = mergeUsage(usage, turn.usage);
@@ -940,24 +954,22 @@ function recoverInterruptedRuntime(fullPrompt: string): string {
   ].join("\n\n");
 }
 
-function isProvider(id: string): id is Provider {
-  return id === "codex" || id === "claude";
-}
+type ProviderChangeReason = "model" | "model-changed" | "plan" | "limit";
 
-const providerNames: Record<Provider, string> = { codex: "Codex", claude: "Claude" };
-
-function providerChangeSummary(from: Provider, to: Provider, reason: "model" | "plan"): string {
+function providerChangeSummary(from: Provider, to: Provider, reason: ProviderChangeReason): string {
+  if (reason === "limit") return `Continued on ${providers[to].label} because ${providers[from].label} stopped with a usage-limit error.`;
+  if (reason === "model-changed") return `Continued on ${providers[to].label} because the task now selects a model outside ${providers[from].label}.`;
   return reason === "model"
-    ? `Continued on ${providerNames[to]} because the task's selected model runs there; the earlier conversation was on ${providerNames[from]}.`
-    : `Continued on ${providerNames[to]} because the ${providerNames[from]} plan allowance was used up or could not be confirmed.`;
+    ? `Continued on ${providers[to].label} because the task's selected model runs there; the earlier conversation was on ${providers[from].label}.`
+    : `Continued on ${providers[to].label} because the ${providers[from].label} plan allowance was unavailable or could not be confirmed.`;
 }
 
-export function providerChangeNote(from: Provider, to: Provider, label: string | undefined, reason: "model" | "plan"): string {
+export function providerChangeNote(from: Provider, to: Provider, label: string | undefined, reason: ProviderChangeReason): string {
   return [
     "# Provider change",
     `${providerChangeSummary(from, to, reason)}${label ? ` Current route: ${label}.` : ""}`,
-    `The earlier ${providerNames[from]} conversation's turns are not available here. Rely on the durable ticket history, AI comments and saved handoff in this message, and verify the workspace before acting.`,
-    `Start user_message with one short sentence telling the person that this reply continued on ${providerNames[to]} and why.`
+    `The earlier ${providers[from].label} conversation's turns are not available here. Rely on the durable ticket history, AI comments and saved handoff in this message, and verify the workspace before acting.`,
+    `Start user_message with one short sentence telling the person that this reply continued on ${providers[to].label} and why.`
   ].join("\n");
 }
 

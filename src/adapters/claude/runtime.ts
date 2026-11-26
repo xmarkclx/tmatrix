@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { z } from "zod";
-import { CGROUP_ENV, stopLeaseCgroup } from "../../conversation-cgroup.js";
-import { LEASE_ENV, processStart, stopLeaseProcesses } from "../../conversation-recovery.js";
+import { CGROUP_ENV } from "../../conversation-cgroup.js";
+import { LEASE_ENV } from "../../conversation-recovery.js";
 import { WorkerError } from "../../errors.js";
 import type {
   AdapterContext, Input, RuntimeCreator, RuntimeThreadOptions, ThreadLike, WorkerThreadEvent
 } from "../../runtime-adapter.js";
 import { assistantActivity, toolResultActivity, type ToolNames } from "./activity.js";
-import { ClaudeProcess } from "./process.js";
+import { RuntimeProcess, confirmLeaseStopped } from "../process.js";
 import { modelProvider } from "../../runtime-routing.js";
 
 const sessionIdSchema = z.uuid();
@@ -42,6 +42,8 @@ const resultSchema = z.object({
 type ClaudeResult = z.infer<typeof resultSchema>;
 type TurnOptions = NonNullable<Parameters<ThreadLike["runStreamed"]>[1]>;
 
+export const USAGE_LIMIT = /usage limit|limit reached|hit your limit|rate limit|out of (?:extra )?usage|credit balance/i;
+
 const imageTypes = new Map([
   [".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"],
   [".gif", "image/gif"], [".webp", "image/webp"]
@@ -60,14 +62,14 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
   const ownerToken = environment[LEASE_ENV] ?? "";
   const cgroup = environment[CGROUP_ENV];
   let threadClaimed = false;
-  let current: ClaudeProcess | undefined;
+  let current: RuntimeProcess | undefined;
   let closePromise: Promise<void> | undefined;
 
   async function close(): Promise<void> {
     try {
       await current?.stop();
     } finally {
-      await confirmLeaseStopped(cgroup, ownerToken);
+      await confirmLeaseStopped(cgroup, ownerToken, "Claude Code");
     }
   }
 
@@ -84,7 +86,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     let running = false;
     const tools: ToolNames = new Map();
     /** Open while the current process still reads stdin; each written message yields one result. */
-    let inbox: { child: ClaudeProcess; pending: number } | undefined;
+    let inbox: { child: RuntimeProcess; pending: number } | undefined;
 
     async function steer(input: Input, turn: { signal?: AbortSignal } = {}): Promise<boolean> {
       if (!inbox) return false;
@@ -142,7 +144,7 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
       ensureOpen(turn.signal);
 
       try {
-        current = new ClaudeProcess(executable, argumentsFor(options, sessionId, resume, turn), options.workingDirectory, environment);
+        current = new RuntimeProcess(executable, argumentsFor(options, sessionId, resume, turn), options.workingDirectory, environment, "Claude Code");
       } catch {
         throw turnFailure("Unable to start Claude Code");
       }
@@ -206,6 +208,10 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
             result.errors?.includes(`No conversation found with session ID: ${sessionId}`)) {
           return "missing";
         }
+        if (result?.is_error && (result.api_error_status === 429 || USAGE_LIMIT.test(result.result ?? "") ||
+            result.errors?.some(error => USAGE_LIMIT.test(error)))) {
+          throw usageLimitFailure();
+        }
         if (result?.api_error_status === 401 || result?.api_error_status === 403 ||
             result?.result === "Not logged in · Please run /login") {
           throw turnFailure("Claude Code authentication failed. Check the worker account's Claude Code sign-in or API credentials.");
@@ -236,20 +242,6 @@ export function createClaudeRuntime(context: AdapterContext, executable: string)
     },
     close: () => closePromise ??= close()
   };
-}
-
-/** Rejects unless every process in the worker's lease or cgroup is confirmed stopped. */
-export async function confirmLeaseStopped(cgroup: string | undefined, ownerToken: string): Promise<void> {
-  if (cgroup && !await stopLeaseCgroup(cgroup, ownerToken)) {
-    throw new Error("Claude Code runtime cgroup shutdown could not be confirmed");
-  }
-  if (!cgroup && ownerToken && process.platform === "linux") {
-    const startedAfter = await processStart(process.pid);
-    if (!sessionIdSchema.safeParse(ownerToken).success || !startedAfter ||
-        !await stopLeaseProcesses(ownerToken, undefined, startedAfter)) {
-      throw new Error("Claude Code runtime lease shutdown could not be confirmed");
-    }
-  }
 }
 
 function argumentsFor(options: RuntimeThreadOptions, id: string, resume: boolean, turn: TurnOptions): string[] {
@@ -304,4 +296,11 @@ async function encodeInput(input: Input, signal?: AbortSignal): Promise<string> 
 
 export function turnFailure(message: string): WorkerError {
   return new WorkerError({ message, code: "CLAUDE_TURN_FAILED", stage: "claude.turn" });
+}
+
+export function usageLimitFailure(): WorkerError {
+  return new WorkerError({
+    code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn",
+    message: "Claude Code reported that its usage limit was reached."
+  });
 }

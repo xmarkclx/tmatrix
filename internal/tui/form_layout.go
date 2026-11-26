@@ -51,7 +51,7 @@ func (m Model) formContent() layoutBlock {
 		b.lines = append(b.lines, style.Render(fit(marker+label, m.width-4)), " "+input.View(), "")
 	}
 	if m.screen == settingsScreen && !m.hasRuntimePolicy() {
-		b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" Set worker_type to codex or claude in config.json, then restart the engine.", m.width-4)), "\n")...)
+		b.lines = append(b.lines, strings.Split(mutedStyle.Render(textBlock(" Set worker_type to codex, claude, or gemini in config.json, then restart the engine.", m.width-4)), "\n")...)
 	}
 	prefix := layoutBlock{}
 	if m.screen == settingsScreen {

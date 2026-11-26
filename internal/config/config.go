@@ -179,7 +179,7 @@ func Validate(c Config) error {
 		}
 	}
 	switch c.WorkerType {
-	case "codex", "claude":
+	case "codex", "claude", "gemini":
 		if c.AdapterModule != "" {
 			return fmt.Errorf("the bundled %s adapter cannot be overridden", c.WorkerType)
 		}

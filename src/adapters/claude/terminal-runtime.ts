@@ -6,12 +6,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { CGROUP_ENV, validLeaseCgroup } from "../../conversation-cgroup.js";
 import { LEASE_ENV } from "../../conversation-recovery.js";
-import { WorkerError } from "../../errors.js";
 import type {
   AdapterContext, Input, RuntimeCreator, RuntimeThreadOptions, ThreadLike, Usage, WorkerThreadEvent
 } from "../../runtime-adapter.js";
 import { assistantActivity, toolResultActivity, type ToolNames } from "./activity.js";
-import { claudeModel, confirmLeaseStopped, turnFailure } from "./runtime.js";
+import { claudeModel, turnFailure, usageLimitFailure, USAGE_LIMIT } from "./runtime.js";
+import { confirmLeaseStopped } from "../process.js";
 import { TmuxSession } from "./tmux.js";
 
 /*
@@ -42,8 +42,6 @@ const sessionIdSchema = z.uuid();
 const sessionStartSchema = z.looseObject({ session_id: z.string(), transcript_path: z.string().optional() });
 const stopSchema = z.looseObject({ last_assistant_message: z.string().nullish() });
 const notificationSchema = z.looseObject({ message: z.string().max(2_000).optional().catch(undefined) });
-/** Claude Code's wording when a plan or rate limit ends the turn. */
-const USAGE_LIMIT = /usage limit|limit reached|hit your limit|rate limit|out of (?:extra )?usage/i;
 const tokenCount = z.int().nonnegative().optional().catch(undefined);
 const transcriptSchema = z.looseObject({
   type: z.string(),
@@ -145,7 +143,7 @@ export function createClaudeTerminalRuntime(context: AdapterContext, executable:
   async function close(): Promise<void> {
     try {
       await stopSession();
-      await confirmLeaseStopped(cgroup, ownerToken);
+      await confirmLeaseStopped(cgroup, ownerToken, "Claude Code");
     } finally {
       if (stateDirectory) await rm(stateDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -359,10 +357,7 @@ export function createClaudeTerminalRuntime(context: AdapterContext, executable:
             break;
           }
           if (USAGE_LIMIT.test(stop?.last_assistant_message ?? "")) {
-            throw new WorkerError({
-              code: "CLAUDE_USAGE_LIMIT", stage: "claude.turn",
-              message: "Claude Code stopped at its plan usage limit. Retry after the limit resets or route this task to Codex."
-            });
+            throw usageLimitFailure();
           }
           if (reminders++ >= MAX_HANDOFF_REMINDERS) throw turnFailure("Claude Code finished without a structured handoff");
           mailbox.pending += 1;

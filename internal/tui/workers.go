@@ -14,7 +14,7 @@ func (m Model) workerCardHeight() int {
 	if m.compact() && m.height < 20 {
 		return 4 // selected conversation remains in the detail panel
 	}
-	return 5 // title, run state, conversation and two border rows
+	return 6 // title, run state, model, conversation and two border rows
 }
 
 func (m Model) workerCards() layoutBlock {
@@ -77,8 +77,15 @@ func (m Model) workerCards() layoutBlock {
 			title = fmt.Sprintf("%d %s %s[%s] %s", i+1, marker, pin, single(worker.SourceName), single(worker.Title))
 		}
 		lines := []string{ellipsis(title, inner)}
-		lines = append(lines, ellipsis(workerRuntimeLabel(worker, m.now), inner))
-		if height == 5 {
+		runtime := workerRuntimeLabel(worker, m.now)
+		if height == 4 {
+			if model := single(worker.Model); model != "" {
+				runtime += " · " + model
+			}
+		}
+		lines = append(lines, ellipsis(runtime, inner))
+		if height == 6 {
+			lines = append(lines, ellipsis(modelLabel(worker), inner))
 			lines = append(lines, ellipsis(conversationLabel(worker), inner))
 		}
 		style := lipgloss.NewStyle().Width(cardWidth-2).Padding(0, 1).Border(lipgloss.RoundedBorder()).BorderForeground(border).Foreground(ink).Background(bg)
@@ -217,6 +224,13 @@ func workerRuntimeLabel(worker backend.Worker, now time.Time) string {
 		separator = ": "
 	}
 	return label + separator + elapsedLabel(worker, now)
+}
+
+func modelLabel(worker backend.Worker) string {
+	if model := single(worker.Model); model != "" {
+		return "Model · " + model
+	}
+	return "Model unavailable"
 }
 
 func conversationLabel(worker backend.Worker) string {

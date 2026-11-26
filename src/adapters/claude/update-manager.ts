@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { constants, copyFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { access, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
-import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AdapterUpdates, AdapterUpdateState } from "../../runtime-adapter.js";
+import { environmentPath, hostExecutableCandidates } from "../host-executable.js";
 
 const run = promisify(execFile);
 const packageName = "@anthropic-ai/claude-code";
@@ -37,20 +37,9 @@ async function probe(executable: string, environment: Environment, signal?: Abor
   } catch { return undefined; }
 }
 
-function environmentPath(environment: Environment): string[] {
-  const key = Object.keys(environment).find(key => key.toUpperCase() === "PATH");
-  return (key ? environment[key] : "")?.split(delimiter).filter(isAbsolute) ?? [];
-}
-
 async function hostInstallation(environment: Environment): Promise<Installation | undefined> {
-  const override = environment.TMATRIX_CLAUDE_PATH;
-  if (override) return isAbsolute(override) ? probe(override, environment) : undefined;
-  const home = environment.HOME || environment.USERPROFILE || homedir();
-  const candidates = [...environmentPath(environment).map(dir => join(dir, executableName)), join(home, ".local", "bin", executableName)];
-  if (process.platform === "win32") {
-    candidates.push(...environmentPath(environment).map(dir => join(dir, "node_modules", packageName, "bin", "claude.exe")));
-  }
-  for (const candidate of new Set(candidates)) {
+  const windowsPath = process.platform === "win32" ? join("node_modules", packageName, "bin", executableName) : undefined;
+  for (const candidate of hostExecutableCandidates(environment, executableName, environment.TMATRIX_CLAUDE_PATH, windowsPath)) {
     const installation = await probe(candidate, environment);
     if (installation) return installation;
   }

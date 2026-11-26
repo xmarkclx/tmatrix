@@ -9,7 +9,7 @@ Concept:
 - Your computer runs TMatrix app, this app, which is very easy to install/uninstall.
 - TMatrix orchestraters tasks, pollers and workers.
 - A **poller** gets tasks from a **source** like tzudo.app.
-- An **AI worker** runs those tasks with Codex or Claude Code.
+- An **AI worker** runs those tasks with Codex, Claude Code, or Gemini through Antigravity CLI.
 - This goes on until the number of workers limit is reached. You can set the max # yourself.
 
 ---
@@ -34,17 +34,27 @@ Press `s` to open Settings and view the TMatrix version, build number, and commi
 
 Sign Codex in to ChatGPT under the user that runs TMatrix. To add Claude, [install Claude Code](https://code.claude.com/docs/en/setup) 2.1.220 or newer and run `claude auth login` under that same user. In Claude's account settings, turn off **Usage credits** so Claude can report when its subscription is exhausted. TMatrix looks for `claude` on `PATH` and in `~/.local/bin`. Set `TMATRIX_CLAUDE_PATH` in the engine environment for a different location.
 
-TMatrix checks allowance before each new turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. When Codex reports an exhausted plan and available credits, TMatrix uses credits if Claude's plan is exhausted or unavailable, including when Claude Code is signed out or has no paid subscription. If Claude's usage report cannot be read, Claude still gets the turn and fails clearly if its plan is spent; other unverifiable routes report the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
+TMatrix checks allowance before routing a Codex or Claude turn. By default it tries the Codex plan, then the Claude plan, then Codex credits. When Codex reports an exhausted plan and available credits, TMatrix uses credits if Claude's plan is exhausted or unavailable, including when Claude Code is signed out or has no paid subscription. If Claude's usage report cannot be read, Claude still gets the turn and fails clearly if its plan is spent; other unverifiable routes report the reason without starting a turn. Any completed handoff is saved. Codex can draw from credits if its plan runs out during an active turn. [OpenAI credit billing](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-plus-pro)
 
 Press `s` to open **Settings**, move to **Routing policy**, and use Left or Right to choose a policy. Press `Ctrl+S` to save. You can put Claude first, omit the Codex credits fallback, or choose a single provider. A policy change applies to new turns.
 
-Open a worker to see which provider and allowance TMatrix selected. A task stays on the provider that holds its conversation while that plan has allowance, so follow-ups keep their context. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows each provider's responses and tool activity. Active turns stay with their current provider.
+Open a worker to see which provider and allowance TMatrix selected. A task stays on the provider that holds its conversation while that plan has allowance, so follow-ups keep their context. When the provider changes, TMatrix starts a conversation with the task's saved handoff and the new input. The terminal shows Codex and Claude responses and tool activity. Active turns stay with their current provider.
 
 TMatrix checks Anthropic's stable npm channel at startup and daily. Open **Settings**, press `o` for **Runtime updates**, and use Left or Right to choose a provider. TMatrix verifies each Claude Code release in its private runtime store before selecting it. Active workers keep the version they started with. Set `DISABLE_UPDATES=1` in the engine environment to turn off Claude update checks.
 
 TMatrix reports included plan allowance and available paid balances to Tzu Do when it has one production Tzu Do source. It refreshes these figures at startup and every five minutes while the engine runs. Claude Code does not report a prepaid balance, so Tzu Do can show Claude's plan allowance and whether Usage credits are off.
 
 To report to one account when several production sources are configured, set `TMATRIX_USAGE_SOURCE_ID` in the engine or service environment to that source's `id` in `config.json`. Use the same setting to opt in to reporting on official Tzu Do staging or a PR preview. Use `legacy` for a single-source legacy engine. A missing or invalid selection on a multi-account engine leaves reporting off.
+
+## Select Gemini in Tzu Do
+
+1. Run `agy models` as the user that runs TMatrix. Choose a `gemini-*` ID listed for that account, such as `gemini-4-neon-high`.
+2. In Tzu Do, open **Settings → AI execution**. Enter the ID under **Model ID** for the task mode you use and select **Save AI settings**.
+3. Queue a task in that mode. Its worker card shows the model. A follow-up in that mode resumes the saved Gemini conversation. Messages sent during a Gemini turn wait for the turn to finish.
+
+The default TMatrix worker sends the exact ID to `agy` and uses its existing sign-in and tool permissions. For Neon, the model suffix selects the reasoning level. Run `agy models` again to discover new IDs. For a nonstandard installation, set `TMATRIX_AGY_PATH` to the absolute path of the executable.
+
+The default worker allows Gemini under `subscriptions-first` and `claude-first`. The `subscriptions-only` policy requires a verified allowance, which TMatrix cannot read from `agy`. Gemini is also available as a dedicated worker with `"worker_type": "gemini"` in the TMatrix configuration. [Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
 
 ## Watch and talk to Claude workers
 

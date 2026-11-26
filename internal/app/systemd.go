@@ -154,7 +154,7 @@ func manageService(dir, action string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{"CODEX_HOME", "CLAUDE_CONFIG_DIR", "TMATRIX_CLAUDE_PATH", "TMATRIX_USAGE_SOURCE_ID", "XDG_STATE_HOME"} {
+	for _, name := range serviceRuntimeEnvironment {
 		if value := os.Getenv(name); value != "" {
 			quoted, err := systemdQuote(name + "=" + value)
 			if err != nil {
