@@ -14,8 +14,8 @@ export default {
     const updates = new ClaudeUpdateManager(context.updateDirectory, context.environment);
     await updates.initialize();
     updates.executable();
-    // Interactive Claude in tmux lets people watch and type; headless stream-json is the fallback.
-    const terminal = context.environment.TMATRIX_CLAUDE_TERMINAL !== "0" && await tmuxAvailable(context.environment);
+    // Headless stream-json is the default; TMATRIX_CLAUDE_TERMINAL=1 opts into interactive Claude in tmux.
+    const terminal = context.environment.TMATRIX_CLAUDE_TERMINAL === "1" && await tmuxAvailable(context.environment);
     const runtimeFor = (worker: AdapterContext, executable: string) => terminal
       ? createClaudeTerminalRuntime(worker, executable) : createClaudeRuntime(worker, executable);
     return {

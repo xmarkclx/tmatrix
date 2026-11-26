@@ -46,7 +46,7 @@ if (scenario === "dialog") {
 writeFileSync(transcript, "", { flag: "a" });
 hook("SessionStart", {});
 const reply = (id, text) => appendFileSync(transcript, JSON.stringify({ type: "assistant", message: { id,
-  content: [{ type: "text", text }, { type: "tool_use", name: "Write", input: {} }],
+  content: [{ type: "text", text }, { type: "tool_use", name: "Write", input: { file_path: "notes.txt", content: "ALPHA" } }],
   usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 20, cache_creation_input_tokens: 30 } } }) + "\n");
 const finish = (handoff, message) => {
   writeFileSync(handoff, JSON.stringify({ outcome: "AI_DONE", context_summary: "durable state", user_message: message }));
@@ -154,7 +154,7 @@ describe.skipIf(process.platform === "win32" || !hasTmux())("Claude Code termina
         started,
         { type: "turn.started" },
         { type: "local.activity", kind: "claude.assistant", text: "Working on message 1." },
-        { type: "local.activity", kind: "claude.tool", text: "Write" },
+        { type: "local.activity", kind: "claude.tool", text: "Write notes.txt (1 lines)" },
         { type: "item.completed", item: { type: "agent_message", id: expect.any(String),
           text: '{"outcome":"AI_DONE","context_summary":"durable state","user_message":"Done: Fix the footer."}' } },
         { type: "turn.completed", usage: { input_tokens: 60, cached_input_tokens: 20, cache_write_input_tokens: 30,

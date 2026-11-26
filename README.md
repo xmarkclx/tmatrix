@@ -48,9 +48,9 @@ To report to one account when several production sources are configured, set `TM
 
 ## Watch and talk to Claude workers
 
-On Linux and macOS with `tmux` installed, Claude workers run interactive Claude Code in a private tmux session. Open the worker: its panel shows Claude's live screen. Press `v` to switch between the screen and the activity log, and `a` to attach to the session itself; press `Ctrl+B` then `D` to return. Messages sent with `Enter` go into the running Claude conversation.
+Open a worker to follow it live: the activity log shows Claude's replies, each tool call with its input (commands, file paths, edits), a preview of each tool result, and todo updates. Press `Enter` to send a message into the running conversation; Claude handles it after its current step, in the same session. Each new Tzu Do comment resumes the task's Claude conversation, so context and the prompt cache carry over. If a task moves to the other provider because a plan ran out, the worker says so in its reply.
 
-Workers answer only Claude Code's startup dialogs (workspace trust and the bypass-permissions warning) and approve the project's MCP servers. If Claude asks for anything else, the worker's activity says so; attach to answer. Each turn's prompt is a file Claude reads, and Claude writes its handoff to a file TMatrix checks. Set `TMATRIX_CLAUDE_TERMINAL=0` in the engine environment to use headless Claude Code instead.
+To run interactive Claude Code in a private tmux session instead, set `TMATRIX_CLAUDE_TERMINAL=1` in the engine environment (Linux and macOS with `tmux`). The worker panel then mirrors Claude's screen: `v` switches to the activity log and `a` attaches (`Ctrl+B` then `D` returns). Workers answer only Claude Code's known startup dialogs; attach to answer anything else.
 
 ## Connect multiple sources
 

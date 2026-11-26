@@ -7,7 +7,7 @@ import { ConversationStore } from "../src/conversation-store.js";
 import { RunCancellationError } from "../src/errors.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
-import { TicketRunner, type CodexLike, type WorkerThreadEvent } from "../src/runner.js";
+import { TicketRunner, type CodexLike, type WorkerThreadEvent, resumedCommentPrompt } from "../src/runner.js";
 import type { Ticket, TicketResult } from "../src/types.js";
 import { deferred, makeTicket } from "./helpers.js";
 
@@ -113,7 +113,7 @@ describe("conversation continuity across worker tickets", () => {
     const run = harness(store, { history: { conversation, trigger_comment: { id: "trigger", content: "Continue" } } });
     await run.runner.run({ ...ticket("explicit"), conversation, trigger_comment_id: "trigger" }, { runId: "explicit", recovered: false });
     expect(run.calls).toEqual([{ kind: "resume", id: "server-thread" }]);
-    expect(run.prompts[0]).toBe("Continue");
+    expect(run.prompts[0]).toBe(resumedCommentPrompt("", "Continue"));
     expect(run.results[0]?.conversation).toEqual(conversation);
   });
 
@@ -178,12 +178,12 @@ describe("conversation continuity across worker tickets", () => {
       await reply.runner.run({ ...ticket(id, "result-root"), trigger_comment_id: "trigger" }, { runId: id, recovered: false });
       return reply.prompts[0];
     };
-    expect(await run("unchanged", "Original")).toBe("New comment");
+    expect(await run("unchanged", "Original")).toBe(resumedCommentPrompt("", "New comment"));
     const changed = await run("changed", "Revised");
     expect(changed).toContain('"task.description": "Revised"');
     expect(changed).not.toContain("Standing rules");
     expect(changed).not.toContain("FULL_WORKTREE_CHECKLIST");
-    expect(await run("again", "Revised")).toBe("New comment");
+    expect(await run("again", "Revised")).toBe(resumedCommentPrompt("", "New comment"));
     expect(await run("cleared", "")).toContain('"task.description": ""');
   });
 
@@ -200,7 +200,7 @@ describe("conversation continuity across worker tickets", () => {
     expect(retry.prompts[0]).toContain("Revised");
     const other = harness(store(), { history });
     await other.runner.run({ ...followup, ticket_id: "other", thread_anchor_comment_id: "branch-b" }, { runId: "other", recovered: false });
-    expect(other.prompts[0]).toBe("Update");
+    expect(other.prompts[0]).toBe(resumedCommentPrompt("", "Update"));
     expect(other.calls).toEqual([{ kind: "resume", id: "a" }]);
   });
 
@@ -216,7 +216,7 @@ describe("conversation continuity across worker tickets", () => {
     expect(first.prompts[0]).not.toContain("OLD_COMMENT");
     const next = harness(store(), { history });
     await next.runner.run({ ...followup, ticket_id: "next" }, { runId: "two", recovered: false });
-    expect(next.prompts[0]).toBe("New comment");
+    expect(next.prompts[0]).toBe(resumedCommentPrompt("", "New comment"));
   });
 
   it("continues the task conversation even when replies name older comments", async () => {
