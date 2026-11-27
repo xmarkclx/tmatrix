@@ -40,11 +40,16 @@ export default {
   accounts: {
     environment(directory, base) {
       const executable = geminiExecutable(base);
-      const environment: Record<string, string> = { ...base, HOME: directory, AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1",
+      // agy has no config-dir variable, so HOME moves (and agy keeps credential state under
+      // XDG config, which must stay per account). Keep git and gh pointed at the user's real config.
+      const home = base.HOME || homedir();
+      const environment: Record<string, string> = { GIT_CONFIG_GLOBAL: resolve(home, ".gitconfig"),
+        GH_CONFIG_DIR: resolve(base.XDG_CONFIG_HOME || resolve(home, ".config"), "gh"),
+        ...base, HOME: directory, AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1",
         ...(process.platform === "win32" ? { USERPROFILE: directory } : {}),
         ...(executable ? { TMATRIX_AGY_PATH: executable } : {}) };
       for (const key of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_LLM_GATEWAY_API_KEY", "AGY_ADC_AUTH",
-        "GOOGLE_APPLICATION_CREDENTIALS", "AGY_ACCOUNT"]) delete environment[key];
+        "GOOGLE_APPLICATION_CREDENTIALS", "AGY_ACCOUNT", "XDG_CONFIG_HOME"]) delete environment[key];
       return environment;
     },
     home: geminiHome,

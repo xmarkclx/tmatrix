@@ -5,6 +5,15 @@ import { adapterIdPattern, bundledAdapterIds, loadAdapter } from "./adapter-load
 import { sanitizedCodexEnvironment } from "./adapters/codex/environment.js";
 import { accountLabelPattern, defaultAccount, scanAccounts } from "./runtime-accounts.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
+import { ClaudeUpdateManager } from "./adapters/claude/update-manager.js";
+
+/** The daemon runs the Claude Code copy it manages under the config directory; use the same one. */
+async function managedClaude(configDir: string, environment: Record<string, string>): Promise<void> {
+  if (environment.TMATRIX_CLAUDE_PATH) return;
+  const updates = new ClaudeUpdateManager(join(configDir, "claude"), environment);
+  await updates.initialize();
+  try { environment.TMATRIX_CLAUDE_PATH = updates.executable(); } catch { /* Fall back to PATH. */ }
+}
 
 async function list(configDir: string, adapters: readonly RuntimeAdapter[], environment: Record<string, string>): Promise<void> {
   const rows = await Promise.all(adapters.map(async adapter => {
@@ -34,6 +43,7 @@ async function main(): Promise<void> {
   const [configDir, configuredId, modulePath, action, provider, label] = process.argv.slice(2);
   if (!configDir || !isAbsolute(configDir)) throw new Error("Invalid configuration directory");
   const environment = sanitizedCodexEnvironment(process.env);
+  if (action === "list" || provider === "claude") await managedClaude(configDir, environment);
   if (action === "list") {
     const ids = modulePath && configuredId ? [...bundledAdapterIds, configuredId] : bundledAdapterIds;
     const adapters = await Promise.all(ids.map(id => loadAdapter(id, id === configuredId && modulePath ? modulePath : undefined)));
