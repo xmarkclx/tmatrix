@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { RuntimeQuota } from "../../runtime-adapter.js";
-import type { UsageCredits, UsageDisplay } from "../../worker-usage.js";
+import { currentResetTime, resetWindowDisplay, type ResetCadence, type UsageCredits, type UsageDisplay } from "../../worker-usage.js";
 import { RuntimeProcess } from "../process.js";
 
 const resultSchema = z.object({
@@ -12,16 +12,19 @@ const resultSchema = z.object({
   response: z.string(),
   command: z.object({ name: z.string(), data: z.unknown() }).optional()
 });
-const fraction = z.number().min(0).max(1);
+const fraction = z.number().min(0).max(1).nullable().catch(null);
 const resetTimeSchema = z.iso.datetime({ offset: true });
-const firstExpandedYearMs = Date.UTC(10_000, 0, 1);
-const bucketSchema = z.object({ remaining_fraction: fraction, reset_time: z.unknown().optional() });
+const bucketSchema = z.object({ remaining_fraction: fraction, reset_time: z.unknown().optional(), window: z.unknown().optional() });
 const groupSchema = z.object({ name: z.string(), buckets: z.array(z.unknown()) });
 const usageSchema = z.object({ groups: z.array(z.unknown()) });
 const amountSchema = z.object({ remaining_credits: z.number().nonnegative().or(z.string()) });
 const MAX_OUTPUT_BYTES = 128 * 1024;
 const amountPattern = /^\d{1,15}(?:\.\d{1,15})?$/;
 const geminiGroup = /^Gemini Models$/i;
+const nativeCadences = new Map<unknown, ResetCadence>([["5h", "five_hour"], ["weekly", "weekly"]]);
+const printedCadences = new Map<string | undefined, ResetCadence>([
+  ["Five Hour Limit Remaining", "five_hour"], ["5 Hour Limit Remaining", "five_hour"], ["Weekly Limit Remaining", "weekly"]
+]);
 const nativeEnvironment = new Set([
   "HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP",
   "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
@@ -31,7 +34,7 @@ const nativeEnvironment = new Set([
 type NativeCommand = "usage" | "credits";
 type CommandResult = z.infer<typeof resultSchema>;
 
-function planDisplay(result?: CommandResult): Pick<UsageDisplay, "plan_remaining_percent" | "plan_resets_at"> {
+function planDisplay(result?: CommandResult): Pick<UsageDisplay, "plan_remaining_percent" | "plan_resets_at" | "reset_windows"> {
   const data = usageSchema.safeParse(result?.command?.data);
   const windows = data.success
     ? data.data.groups.flatMap(entry => {
@@ -40,33 +43,39 @@ function planDisplay(result?: CommandResult): Pick<UsageDisplay, "plan_remaining
         return group.data.buckets.flatMap(entry => {
           const bucket = bucketSchema.safeParse(entry);
           return bucket.success ? [{
-            remainingPercent: bucket.data.remaining_fraction * 100, reset: bucket.data.reset_time
+            remainingPercent: bucket.data.remaining_fraction === null ? null : bucket.data.remaining_fraction * 100,
+            reset: bucket.data.reset_time,
+            cadence: nativeCadences.get(bucket.data.window) ?? null
           }] : [];
         });
       })
     : (result?.response.split(/\r?\n/) ?? []).flatMap(line => {
         const [group, window, percent, reset] = line.split("\t");
-        if (!geminiGroup.test(group ?? "") ||
-            !/^(?:Weekly|Five Hour|5 Hour) Limit Remaining$/.test(window ?? "") ||
-            !/^\d{1,3}(?:\.\d+)?%$/.test(percent ?? "")) return [];
-        const value = Number(percent?.slice(0, -1));
-        return value <= 100 ? [{ remainingPercent: value, reset }] : [];
+        const cadence = printedCadences.get(window);
+        if (!geminiGroup.test(group ?? "") || !cadence) return [];
+        const value = percent !== undefined && /^\d{1,3}(?:\.\d+)?%$/.test(percent) ? Number(percent.slice(0, -1)) : null;
+        return [{ remainingPercent: value !== null && value <= 100 ? value : null, reset, cadence }];
       });
-  if (!windows.length) return { plan_remaining_percent: null, plan_resets_at: null };
 
-  const remaining = Math.min(...windows.map(window => window.remainingPercent));
   const now = Date.now();
-  let latestReset = now;
-  for (const window of windows) {
-    if (window.remainingPercent !== remaining) continue;
+  const current = windows.map(window => {
     const reset = resetTimeSchema.safeParse(window.reset);
-    const resetMs = reset.success ? Date.parse(reset.data) : Number.NaN;
-    if (!(resetMs > now && resetMs < firstExpandedYearMs)) {
-      return { plan_remaining_percent: remaining, plan_resets_at: null };
+    return { ...window, resetsAtMs: currentResetTime(reset.data, now) };
+  });
+  const namedWindows = resetWindowDisplay(current);
+  const measured = current.flatMap(window => window.remainingPercent === null ? [] : [{ ...window, remainingPercent: window.remainingPercent }]);
+  if (!measured.length) return { plan_remaining_percent: null, plan_resets_at: null, ...namedWindows };
+
+  const remaining = Math.min(...measured.map(window => window.remainingPercent));
+  let latestReset = now;
+  for (const window of measured) {
+    if (window.remainingPercent !== remaining) continue;
+    if (window.resetsAtMs === null) {
+      return { plan_remaining_percent: remaining, plan_resets_at: null, ...namedWindows };
     }
-    latestReset = Math.max(latestReset, resetMs);
+    latestReset = Math.max(latestReset, window.resetsAtMs);
   }
-  return { plan_remaining_percent: remaining, plan_resets_at: new Date(latestReset).toISOString() };
+  return { plan_remaining_percent: remaining, plan_resets_at: new Date(latestReset).toISOString(), ...namedWindows };
 }
 
 function normalizeAmount(amount: string): string {

@@ -41,11 +41,18 @@ interface RequestOptions {
   body?: unknown;
   expectJson?: boolean;
   optional?: boolean;
-  resetCompatibilityProviders?: number;
+  checkUsageCompatibility?: (responseText: string) => UnsupportedUsageFields | undefined;
   signal?: AbortSignal;
 }
 
-const legacyUsageSchema = Symbol("legacy worker usage schema");
+const usageResetField = z.enum(["plan_resets_at", "reset_windows"]);
+type UsageResetField = z.infer<typeof usageResetField>;
+type UsageWireRow = Omit<ProviderUsage, UsageResetField> & Partial<Pick<ProviderUsage, UsageResetField>>;
+
+class UnsupportedUsageFields {
+  constructor(readonly fields: ReadonlySet<UsageResetField>) {}
+}
+
 const legacyUsageRejectionSchema = z.object({
   defined: z.literal(false),
   code: z.literal("BAD_REQUEST"),
@@ -54,20 +61,33 @@ const legacyUsageRejectionSchema = z.object({
   data: z.object({
     issues: z.array(z.object({
       code: z.literal("unrecognized_keys"),
-      keys: z.tuple([z.literal("plan_resets_at")]),
+      keys: z.array(usageResetField).min(1).max(usageResetField.options.length),
       path: z.tuple([z.literal("providers"), z.number().int().nonnegative()])
     }))
   })
 });
 
-function rejectedUsageResets(responseText: string, providerCount: number): boolean {
+function rejectedUsageResets(responseText: string, providers: UsageWireRow[]): UnsupportedUsageFields | undefined {
   try {
     const rejection = legacyUsageRejectionSchema.safeParse(parseIdentityJson(responseText));
-    if (!rejection.success) return false;
+    if (!rejection.success) return;
     const { issues } = rejection.data.data;
-    return issues.length === providerCount && issues.every((issue, index) => issue.path[1] === index);
+    const rejected = new Set(issues.flatMap(issue => issue.keys));
+    if (!rejected.size) return;
+    const fieldsByProvider = new Map<number, Set<UsageResetField>>();
+    for (const { keys, path: [, index] } of issues) {
+      const fields = new Set(keys);
+      if (index >= providers.length || fieldsByProvider.has(index) || fields.size !== keys.length) return;
+      fieldsByProvider.set(index, fields);
+    }
+    const matches = providers.every((provider, index) => {
+      const expected = [...rejected].filter(key => provider[key] !== undefined);
+      const fields = fieldsByProvider.get(index);
+      return expected.length === (fields?.size ?? 0) && expected.every(key => fields?.has(key));
+    });
+    if (matches) return new UnsupportedUsageFields(rejected);
   } catch {
-    return false;
+    return;
   }
 }
 
@@ -121,17 +141,18 @@ export class ApiClient implements TicketApi {
     if (!url || !providers.length) return;
     const request = { operation: "worker_usage", method: "POST", url: url.href, path: url.pathname,
       optional: true, signal } satisfies RequestOptions;
-    let readings = providers;
-    let includeResets = true;
+    let readings: UsageWireRow[] = providers;
     for (;;) {
       signal.throwIfAborted();
-      const supported = includeResets ? readings : readings.map(({ provider, plan_remaining_percent, credits }) =>
-        ({ provider, plan_remaining_percent, credits }));
       try {
-        const result = await this.request({ ...request, body: { providers: supported },
-          ...(includeResets ? { resetCompatibilityProviders: readings.length } : {}) });
-        if (result !== legacyUsageSchema) return;
-        includeResets = false;
+        const result = await this.request({ ...request, body: { providers: readings },
+          checkUsageCompatibility: responseText => rejectedUsageResets(responseText, readings) });
+        if (!(result instanceof UnsupportedUsageFields)) return;
+        readings = readings.map(reading => {
+          const supported = { ...reading };
+          for (const field of result.fields) delete supported[field];
+          return supported;
+        });
       } catch (error) {
         if (!(error instanceof WorkerError) || error.code !== "HTTP_STATUS_ERROR" ||
             (error.details.status !== 400 && error.details.status !== 422)) throw error;
@@ -369,9 +390,11 @@ export class ApiClient implements TicketApi {
         }
 
         const responseText = await response.text();
-        if (options.resetCompatibilityProviders !== undefined && response.status === 400 &&
-          response.headers.get("content-type")?.includes("application/json") &&
-          rejectedUsageResets(responseText, options.resetCompatibilityProviders)) return legacyUsageSchema;
+        if (options.checkUsageCompatibility && response.status === 400 &&
+          response.headers.get("content-type")?.includes("application/json")) {
+          const unsupported = options.checkUsageCompatibility(responseText);
+          if (unsupported) return unsupported;
+        }
         if (!response.ok) {
           const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
           throw new WorkerError({
