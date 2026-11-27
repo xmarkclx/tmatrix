@@ -4,13 +4,34 @@ import { isProvider, type Provider } from "./runtime-routing.js";
 export type UsageCredits =
   | { kind: "amount"; amount: string; unit: "credits" | "USD" }
   | { kind: "disabled" | "unavailable" | "unlimited" };
+export type ResetCadence = "five_hour" | "weekly";
 export interface UsageDisplay {
   plan_remaining_percent: number | null;
   /** When the window that sets plan_remaining_percent resets. */
   plan_resets_at: string | null;
+  reset_windows?: Partial<Record<ResetCadence, string>>;
   credits: UsageCredits;
 }
 export interface PlanWindow { usedPercent: number; resetsAtMs: number | null }
+
+const firstExpandedYearMs = Date.UTC(10_000, 0, 1);
+
+export function currentResetTime(value: string | null | undefined, now: number): number | null {
+  const time = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return time > now && time < firstExpandedYearMs ? time : null;
+}
+
+export function resetWindowDisplay(windows: readonly { cadence: ResetCadence | null; resetsAtMs: number | null }[]):
+  Pick<UsageDisplay, "reset_windows"> {
+  const reset_windows: NonNullable<UsageDisplay["reset_windows"]> = {};
+  for (const cadence of ["five_hour", "weekly"] as const) {
+    const dates = new Set(windows.flatMap(window =>
+      window.cadence === cadence && window.resetsAtMs !== null ? [window.resetsAtMs] : []));
+    const time = dates.values().next().value;
+    if (dates.size === 1 && time !== undefined) reset_windows[cadence] = new Date(time).toISOString();
+  }
+  return Object.keys(reset_windows).length ? { reset_windows } : {};
+}
 
 /** Picks the most-used window. A tie picks the later (or unknown) reset, the earliest the shown percentage can rise. */
 export function tightestPlanWindow(windows: PlanWindow[]): PlanWindow | undefined {
@@ -76,8 +97,8 @@ export class WorkerUsageReporter {
     const checks = await Promise.allSettled(Object.keys(this.probes).filter(isProvider).map(async provider => {
       const quota = await this.probes[provider]?.(signal);
       if (!quota?.display) return;
-      const { plan_remaining_percent, plan_resets_at, credits } = quota.display;
-      return { provider, plan_remaining_percent, plan_resets_at, credits };
+      const { plan_remaining_percent, plan_resets_at, reset_windows, credits } = quota.display;
+      return { provider, plan_remaining_percent, plan_resets_at, ...(reset_windows ? { reset_windows } : {}), credits };
     }));
     const providers = checks.flatMap(check => check.status === "fulfilled" && check.value ? [check.value] : []);
     if (!providers.length || signal.aborted || this.selectedSource() !== source) return;

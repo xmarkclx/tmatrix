@@ -6,7 +6,7 @@ import { z } from "zod";
 import { CGROUP_ENV } from "../../conversation-cgroup.js";
 import { LEASE_ENV } from "../../conversation-recovery.js";
 import type { RuntimeQuota } from "../../runtime-adapter.js";
-import { planResetsAt, tightestPlanWindow, type PlanWindow } from "../../worker-usage.js";
+import { currentResetTime, planResetsAt, resetWindowDisplay, tightestPlanWindow, type PlanWindow, type ResetCadence } from "../../worker-usage.js";
 import { RuntimeProcess } from "../process.js";
 
 const unknownQuota = { plan: "unknown" } satisfies RuntimeQuota;
@@ -17,9 +17,11 @@ const authSchema = z.object({
   subscriptionType: z.string().nullable().optional()
 });
 const windowSchema = z.object({
-  utilization: z.number().min(0).max(100).nullable(),
-  resets_at: z.iso.datetime({ offset: true }).nullable()
+  utilization: z.number().min(0).max(100).nullable().catch(null),
+  resets_at: z.iso.datetime({ offset: true }).nullish().catch(undefined)
 });
+type NativeWindow = z.infer<typeof windowSchema>;
+const accountWindowSchema = windowSchema.nullish().catch({ utilization: null, resets_at: undefined });
 const usageSchema = z.object({
   type: z.literal("control_response"),
   response: z.object({
@@ -29,8 +31,8 @@ const usageSchema = z.object({
       subscription_type: z.string().min(1),
       rate_limits_available: z.literal(true),
       rate_limits: z.object({
-        five_hour: windowSchema.nullish(),
-        seven_day: windowSchema.nullish(),
+        five_hour: accountWindowSchema,
+        seven_day: accountWindowSchema,
         seven_day_sonnet: windowSchema.nullish(),
         seven_day_opus: windowSchema.nullish(),
         model_scoped: z.array(windowSchema.extend({ display_name: z.string() })).nullish(),
@@ -61,31 +63,34 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const legacyWindow = family === "sonnet" ? usage.seven_day_sonnet : family === "opus" ? usage.seven_day_opus : undefined;
     const scoped = (usage.model_scoped ?? []).filter(window => modelName(window.display_name).split("-")[0] === family);
     const applicable = name === family && scoped.length === 1 ? scoped : scoped.filter(window => modelName(window.display_name) === name);
-    const accountWindows = [usage.five_hour, usage.seven_day].filter(window => window != null);
+    const accountWindows = ([
+      { cadence: "five_hour", window: usage.five_hour },
+      { cadence: "weekly", window: usage.seven_day }
+    ] satisfies { cadence: ResetCadence; window: NativeWindow | null | undefined }[]).filter(({ window }) => window != null);
     const modelWindows = [legacyWindow, ...applicable].filter(window => window != null);
     const now = Date.now();
-    const currentUsage = (windows: typeof accountWindows): PlanWindow[] => windows.flatMap(window => {
-      const resetsAtMs = window.resets_at == null ? Number.NaN : Date.parse(window.resets_at);
-      return window.utilization != null && resetsAtMs > now ? [{ usedPercent: window.utilization, resetsAtMs }] : [];
-    });
-    const account = currentUsage(accountWindows);
+    const currentAccount = accountWindows.map(entry => ({ ...entry, resetsAtMs: currentResetTime(entry.window?.resets_at, now) }));
+    const measure = (window: NativeWindow | null | undefined, resetsAtMs: number | null): PlanWindow[] =>
+      window?.utilization != null && resetsAtMs !== null ? [{ usedPercent: window.utilization, resetsAtMs }] : [];
+    const account = currentAccount.flatMap(({ window, resetsAtMs }) => measure(window, resetsAtMs));
     if (usage.five_hour?.utilization === 0 && usage.five_hour.resets_at === null) {
       account.push({ usedPercent: 0, resetsAtMs: null });
     }
-    const active = [...account, ...currentUsage(modelWindows)];
+    const active = [...account, ...modelWindows.flatMap(window => measure(window, currentResetTime(window.resets_at, now)))];
     const exhausted = active.some(window => window.usedPercent === 100);
     const complete = active.length > 0 && active.length === accountWindows.length + modelWindows.length;
     const extraDisabled = usage.extra_usage?.is_enabled === false;
     const accountExhausted = account.some(window => window.usedPercent === 100);
     const limiting = accountExhausted || (account.length > 0 && account.length === accountWindows.length)
       ? tightestPlanWindow(account) : undefined;
-    const tiedResetUnknown = limiting && accountWindows.some(window =>
-      window.utilization === limiting.usedPercent && window.resets_at === null);
+    const tiedResetUnknown = limiting && accountWindows.some(({ window }) =>
+      window?.utilization === limiting.usedPercent && window.resets_at == null);
     return {
       plan: exhausted ? "exhausted" : complete && extraDisabled ? "available" : "unknown",
       display: {
         plan_remaining_percent: limiting ? 100 - limiting.usedPercent : null,
         plan_resets_at: tiedResetUnknown ? null : planResetsAt(limiting),
+        ...resetWindowDisplay(currentAccount),
         credits: { kind: extraDisabled ? "disabled" : "unavailable" }
       }
     };

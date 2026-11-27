@@ -126,7 +126,10 @@ else {
     });
     await expect(read()).resolves.toEqual({
       plan: "unknown",
-      display: { plan_remaining_percent: 25, plan_resets_at: "2030-01-01T00:00:00.000Z", credits: { kind: "unavailable" } }
+      display: {
+        plan_remaining_percent: 25, plan_resets_at: "2030-01-01T00:00:00.000Z", credits: { kind: "unavailable" },
+        reset_windows: { five_hour: "2030-01-01T00:00:00.000Z", weekly: "2030-01-02T00:00:00.000Z" }
+      }
     });
   });
 
@@ -147,7 +150,7 @@ else {
           command: { name: "usage", data: { groups: [
             { name: "Gemini Models", buckets: [
               { window: "weekly", remaining_fraction: 0.25, reset_time: "2030-01-01T00:00:00Z" },
-              { window: "five_hour", remaining_fraction: fiveHourRemaining, reset_time: fiveHourReset }
+              { window: "5h", remaining_fraction: fiveHourRemaining, reset_time: fiveHourReset }
             ] },
             { name: "Claude and GPT models", buckets: [{ remaining_fraction: 0, reset_time: "2030-01-04T00:00:00Z" }] }
           ] } }
@@ -155,9 +158,52 @@ else {
         credits: { output: { status: "SUCCESS", response: "Remaining credits\t5.001" } }
       });
       await expect(read()).resolves.toEqual({ plan: "unknown", display: {
-        plan_remaining_percent: 25, plan_resets_at: expected, credits: { kind: "amount", amount: "5.001", unit: "credits" }
+        plan_remaining_percent: 25, plan_resets_at: expected, credits: { kind: "amount", amount: "5.001", unit: "credits" },
+        reset_windows: {
+          weekly: "2030-01-01T00:00:00.000Z",
+          ...(fiveHourReset === "2030-01-02T00:00:00Z" ? { five_hour: "2030-01-02T00:00:00.000Z" } : {})
+        }
       } });
     });
+
+  it("omits unknown cadences and ambiguous account resets, keeping the limiting timestamp", async () => {
+    const { read } = await fixture({
+      usage: { output: { ...usage, command: { name: "usage", data: { groups: [
+        { name: "Gemini Models", buckets: [
+          { window: "weekly", remaining_fraction: 0.4, reset_time: "2030-01-01T00:00:00Z" },
+          { window: "weekly", remaining_fraction: 0.5, reset_time: "2030-01-02T00:00:00Z" },
+          { window: "daily", remaining_fraction: 0.25, reset_time: "2030-01-03T00:00:00Z" }
+        ] },
+        { name: "Claude and GPT models", buckets: [
+          { window: "5h", remaining_fraction: 0, reset_time: "2030-01-01T00:00:00Z" }
+        ] }
+      ] } } } },
+      credits: { output: { status: "SUCCESS", response: "Remaining credits\t0" } }
+    });
+    await expect(read()).resolves.toEqual({
+      plan: "unknown", display: {
+        plan_remaining_percent: 25, plan_resets_at: "2030-01-03T00:00:00.000Z",
+        credits: { kind: "amount", amount: "0", unit: "credits" }
+      }
+    });
+  });
+
+  it("keeps an explicitly named Gemini deadline when its remaining fraction is unavailable", async () => {
+    const { read } = await fixture({
+      usage: { output: { ...usage, command: { name: "usage", data: { groups: [{ name: "Gemini Models", buckets: [
+        { window: "5h", remaining_fraction: null, reset_time: "2030-01-01T00:00:00Z" },
+        { window: "weekly", remaining_fraction: 0.4, reset_time: "2030-01-02T00:00:00Z" }
+      ] }] } } } },
+      credits: { output: { status: "SUCCESS", response: "Remaining credits\t0" } }
+    });
+    await expect(read()).resolves.toEqual({
+      plan: "unknown", display: {
+        plan_remaining_percent: 40, plan_resets_at: "2030-01-02T00:00:00.000Z",
+        reset_windows: { five_hour: "2030-01-01T00:00:00.000Z", weekly: "2030-01-02T00:00:00.000Z" },
+        credits: { kind: "amount", amount: "0", unit: "credits" }
+      }
+    });
+  });
 
   it.each([
     { amount: 1.23456789012345, printed: "1.234567890123450", expected: "1.234567890123450" },
