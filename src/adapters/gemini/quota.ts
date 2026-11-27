@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { RuntimeQuota } from "../../runtime-adapter.js";
-import type { UsageCredits } from "../../worker-usage.js";
+import type { UsageCredits, UsageDisplay } from "../../worker-usage.js";
 import { RuntimeProcess } from "../process.js";
 
 const resultSchema = z.object({
@@ -13,7 +13,9 @@ const resultSchema = z.object({
   command: z.object({ name: z.string(), data: z.unknown() }).optional()
 });
 const fraction = z.number().min(0).max(1);
-const bucketSchema = z.object({ remaining_fraction: fraction });
+const resetTimeSchema = z.iso.datetime({ offset: true });
+const firstExpandedYearMs = Date.UTC(10_000, 0, 1);
+const bucketSchema = z.object({ remaining_fraction: fraction, reset_time: z.unknown().optional() });
 const groupSchema = z.object({ name: z.string(), buckets: z.array(z.unknown()) });
 const usageSchema = z.object({ groups: z.array(z.unknown()) });
 const amountSchema = z.object({ remaining_credits: z.number().nonnegative().or(z.string()) });
@@ -29,26 +31,42 @@ const nativeEnvironment = new Set([
 type NativeCommand = "usage" | "credits";
 type CommandResult = z.infer<typeof resultSchema>;
 
-function planRemaining(result?: CommandResult): number | null {
+function planDisplay(result?: CommandResult): Pick<UsageDisplay, "plan_remaining_percent" | "plan_resets_at"> {
   const data = usageSchema.safeParse(result?.command?.data);
-  const remaining = data.success
+  const windows = data.success
     ? data.data.groups.flatMap(entry => {
         const group = groupSchema.safeParse(entry);
         if (!group.success || !geminiGroup.test(group.data.name)) return [];
         return group.data.buckets.flatMap(entry => {
           const bucket = bucketSchema.safeParse(entry);
-          return bucket.success ? [bucket.data.remaining_fraction * 100] : [];
+          return bucket.success ? [{
+            remainingPercent: bucket.data.remaining_fraction * 100, reset: bucket.data.reset_time
+          }] : [];
         });
       })
     : (result?.response.split(/\r?\n/) ?? []).flatMap(line => {
-        const [group, window, percent] = line.split("\t");
+        const [group, window, percent, reset] = line.split("\t");
         if (!geminiGroup.test(group ?? "") ||
             !/^(?:Weekly|Five Hour|5 Hour) Limit Remaining$/.test(window ?? "") ||
             !/^\d{1,3}(?:\.\d+)?%$/.test(percent ?? "")) return [];
         const value = Number(percent?.slice(0, -1));
-        return value <= 100 ? [value] : [];
+        return value <= 100 ? [{ remainingPercent: value, reset }] : [];
       });
-  return remaining.length ? Math.min(...remaining) : null;
+  if (!windows.length) return { plan_remaining_percent: null, plan_resets_at: null };
+
+  const remaining = Math.min(...windows.map(window => window.remainingPercent));
+  const now = Date.now();
+  let latestReset = now;
+  for (const window of windows) {
+    if (window.remainingPercent !== remaining) continue;
+    const reset = resetTimeSchema.safeParse(window.reset);
+    const resetMs = reset.success ? Date.parse(reset.data) : Number.NaN;
+    if (!(resetMs > now && resetMs < firstExpandedYearMs)) {
+      return { plan_remaining_percent: remaining, plan_resets_at: null };
+    }
+    latestReset = Math.max(latestReset, resetMs);
+  }
+  return { plan_remaining_percent: remaining, plan_resets_at: new Date(latestReset).toISOString() };
 }
 
 function normalizeAmount(amount: string): string {
@@ -141,5 +159,5 @@ export async function readGeminiQuota(
     runNativeCommand({ ...probe, command: "credits" })
   ]);
   signal?.throwIfAborted();
-  return { plan: "unknown", display: { plan_remaining_percent: planRemaining(usage), plan_resets_at: null, credits: readCredits(credits) } };
+  return { plan: "unknown", display: { ...planDisplay(usage), credits: readCredits(credits) } };
 }
