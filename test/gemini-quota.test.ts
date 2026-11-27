@@ -117,8 +117,8 @@ else {
       usage: { output: {
         status: "SUCCESS",
         response: [
-          "Gemini Models\tWeekly Limit Remaining\t40%\t2030-01-01T00:00:00Z",
-          "Gemini Models\tFive Hour Limit Remaining\t25%\t2030-01-01T00:00:00Z",
+          "Gemini Models\tWeekly Limit Remaining\t40%\t2030-01-02T00:00:00Z",
+          "Gemini Models\tFive Hour Limit Remaining\t25%\t2030-01-01T08:00:00+08:00",
           "Claude and GPT models\tWeekly Limit Remaining\t0%\t2030-01-01T00:00:00Z"
         ].join("\n")
       } },
@@ -126,9 +126,38 @@ else {
     });
     await expect(read()).resolves.toEqual({
       plan: "unknown",
-      display: { plan_remaining_percent: 25, plan_resets_at: null, credits: { kind: "unavailable" } }
+      display: { plan_remaining_percent: 25, plan_resets_at: "2030-01-01T00:00:00.000Z", credits: { kind: "unavailable" } }
     });
   });
+
+  it.each([
+    { fiveHourRemaining: 0.4, fiveHourReset: "2030-01-02T00:00:00Z", expected: "2030-01-01T00:00:00.000Z" },
+    { fiveHourRemaining: 0.4, fiveHourReset: undefined, expected: "2030-01-01T00:00:00.000Z" },
+    { fiveHourRemaining: 0.25, fiveHourReset: "2030-01-02T00:00:00Z", expected: "2030-01-02T00:00:00.000Z" },
+    { fiveHourRemaining: 0.25, fiveHourReset: undefined, expected: null },
+    { fiveHourRemaining: 0.25, fiveHourReset: null, expected: null },
+    { fiveHourRemaining: 0.25, fiveHourReset: "soon", expected: null },
+    { fiveHourRemaining: 0.25, fiveHourReset: "9999-12-31T23:59:59-01:00", expected: null },
+    { fiveHourRemaining: 0.25, fiveHourReset: "2020-01-01T00:00:00Z", expected: null }
+  ])("reports the Gemini reset for a weekly 25% bucket and five-hour $fiveHourRemaining bucket with reset $fiveHourReset",
+    async ({ fiveHourRemaining, fiveHourReset, expected }) => {
+      const { read } = await fixture({
+        usage: { output: { ...usage,
+          response: "Gemini Models\tWeekly Limit Remaining\t0%\t2030-01-03T00:00:00Z",
+          command: { name: "usage", data: { groups: [
+            { name: "Gemini Models", buckets: [
+              { window: "weekly", remaining_fraction: 0.25, reset_time: "2030-01-01T00:00:00Z" },
+              { window: "five_hour", remaining_fraction: fiveHourRemaining, reset_time: fiveHourReset }
+            ] },
+            { name: "Claude and GPT models", buckets: [{ remaining_fraction: 0, reset_time: "2030-01-04T00:00:00Z" }] }
+          ] } }
+        } },
+        credits: { output: { status: "SUCCESS", response: "Remaining credits\t5.001" } }
+      });
+      await expect(read()).resolves.toEqual({ plan: "unknown", display: {
+        plan_remaining_percent: 25, plan_resets_at: expected, credits: { kind: "amount", amount: "5.001", unit: "credits" }
+      } });
+    });
 
   it.each([
     { amount: 1.23456789012345, printed: "1.234567890123450", expected: "1.234567890123450" },

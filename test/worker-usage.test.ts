@@ -13,7 +13,7 @@ const claudeUsage = {
   provider: "claude", plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" }
 } satisfies ProviderUsage;
 const geminiUsage = {
-  provider: "gemini", plan_remaining_percent: 43, plan_resets_at: null,
+  provider: "gemini", plan_remaining_percent: 43, plan_resets_at: "2026-11-26T19:25:03.000Z",
   credits: { kind: "amount", amount: "51.25", unit: "credits" }
 } satisfies ProviderUsage;
 
@@ -168,7 +168,7 @@ describe("worker usage reports", () => {
         return { plan: "unknown", display: { plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" } } };
       },
       gemini: async () => ({ plan: "unknown", display: {
-        plan_remaining_percent: geminiUsage.plan_remaining_percent, plan_resets_at: null, credits: geminiUsage.credits
+        plan_remaining_percent: geminiUsage.plan_remaining_percent, plan_resets_at: geminiUsage.plan_resets_at, credits: geminiUsage.credits
       } })
     });
     reporter.addSource({ id: "production", pollUrl: "https://tzudo.app/api/v1/ai/poll",
