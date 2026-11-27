@@ -60,7 +60,7 @@ To report to one account when several production sources are configured, set `TM
 2. In Tzu Do, open **Settings → AI execution**. Enter the ID under **Model ID** for the task mode you use and select **Save AI settings**.
 3. Queue a task in that mode. Its worker card shows the model. A follow-up in that mode resumes the saved Gemini conversation. Messages sent during a Gemini turn wait for the turn to finish.
 
-The default TMatrix worker sends the exact ID to `agy` and uses its existing sign-in and tool permissions. For Neon, the model suffix selects the reasoning level. Run `agy models` again to discover new IDs. For a nonstandard installation, set `TMATRIX_AGY_PATH` to the absolute path of the executable.
+The default TMatrix worker sends the exact ID to `agy` and uses its existing sign-in. It runs `agy` with `--dangerously-skip-permissions`, like Claude Code and Codex, because an unattended turn cannot answer approval prompts. For Neon, the model suffix selects the reasoning level. Run `agy models` again to discover new IDs. For a nonstandard installation, set `TMATRIX_AGY_PATH` to the absolute path of the executable.
 
 The default worker runs any `gemini-*` model through `agy`. Gemini is also available as a dedicated worker with `"worker_type": "gemini"` in the TMatrix configuration. [Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
 

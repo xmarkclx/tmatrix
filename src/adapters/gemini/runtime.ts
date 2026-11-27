@@ -27,6 +27,7 @@ const resultEvent = z.object({
     response: z.string(),
     error: z.string().optional(),
     structured_output: z.record(z.string(), z.unknown()).optional(),
+    denied_actions: z.array(z.looseObject({ action: z.string(), display_name: z.string().optional() })).optional(),
     usage: z.object({
       input_tokens: tokenCount,
       cache_read_tokens: tokenCount,
@@ -179,6 +180,10 @@ export function createGeminiRuntime(context: AdapterContext, executable: string)
         if (result?.status === "WAITING") {
           throw turnFailure("Antigravity CLI is waiting for input. Check the worker account's native agy permissions and provide any required context before retrying.");
         }
+        if (result?.denied_actions?.length) {
+          const tools = [...new Set(result.denied_actions.map(denied => denied.display_name ?? denied.action))].join(", ");
+          throw turnFailure(`Antigravity CLI denied ${tools} because the tool needed approval that an unattended run cannot give. Check the worker account's agy permissions before retrying.`);
+        }
         if (exit.code !== 0 || child.inputFailed || (result && result.status !== "SUCCESS")) {
           throw turnFailure("Antigravity CLI ended the turn with an error");
         }
@@ -213,6 +218,8 @@ function argumentsFor(
   return [
     "--input-format", "stream-json", "--output-format", "stream-json",
     "--disable-slash-commands",
+    // Unattended turns cannot answer approval prompts; agy would deny the tool and cancel the turn.
+    "--dangerously-skip-permissions",
     "--model", options.model,
     ...(id ? ["--conversation", id] : []),
     ...(attachmentDirectory ? ["--add-dir", attachmentDirectory] : []),

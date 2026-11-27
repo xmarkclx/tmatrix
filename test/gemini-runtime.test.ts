@@ -48,7 +48,8 @@ for await (const line of createInterface({ input: process.stdin })) {
     conversation_id: scenario === "wrong-result" ? process.env.NEW_ID : id,
     status: scenario === "vendor-error" ? "ERROR" : scenario === "waiting" ? "WAITING" : "SUCCESS",
     response: "private raw response",
-    ...(scenario === "unstructured" ? {} : { structured_output: JSON.parse(process.env.HANDOFF) }),
+    ...(scenario === "unstructured" || scenario === "denied" ? {} : { structured_output: JSON.parse(process.env.HANDOFF) }),
+    ...(scenario === "denied" ? { denied_actions: [{ action: "command", display_name: "Bash" }, { action: "command", display_name: "Bash" }] } : {}),
     ...(scenario === "vendor-error" ? { error: "synthetic private diagnostic" } : {}),
     usage: { input_tokens: 15, cache_read_tokens: 7, output_tokens: 20, thinking_tokens: 4 }
   } });
@@ -132,7 +133,7 @@ describe.skipIf(process.platform === "win32")("Gemini Antigravity runtime", () =
     const [launch, prompt] = await calls();
     expect(launch).toMatchObject({ cwd: options.workingDirectory, queueKeyPresent: false, args: [
       "--input-format", "stream-json", "--output-format", "stream-json", "--disable-slash-commands",
-      "--model", model, "--json-schema", JSON.stringify(outputSchema)
+      "--dangerously-skip-permissions", "--model", model, "--json-schema", JSON.stringify(outputSchema)
     ] });
     expect(prompt).toEqual({ input: { event: "user", message: { content: "Original prompt" } } });
     expect((await collect(thread, "Next revision"))[0]).toEqual({ type: "thread.started", thread_id: originalId });
@@ -203,7 +204,8 @@ describe.skipIf(process.platform === "win32")("Gemini Antigravity runtime", () =
     ["invalid-model", /Run agy models/],
     ["unusable-executable", /TMATRIX_AGY_PATH/],
     ["missing-wrapped-executable", /TMATRIX_AGY_PATH/],
-    ["waiting", /waiting for input/]
+    ["waiting", /waiting for input/],
+    ["denied", /^Antigravity CLI denied Bash because the tool needed approval/]
   ] as const)("provides actionable diagnostics for %s", async (scenario, hint) => {
     const { runtime, options } = await fixture(scenario);
     const run = collect(runtime.startThread(options));
