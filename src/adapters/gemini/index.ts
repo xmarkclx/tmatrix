@@ -1,5 +1,8 @@
 import { accessSync, constants, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { WorkerError } from "../../errors.js";
+import { accountFileExists } from "../../runtime-accounts.js";
 import type { AdapterContext, RuntimeAdapter } from "../../runtime-adapter.js";
 import { hostExecutableCandidates } from "../host-executable.js";
 import { readGeminiQuota } from "./quota.js";
@@ -26,17 +29,43 @@ function create(context: AdapterContext) {
   });
 }
 
+const geminiHome = (environment: Record<string, string>) =>
+  resolve(environment.HOME || homedir(), ".gemini", "antigravity-cli");
+const loggedIn = (environment: Record<string, string>) =>
+  accountFileExists(resolve(geminiHome(environment), "antigravity-oauth-token"));
+
 export default {
   apiVersion: 1,
   id: "gemini",
+  accounts: {
+    environment(directory, base) {
+      const executable = geminiExecutable(base);
+      // agy has no config-dir variable, so HOME moves (and agy keeps credential state under
+      // XDG config, which must stay per account). Keep git and gh pointed at the user's real config.
+      const home = base.HOME || homedir();
+      const environment: Record<string, string> = { GIT_CONFIG_GLOBAL: resolve(home, ".gitconfig"),
+        GH_CONFIG_DIR: resolve(base.XDG_CONFIG_HOME || resolve(home, ".config"), "gh"),
+        ...base, HOME: directory, AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1",
+        ...(process.platform === "win32" ? { USERPROFILE: directory } : {}),
+        ...(executable ? { TMATRIX_AGY_PATH: executable } : {}) };
+      for (const key of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_LLM_GATEWAY_API_KEY", "AGY_ADC_AUTH",
+        "GOOGLE_APPLICATION_CREDENTIALS", "AGY_ACCOUNT", "XDG_CONFIG_HOME"]) delete environment[key];
+      return environment;
+    },
+    home: geminiHome,
+    login: environment => ({ executable: geminiExecutable(environment) ?? "agy", args: [] }),
+    loggedIn
+  },
   create,
   setup(context) {
     return {
       create,
-      async readQuota(signal) {
+      async readQuota(signal, _cwd, _model, accountEnvironment) {
         signal?.throwIfAborted();
-        const executable = geminiExecutable(context.environment);
-        return executable ? readGeminiQuota(executable, context.environment, signal) : { plan: "unknown" };
+        if (accountEnvironment && !await loggedIn(accountEnvironment)) return { plan: "unavailable", authenticated: false };
+        const environment = accountEnvironment ?? context.environment;
+        const executable = geminiExecutable(environment);
+        return executable ? readGeminiQuota(executable, environment, signal) : { plan: "unknown" };
       }
     };
   }

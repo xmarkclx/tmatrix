@@ -1,4 +1,4 @@
-import { workerUsageEndpoint, type ProviderUsage } from "./worker-usage.js";
+import { workerUsageEndpoint, type AccountUsage, type ProviderUsage } from "./worker-usage.js";
 import type { SecurityAlert } from "./security-warning.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -48,6 +48,7 @@ interface RequestOptions {
 const usageResetField = z.enum(["plan_resets_at", "reset_windows"]);
 type UsageResetField = z.infer<typeof usageResetField>;
 type UsageWireRow = Omit<ProviderUsage, UsageResetField> & Partial<Pick<ProviderUsage, UsageResetField>>;
+const optionalEndpointNotFound = Symbol("optional endpoint not found");
 
 class UnsupportedUsageFields {
   constructor(readonly fields: ReadonlySet<UsageResetField>) {}
@@ -162,6 +163,16 @@ export class ApiClient implements TicketApi {
         readings = legacy;
       }
     }
+  }
+
+  async reportWorkerAccountUsage(accounts: AccountUsage[], signal: AbortSignal): Promise<"unsupported" | void> {
+    const url = workerUsageEndpoint(this.config.poll_url);
+    if (!url || !accounts.length) return;
+    signal.throwIfAborted();
+    url.pathname = "/api/v1/ai/worker-account-usage";
+    const result = await this.request({ operation: "worker_account_usage", method: "POST", url: url.href,
+      path: url.pathname, body: { accounts }, optional: true, signal });
+    if (result === optionalEndpointNotFound) return "unsupported";
   }
 
   async poll(request: PollRequest, signal?: AbortSignal): Promise<PollResponse> {
@@ -385,8 +396,8 @@ export class ApiClient implements TicketApi {
           ...(options.optional ? { redirect: "error" } : {})
         });
         if (options.optional && response.status === 404) {
-          await response.body?.cancel();
-          return;
+          await response.body?.cancel().catch(() => undefined);
+          return optionalEndpointNotFound;
         }
 
         const responseText = await response.text();

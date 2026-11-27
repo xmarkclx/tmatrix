@@ -27,6 +27,7 @@ const printedCadences = new Map<string | undefined, ResetCadence>([
 ]);
 const nativeEnvironment = new Set([
   "HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP",
+  "AGY_CLI_FORCE_FILE_TOKEN_STORAGE",
   "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
   "APPDATA", "LOCALAPPDATA", "USERPROFILE", "SYSTEMROOT", "WINDIR",
   "DBUS_SESSION_BUS_ADDRESS"
@@ -116,16 +117,22 @@ async function runNativeCommand(options: {
   command: NativeCommand;
   environment: Record<string, string>;
   signal: AbortSignal;
+  signedOut: () => void;
 }): Promise<CommandResult | undefined> {
   let cwd: string | undefined;
   try {
     options.signal.throwIfAborted();
     cwd = await mkdtemp(join(tmpdir(), "tmatrix-agy-quota-"));
     options.signal.throwIfAborted();
+    let stderrTail = "";
     const child = new RuntimeProcess(options.executable, [
       "--output-format", "json", "--print-timeout", "6s", "--log-file", join(cwd, "agy.log"),
       "--print", `/${options.command}`
-    ], cwd, options.environment, "Antigravity CLI quota", MAX_OUTPUT_BYTES);
+    ], cwd, options.environment, "Antigravity CLI quota", MAX_OUTPUT_BYTES, (chunk) => {
+      const text = stderrTail + chunk.toString();
+      if (text.includes("Authentication required. Please visit the URL to log in:")) options.signedOut();
+      stderrTail = text.slice(-64);
+    });
     const stop = () => { void child.stop().catch(() => undefined); };
     options.signal.addEventListener("abort", stop, { once: true });
     try {
@@ -154,19 +161,23 @@ export async function readGeminiQuota(
   signal?: AbortSignal
 ): Promise<RuntimeQuota> {
   signal?.throwIfAborted();
-  const deadline = AbortSignal.timeout(8_000);
+  const signedOut = new AbortController();
+  const signals = [AbortSignal.timeout(8_000), signedOut.signal];
+  if (signal) signals.push(signal);
   const probe = {
     executable,
     environment: {
       ...Object.fromEntries(Object.entries(environment).filter(([key]) => nativeEnvironment.has(key.toUpperCase()))),
       LC_ALL: "C"
     },
-    signal: signal ? AbortSignal.any([signal, deadline]) : deadline
+    signal: AbortSignal.any(signals),
+    signedOut: () => signedOut.abort()
   };
   const [usage, credits] = await Promise.all([
     runNativeCommand({ ...probe, command: "usage" }),
     runNativeCommand({ ...probe, command: "credits" })
   ]);
   signal?.throwIfAborted();
-  return { plan: "unknown", display: { ...planDisplay(usage), credits: readCredits(credits) } };
+  return { plan: "unknown", ...(signedOut.signal.aborted ? { authenticated: false } : {}),
+    display: { ...planDisplay(usage), credits: readCredits(credits) } };
 }

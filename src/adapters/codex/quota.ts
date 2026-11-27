@@ -77,6 +77,7 @@ export async function readCodexQuota(runtime: RuntimeLike, signal?: AbortSignal,
     const config = await transport.request("config/read", { includeLayers: false, cwd: workingDirectory }, { signal: probeSignal });
     if (!configSchema.safeParse(config).success) return unknownQuota;
     const account = await transport.request("account/read", { refreshToken: false }, { signal: probeSignal });
+    if (z.object({ account: z.null() }).safeParse(account).success) return { ...unknownQuota, authenticated: false };
     if (!accountSchema.safeParse(account).success) return unknownQuota;
     return parseQuota(await transport.request("account/rateLimits/read", { excludeResetCreditDetails: true }, { signal: probeSignal }));
   } catch {

@@ -32,6 +32,7 @@ import { prepareCodexInput } from "./adapters/codex/prepare-input.js";
 import { conversationReferenceSchema } from "./types.js";
 import { isProvider, providers, type Provider } from "./runtime-routing.js";
 import type {
+  ConversationReference,
   ExecutionProfile,
   ReasoningEffort,
   ServiceTier,
@@ -136,14 +137,25 @@ export class SteeringMailbox {
 
 export interface RuntimeSelection {
   id: string;
+  account?: string;
+  rebuild?: boolean;
   runtimeFactory: RuntimeFactory;
   conversationStore: ConversationStore;
   model?: (requested: string) => string;
   label?: string;
 }
 
+export interface RuntimeSelectionContext {
+  ticket: Ticket;
+  history: unknown;
+  active: RuntimeSelection | undefined;
+  reference: ConversationReference | undefined;
+  recovering: boolean;
+}
+
 /** Selects the runtime for the ticket's exact model. */
-type SelectRuntime = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeSelection | undefined>;
+type SelectRuntime = (signal: AbortSignal | undefined, workingDirectory: string, model: string,
+  context: RuntimeSelectionContext) => Promise<RuntimeSelection | undefined>;
 
 interface TurnOutcome {
   finalResponse: string;
@@ -286,12 +298,19 @@ export class TicketRunner {
         let turnInput = "";
         let missingConversationText: string | undefined;
         let localSteeringId: string | undefined;
-        const savedRuntime = recoveredRuntime ?? savedConversation(ticket, history)?.runtime;
+        const reference = savedConversation(ticket, history);
+        const savedRuntime = recoveredRuntime ?? reference?.runtime;
 
         while (true) {
-          const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model);
+          const selected = await this.selectRuntime?.(options.signal, workingDirectory, profile.model, {
+            ticket, history, active: activeSelection,
+            reference: recoveredAttempt ? recoveredAttempt.conversation : reference,
+            recovering: !!(recoveredAttempt || recoveredReference)
+          });
           options.signal?.throwIfAborted();
-          const switching = !!activeThread && selected !== undefined && selected.id !== activeSelection?.id;
+          const switching = !!activeThread && selected !== undefined &&
+            (activeSelection ? selected.id !== activeSelection.id || selected.account !== activeSelection.account
+              : selected.conversationStore !== conversationStore);
           const model = selected?.model?.(profile.model) ?? profile.model;
           let runtimeInput = turnInput;
           if (!activeThread || switching) {
@@ -322,11 +341,14 @@ export class TicketRunner {
                   conversationStore?.reference(expectedReference.thread_id).scope !== expectedReference.scope))) {
               throw unverifiedRuntimeRecovery();
             }
-            let resumeId = switching ? undefined : priorConversation?.thread_id ?? await conversationStore?.resolve(ticket, history);
+            let resumeId = switching || selected?.rebuild ? undefined
+              : priorConversation?.thread_id ?? await conversationStore?.resolve(ticket, history);
             if (selected) await releaseConversation?.rememberRuntime?.(selected.id,
               resumeId ? selected.conversationStore.reference(resumeId) : undefined);
             options.signal?.throwIfAborted();
-            if (conversationStore && !switching && !resumeId && hasReplyAncestry(ticket, history)) {
+            if (selected?.rebuild) {
+              options.observe?.({ kind: "conversation.unlinked", text: "Starting a fresh conversation on another account from the task history and saved handoff." });
+            } else if (conversationStore && !switching && !resumeId && hasReplyAncestry(ticket, history)) {
               options.observe?.({ kind: "conversation.unlinked", text: "Earlier conversation has no saved link on this engine. Starting a fresh conversation from the task history and saved handoff." });
             }
             const runtimeProfile = model === profile.model ? profile : Object.freeze({ ...profile, model });
@@ -405,7 +427,8 @@ export class TicketRunner {
           }
           if (selected && (selected.id !== activeSelection?.id || selected.label !== activeSelection?.label)) {
             options.observe?.({
-              kind: "runtime.selected", text: selected.label ?? selected.id, runtime_adapter: selected.id, model
+              kind: "runtime.selected", text: selected.label ?? selected.id, runtime_adapter: selected.id, model,
+              ...(selected.account ? { account: selected.account } : {})
             });
           }
           activeSelection = selected;

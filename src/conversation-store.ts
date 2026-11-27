@@ -7,6 +7,7 @@ import { z } from "zod";
 import { LEASE_ENV, legacyLockPredatesBoot, processStart, stopLeaseProcesses } from "./conversation-recovery.js";
 import { CGROUP_ENV, createLeaseCgroup, stopLeaseCgroup, validLeaseCgroup } from "./conversation-cgroup.js";
 import { WorkerError } from "./errors.js";
+import { accountLabelPattern, defaultAccount } from "./runtime-accounts.js";
 import { conversationReferenceSchema, type Ticket, type ConversationReference } from "./types.js";
 
 export function stripConversationReference(summary: string): string {
@@ -32,14 +33,20 @@ export async function bootIdentity(): Promise<BootIdentity | undefined> {
 }
 
 const threadId = z.string().min(1).max(255);
-const recordSchema = z.object({
-  version: z.literal(1),
-  task: z.string(),
+const accountSchema = z.string().regex(accountLabelPattern);
+const threadRecordSchema = z.object({
   activeThread: threadId.optional(),
   tickets: z.record(z.string(), threadId),
   comments: z.record(z.string(), threadId),
   replacements: z.record(z.string(), threadId),
   contextHashes: z.record(z.string(), z.record(z.string(), z.string())).default({})
+});
+const recordSchema = z.object({
+  version: z.literal(1),
+  task: z.string(),
+  ...threadRecordSchema.shape,
+  account: accountSchema.optional(),
+  accounts: z.record(accountSchema, threadRecordSchema).optional()
 });
 const runtimeAttemptSchema = z.object({
   ticket: z.string().regex(/^[a-f0-9]{64}$/),
@@ -57,12 +64,15 @@ export type ConversationLease = (() => Promise<void>) & {
 };
 
 type ConversationRecord = z.infer<typeof recordSchema>;
+type ThreadRecord = z.infer<typeof threadRecordSchema>;
+const emptyThreads = (): ThreadRecord => ({ tickets: {}, comments: {}, replacements: {}, contextHashes: {} });
 
 /** Private IDs link task and comment ancestry to a provider's local history. */
 export class ConversationStore {
   private readonly directory: string;
   private readonly runtime: string;
   private readonly scope: string;
+  private readonly account: string;
   private readonly lockDirectory: string;
   private readonly namespace: string;
   private readonly referenceKey: string | undefined;
@@ -70,7 +80,7 @@ export class ConversationStore {
   private readonly trackRuntime: boolean;
   private readonly writes = new Map<string, Promise<void>>();
 
-  constructor(options: { directory: string; namespace: string; referenceKey?: string; adapterId?: string; runtimeHome?: string; trackRuntime?: boolean; bootIdentity?: () => Promise<BootIdentity | undefined> }) {
+  constructor(options: { directory: string; namespace: string; referenceKey?: string; adapterId?: string; runtimeHome?: string; account?: string; trackRuntime?: boolean; bootIdentity?: () => Promise<BootIdentity | undefined> }) {
     this.trackRuntime = options.trackRuntime === true && process.platform === "linux";
     this.getBootIdentity = options.bootIdentity ?? bootIdentity;
     this.lockDirectory = join(options.directory, this.hash(options.namespace));
@@ -80,6 +90,7 @@ export class ConversationStore {
     this.referenceKey = options.referenceKey;
     this.directory = join(options.directory, this.namespace);
     this.runtime = options.adapterId ?? "codex";
+    this.account = options.account ?? defaultAccount;
     this.scope = this.hash(JSON.stringify([hostname(), this.directory, options.runtimeHome ?? ""]));
   }
 
@@ -88,11 +99,28 @@ export class ConversationStore {
     return { thread_id: threadId.parse(conversationId), runtime: this.runtime, scope: this.scope };
   }
 
+  matches(reference: ConversationReference): boolean {
+    return reference.runtime === this.runtime && reference.scope === this.scope;
+  }
+
+  async recordedAccount(ticket: Ticket): Promise<string | undefined> {
+    const record = await this.readRecord(ticket);
+    return record.account ?? (record.activeThread || Object.keys(record.tickets).length || Object.keys(record.comments).length
+      ? defaultAccount : undefined);
+  }
+
+  hasHandoff(ticket: Ticket, history: unknown): boolean {
+    const inherited = this.object(this.object(history)?.inherited_context);
+    return !!this.contextReference(ticket, inherited?.content);
+  }
+
   /** The private handoff carries authenticated IDs, never credentials or logs. */
   attachContext(ticket: Ticket, conversationId: string, summary: string, note?: string): string {
     if (!this.referenceKey || ticket.task_id === undefined) return boundContext(summary, note);
     threadId.parse(conversationId);
-    const payload = Buffer.from(JSON.stringify({ version: 1, namespace: this.namespace, task: this.task(ticket), ticket: ticket.ticket_id, thread: conversationId })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({ version: 1, namespace: this.namespace, task: this.task(ticket),
+      ticket: ticket.ticket_id, thread: conversationId,
+      ...(this.account !== defaultAccount ? { account: this.account, scope: this.scope } : {}) })).toString("base64url");
     const signature = createHmac("sha256", this.referenceKey).update(payload).digest("hex");
     const clean = stripConversationReference(summary);
     const marker = `<!-- tmatrix-conversation:v1:${payload}.${signature} -->`;
@@ -106,7 +134,7 @@ export class ConversationStore {
     const serverRoute = context && Object.hasOwn(context, "conversation") ? context.conversation : ticket.conversation;
     const explicit = conversationReferenceSchema.safeParse(serverRoute);
     // An explicit foreign route must not fall back to an obsolete local branch.
-    if (explicit.success && (explicit.data.runtime !== this.runtime || explicit.data.scope !== this.scope)) return undefined;
+    if (explicit.success && !this.matches(explicit.data)) return undefined;
     // Explicit null means the server has no current route (for example after
     // an old worker completed). Recover its legacy handoff, not a stale task pointer.
     let found = explicit.success ? explicit.data.thread_id : serverRoute === null ? undefined : record.activeThread;
@@ -170,7 +198,7 @@ export class ConversationStore {
         threadId.parse(previousThreadId);
         record.replacements[previousThreadId] = conversationId;
       }
-    });
+    }, true);
   }
 
   /** Compare only durable context fields, never comment history or delivery IDs. */
@@ -414,6 +442,8 @@ export class ConversationStore {
     try {
       const reference = this.object(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
       if (reference?.version !== 1 || reference.namespace !== this.namespace || reference.task !== this.task(ticket) || typeof reference.ticket !== "string") return undefined;
+      if (this.account === defaultAccount ? reference.account !== undefined
+        : reference.account !== this.account || reference.scope !== this.scope) return undefined;
       const parsed = threadId.safeParse(reference.thread);
       return parsed.success ? { thread: parsed.data, ticket: reference.ticket } : undefined;
     } catch { return undefined; }
@@ -433,7 +463,14 @@ export class ConversationStore {
   private path(ticket: Ticket): string { return join(this.directory, `${this.hash(this.task(ticket))}.json`); }
   private hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 
-  private async read(ticket: Ticket): Promise<ConversationRecord> {
+  private async read(ticket: Ticket): Promise<ThreadRecord> {
+    const record = await this.readRecord(ticket);
+    if (this.account === defaultAccount) return record;
+    return record.accounts && Object.hasOwn(record.accounts, this.account)
+      ? record.accounts[this.account] ?? emptyThreads() : emptyThreads();
+  }
+
+  private async readRecord(ticket: Ticket): Promise<ConversationRecord> {
     let encoded: string;
     try { encoded = await readFile(this.path(ticket), "utf8"); } catch (error) {
       if (this.isCode(error, "ENOENT")) return { version: 1, task: this.task(ticket), tickets: {}, comments: {}, replacements: {}, contextHashes: {} };
@@ -446,13 +483,21 @@ export class ConversationStore {
     } catch { throw this.invalidState(); }
   }
 
-  private async update(ticket: Ticket, mutate: (record: ConversationRecord) => void): Promise<void> {
+  private async update(ticket: Ticket, mutate: (record: ThreadRecord) => void, active = false): Promise<void> {
     const path = this.path(ticket);
     const pending = this.writes.get(path) ?? Promise.resolve();
     const write = pending.catch(() => undefined).then(async () => {
       await this.prepare();
-      const record = await this.read(ticket);
-      mutate(record);
+      const record = await this.readRecord(ticket);
+      if (this.account === defaultAccount) {
+        mutate(record);
+        if (active) delete record.account;
+      } else {
+        record.accounts ??= {};
+        if (!Object.hasOwn(record.accounts, this.account)) record.accounts[this.account] = emptyThreads();
+        mutate(record.accounts[this.account] ??= emptyThreads());
+        if (active) record.account = this.account;
+      }
       const temporary = `${path}.${randomUUID()}.tmp`;
       const file = await open(temporary, "wx", 0o600);
       try {

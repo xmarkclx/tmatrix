@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../src/api-client.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
-import { WorkerUsageReporter, type ProviderUsage } from "../src/worker-usage.js";
+import type { AccountReading } from "../src/runtime-accounts.js";
+import { WorkerUsageReporter, type AccountUsage, type ProviderUsage, type UsageDisplay } from "../src/worker-usage.js";
 import { deferred, makeConfig } from "./helpers.js";
 
 const codexUsage = {
@@ -29,6 +30,12 @@ function clientAt(pollUrl: string, fetch: typeof globalThis.fetch) {
     logger: nullLogger(), metrics: new Metrics(), fetch
   });
 }
+
+function reading(display: UsageDisplay, account = "default"): AccountReading {
+  return { account, quota: { plan: "unknown", display } };
+}
+
+const skipAccountPublish = async () => {};
 
 describe("worker usage reports", () => {
   it("posts only sanitized figures through the preview source key and tolerates an older API", async () => {
@@ -193,6 +200,98 @@ describe("worker usage reports", () => {
     ]);
   });
 
+  it("publishes the highest remaining plan per provider and the complete account snapshot", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(null, { status: 204 }));
+    const pollUrl = "https://tzudo.app/api/v1/ai/poll";
+    const client = clientAt(pollUrl, fetch);
+    const personal = { ...codexWithWindows, plan_remaining_percent: 63 };
+    const work = { ...personal, credits: { kind: "unlimited" } } satisfies ProviderUsage;
+    const { provider: claudeProvider, ...claudeDisplay } = claudeUsage;
+    const unknownClaude = { ...claudeDisplay, plan_remaining_percent: null };
+    const reporter = new WorkerUsageReporter({
+      codex: async () => [reading(work, "work"), reading(codexWithWindows), reading(personal, "alpha")],
+      claude: async () => [reading(unknownClaude, "alpha"), reading(claudeUsage),
+        { account: "empty", quota: { plan: "unavailable" } }]
+    }, nullLogger());
+    reporter.addSource({ id: "production", pollUrl, publish: client.reportWorkerUsage.bind(client),
+      publishAccounts: client.reportWorkerAccountUsage.bind(client) });
+    try {
+      reporter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch.mock.calls.map(([url, init]) => [url, init?.method, init?.redirect,
+        new Headers(init?.headers).get("authorization"), JSON.parse(String(init?.body))])).toEqual([
+        ["https://tzudo.app/api/v1/ai/worker-usage", "POST", "error", "Bearer test-secret-key",
+          { providers: [personal, claudeUsage] }],
+        ["https://tzudo.app/api/v1/ai/worker-account-usage", "POST", "error", "Bearer test-secret-key", { accounts: [
+          { ...personal, account: "alpha" }, { ...codexWithWindows, account: "default" }, { ...work, account: "work" },
+          { ...unknownClaude, provider: claudeProvider, account: "alpha" }, { ...claudeUsage, account: "default" },
+          { provider: "claude", account: "empty", plan_remaining_percent: null, credits: { kind: "unavailable" } }
+        ] }]
+      ]);
+    } finally {
+      await reporter.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("continues reporting after API errors and disables account reports only after a 404", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const pollUrl = "https://tzudo.app/api/v1/ai/poll";
+    const client = clientAt(pollUrl, fetch);
+    const logger = nullLogger();
+    const info = vi.spyOn(logger, "info");
+    const reporter = new WorkerUsageReporter({ codex: async () => [reading(codexUsage)] }, logger);
+    reporter.addSource({ id: "production", pollUrl, publish: client.reportWorkerUsage.bind(client),
+      publishAccounts: client.reportWorkerAccountUsage.bind(client) });
+    try {
+      reporter.start();
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(fetch.mock.calls.map(([url, init]) => [new URL(String(url)).pathname, JSON.parse(String(init?.body))])).toEqual([
+        ["/api/v1/ai/worker-usage", { providers: [codexUsage] }],
+        ["/api/v1/ai/worker-account-usage", { accounts: [{ ...codexUsage, account: "default" }] }],
+        ["/api/v1/ai/worker-usage", { providers: [codexUsage] }],
+        ["/api/v1/ai/worker-account-usage", { accounts: [{ ...codexUsage, account: "default" }] }],
+        ["/api/v1/ai/worker-usage", { providers: [codexUsage] }]
+      ]);
+      expect(info.mock.calls).toEqual([[{ event: "worker_usage.accounts_unsupported" },
+        "Tzu Do does not support account usage reporting"]]);
+    } finally {
+      await reporter.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rebuilds the bounded snapshot when the account registry changes", async () => {
+    vi.useFakeTimers();
+    let codex = [reading(codexUsage), ...Array.from({ length: 65 }, (_, index) =>
+      reading(codexUsage, `work-${String(index).padStart(2, "0")}`))];
+    const snapshots: AccountUsage[][] = [];
+    const reporter = new WorkerUsageReporter({ codex: async () => codex,
+      claude: async () => [reading(claudeUsage)] }, nullLogger());
+    reporter.addSource({ id: "production", pollUrl: "https://tzudo.app/api/v1/ai/poll", async publish() {},
+      async publishAccounts(accounts) { snapshots.push(accounts); } });
+    try {
+      reporter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      codex = [reading(codexUsage), reading(codexUsage, "work-64")];
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(snapshots[0]).toHaveLength(64);
+      expect(snapshots[0]?.slice(0, 2)).toEqual([{ ...codexUsage, account: "default" }, { ...claudeUsage, account: "default" }]);
+      expect(snapshots[1]).toEqual([{ ...codexUsage, account: "default" }, { ...codexUsage, account: "work-64" },
+        { ...claudeUsage, account: "default" }]);
+    } finally {
+      await reporter.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("refreshes the sole production source while idle and aborts on close", async () => {
     vi.useFakeTimers();
     const first = deferred<void>();
@@ -205,27 +304,21 @@ describe("worker usage reports", () => {
       codex: async (signal) => {
         if (++codexReads === 1) await first.promise;
         else {
-          signal?.addEventListener("abort", () => { aborted = true; last.resolve(); }, { once: true });
+          signal.addEventListener("abort", () => { aborted = true; last.resolve(); }, { once: true });
           await last.promise;
         }
-        return { plan: "exhausted", display: {
-          plan_remaining_percent: 0, plan_resets_at: codexWithWindows.plan_resets_at,
-          reset_windows: codexWithWindows.reset_windows, credits: codexWithWindows.credits
-        } };
+        return [reading(codexWithWindows)];
       },
       claude: async () => {
         claudeReads += 1;
-        return { plan: "unknown", display: { plan_remaining_percent: 71.5, plan_resets_at: null, credits: { kind: "unavailable" } } };
+        return [reading(claudeUsage)];
       },
-      gemini: async () => ({ plan: "unknown", display: {
-        plan_remaining_percent: geminiWithWindows.plan_remaining_percent, plan_resets_at: geminiWithWindows.plan_resets_at,
-        reset_windows: geminiWithWindows.reset_windows, credits: geminiWithWindows.credits
-      } })
-    });
+      gemini: async () => [reading(geminiWithWindows)]
+    }, nullLogger());
     reporter.addSource({ id: "production", pollUrl: "https://tzudo.app/api/v1/ai/poll",
-      async publish(providers) { history.push({ source: "production", providers }); } });
+      async publish(providers) { history.push({ source: "production", providers }); }, publishAccounts: skipAccountPublish });
     reporter.addSource({ id: "preview", pollUrl: "https://pr-43.tzd.mc-lopez.com/api/v1/ai/poll",
-      async publish(providers) { history.push({ source: "preview", providers }); } });
+      async publish(providers) { history.push({ source: "preview", providers }); }, publishAccounts: skipAccountPublish });
     try {
       reporter.start();
       await vi.advanceTimersByTimeAsync(300_001);
@@ -255,10 +348,10 @@ describe("worker usage reports", () => {
     const reporter = new WorkerUsageReporter({ codex: async () => {
       checks += 1;
       if (checks === 2) await first.promise;
-      return { plan: "exhausted", display: { plan_remaining_percent: 0, plan_resets_at: codexUsage.plan_resets_at, credits: codexUsage.credits } };
-    } });
+      return [reading(codexUsage)];
+    } }, nullLogger());
     const add = (id: string) => reporter.addSource({ id, pollUrl: "https://tzudo.app/api/v1/ai/poll",
-      async publish() { reports.push(id); } });
+      async publish() { reports.push(id); }, publishAccounts: skipAccountPublish });
     try {
       add("one");
       reporter.start();
@@ -279,12 +372,11 @@ describe("worker usage reports", () => {
   it.each([["preview", ["preview"]], ["missing", []]] as const)("publishes only to the explicitly selected source (%s)", async (chosen, expected) => {
     vi.useFakeTimers();
     const reports: string[] = [];
-    const reporter = new WorkerUsageReporter({ codex: async () => ({ plan: "exhausted", display: {
-      plan_remaining_percent: 0, plan_resets_at: null, credits: codexUsage.credits
-    } }) }, chosen);
+    const reporter = new WorkerUsageReporter({ codex: async () => [reading(codexUsage)] }, nullLogger(), chosen);
     try {
       for (const [id, host] of [["production", "tzudo.app"], ["preview", "pr-43.tzd.mc-lopez.com"]] as const) {
-        reporter.addSource({ id, pollUrl: `https://${host}/api/v1/ai/poll`, async publish() { reports.push(id); } });
+        reporter.addSource({ id, pollUrl: `https://${host}/api/v1/ai/poll`, async publish() { reports.push(id); },
+          publishAccounts: skipAccountPublish });
       }
       reporter.start();
       await vi.advanceTimersByTimeAsync(0);

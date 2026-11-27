@@ -71,7 +71,8 @@ export interface RuntimeLike {
   resumeThread?(threadId: string, options: RuntimeThreadOptions): ThreadLike;
   close?(): Promise<void>;
 }
-export type RuntimeFactory = (profile: ExecutionProfile, leaseEnvironment?: Record<string, string>) => RuntimeLike;
+export type RuntimeFactory = (profile: ExecutionProfile, leaseEnvironment?: Record<string, string>,
+  accountEnvironment?: Record<string, string>) => RuntimeLike;
 export interface AdapterContext {
   /** Sanitized child environment. Never pass the queue's API_KEY to a harness. */
   environment: Record<string, string>;
@@ -121,10 +122,20 @@ export interface AdapterSetupContext extends AdapterContext {
 }
 export type RuntimeQuota = {
   plan: "available" | "exhausted" | "unavailable" | "unknown";
+  authenticated?: false;
+  usedPercent?: number;
   credits?: boolean;
   display?: UsageDisplay;
 };
-export type ReadRuntimeQuota = (signal?: AbortSignal, workingDirectory?: string, model?: string) => Promise<RuntimeQuota>;
+export type ReadRuntimeQuota = (signal?: AbortSignal, workingDirectory?: string, model?: string,
+  accountEnvironment?: Record<string, string>) => Promise<RuntimeQuota>;
+
+export interface AdapterAccounts {
+  environment(directory: string, base: Record<string, string>): Record<string, string>;
+  home(environment: Record<string, string>): string;
+  login(environment: Record<string, string>): { executable: string; args: string[] };
+  loggedIn?(environment: Record<string, string>): Promise<boolean>;
+}
 
 export interface AdapterSetup {
   /** Bound to this engine instance, with a fresh context supplied for each worker. */
@@ -136,6 +147,7 @@ export interface RuntimeAdapter {
   apiVersion: 1;
   /** Stable provider/account-history identity; lowercase letters, digits and hyphens. */
   id: string;
+  accounts?: AdapterAccounts;
   /** Fresh isolated runtime for each ticket. Defer process startup to runStreamed. */
   create: RuntimeCreator;
   /**

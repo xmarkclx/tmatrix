@@ -86,6 +86,8 @@ type Worker struct {
 	Status        string         `json:"status"`
 	Model         string         `json:"model"`
 	WorkerType    string         `json:"worker_type"`
+	Account       string         `json:"account,omitempty"`
+	RuntimeLabel  string         `json:"runtime_label,omitempty"`
 	ThreadID      string         `json:"thread_id"`
 	RunKind       string         `json:"run_kind,omitempty"`
 	InputRevision int            `json:"input_revision"`

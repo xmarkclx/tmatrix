@@ -45,7 +45,7 @@ func run(args []string) error {
 	sourceID := flags.String("source", "", "source ID for offline conversation recovery")
 	showVersion := flags.Bool("version", false, "print version")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [update [--prefix /absolute/path]|setup|engine start|engine stop|engine restart|daemon|conversation recover <task-id> [--confirm-runtime-stopped]|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nAdd sources with c and manage them in Pollers. Saving the first source starts task intake. Space pauses or resumes intake across all sources. Subsequent launches restore the saved preference.")
+		fmt.Fprintln(flags.Output(), "TMatrix — workers, within reach.\n\nUsage: tmatrix [flags] [update [--prefix /absolute/path]|setup|engine start|engine stop|engine restart|daemon|conversation recover <task-id> [--confirm-runtime-stopped]|accounts list|accounts {add|login|remove} <provider> <label>|service install|service uninstall|status]\n\nNo arguments opens the terminal console. q detaches without stopping workers.\nAdd sources with c and manage them in Pollers. Saving the first source starts task intake. Space pauses or resumes intake across all sources. Subsequent launches restore the saved preference.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
@@ -105,6 +105,9 @@ func run(args []string) error {
 			return err
 		}
 		command := flags.Args()
+		if len(command) > 0 && command[0] == "accounts" {
+			return app.RunAccounts(dir, *engineDir, command[1:], os.Stdin, os.Stdout, os.Stderr)
+		}
 		if (len(command) == 3 || (len(command) == 4 && command[3] == "--confirm-runtime-stopped")) && command[0] == "conversation" && command[1] == "recover" {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()

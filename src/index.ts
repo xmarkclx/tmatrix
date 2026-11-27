@@ -11,29 +11,16 @@ import { ControlClient } from "./control-client.js";
 import { errorContext, WorkerError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import { Metrics } from "./metrics.js";
-import { TicketRunner, type RuntimeSelection } from "./runner.js";
+import { TicketRunner, type RuntimeSelectionContext } from "./runner.js";
 import { Supervisor } from "./supervisor.js";
 import { SourceSupervisor } from "./source-supervisor.js";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { resolveAdapterUpdateDirectory } from "./adapter-updates.js";
 import { ConversationStore } from "./conversation-store.js";
-import { chooseFundingRoute, geminiModel, isProvider, modelProvider, providers, type FundingRoute, type Provider } from "./runtime-routing.js";
-import type { ReadRuntimeQuota, RuntimeAdapter, RuntimeQuota } from "./runtime-adapter.js";
-
-const fundingLabels = {
-  "codex-plan": `${providers.codex.label} subscription`,
-  "codex-credits": `${providers.codex.label} credits`
-} satisfies Record<Exclude<FundingRoute, Provider>, string>;
-
-async function checkQuota(probe: ReadRuntimeQuota | undefined, signal?: AbortSignal, cwd?: string, model?: string): Promise<RuntimeQuota> {
-  try {
-    return await probe?.(signal, cwd, model) ?? { plan: "unknown" };
-  } catch {
-    signal?.throwIfAborted();
-    return { plan: "unknown" };
-  }
-}
+import { geminiModel, isProvider, modelProvider, requestedProvider, selectAccountRuntime, type Provider } from "./runtime-routing.js";
+import { probeAccount, scanAccounts, type RuntimeAccount } from "./runtime-accounts.js";
+import type { RuntimeAdapter } from "./runtime-adapter.js";
 
 async function main(): Promise<void> {
   const config = await loadEngineConfig();
@@ -54,11 +41,11 @@ async function main(): Promise<void> {
 
   const adapter = await loadAdapter(config.runtime_adapter, config.adapter_module);
   const runtimeEnvironment = sanitizedCodexEnvironment(process.env);
-  const prepare = (runtimeAdapter: RuntimeAdapter) => setupAdapter(runtimeAdapter, {
+  const prepare = async (runtimeAdapter: RuntimeAdapter) => ({ adapter: runtimeAdapter, ...await setupAdapter(runtimeAdapter, {
     environment: runtimeEnvironment,
     logger,
     updateDirectory: resolveAdapterUpdateDirectory(runtimeAdapter.id, config.update_origin, config.instance_id)
-  });
+  }) });
   const claudeSetup = adapter.id === "claude" ? await prepare(adapter) : undefined;
   if (claudeSetup && !claudeSetup.updates) throw new Error(CLAUDE_INSTALL_REQUIRED);
 
@@ -81,13 +68,26 @@ async function main(): Promise<void> {
   const secondary = multiProvider ? await prepare(await loadAdapter("claude")) : undefined;
   const claudeEngine = secondary?.readQuota ? secondary : undefined;
   const updaters = [primary.updates, claudeEngine?.updates].filter(updates => updates !== undefined);
-  const claudeQuota = adapter.id === "claude" ? primary.readQuota : claudeEngine?.readQuota;
+  const configFile = process.env.TMATRIX_CONTROL_FILE || process.env.CONFIG_PATH;
+  const configDirectory = configFile ? dirname(resolve(configFile))
+    : resolve(process.env.XDG_CONFIG_HOME || resolve(homedir(), ".config"), "tmatrix");
+  const accountCursors = new Map<string, string>();
+  const engineFor = async (provider: string) => {
+    if (provider === adapter.id) return primary;
+    if (provider === "gemini") return geminiRuntime();
+    if (claudeEngine) return claudeEngine;
+    throw new WorkerError({ code: "CLAUDE_INSTALL_REQUIRED", stage: "runtime.route", message: CLAUDE_INSTALL_REQUIRED });
+  };
+  const usageProbe = (provider: Provider) => async (signal: AbortSignal) => {
+    const engine = await engineFor(provider);
+    const accounts = await scanAccounts(configDirectory, engine.adapter, runtimeEnvironment);
+    return Promise.all(accounts.map(account => probeAccount(account, engine.readQuota, { signal, timeoutMs: 25_000 })));
+  };
   const usageReporter = new WorkerUsageReporter({
-    ...(adapter.id === "codex" && primary.readQuota ? { codex: primary.readQuota } : {}),
-    ...(claudeQuota ? { claude: claudeQuota } : {}),
-    ...(dedicatedGemini && primary.readQuota ? { gemini: primary.readQuota } : {}),
-    ...(multiProvider ? { gemini: async (signal) => checkQuota((await geminiRuntime()).readQuota, signal) } : {})
-  }, process.env.TMATRIX_USAGE_SOURCE_ID);
+    ...(multiProvider ? { codex: usageProbe("codex") } : {}),
+    ...(adapter.id === "claude" || claudeEngine ? { claude: usageProbe("claude") } : {}),
+    ...(dedicatedGemini || multiProvider ? { gemini: usageProbe("gemini") } : {})
+  }, logger, process.env.TMATRIX_USAGE_SOURCE_ID);
   const conversationDirectory = config.conversation_state_dir
     ? resolve(config.conversation_state_dir)
     : resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "aiworker", "conversations");
@@ -102,53 +102,45 @@ async function main(): Promise<void> {
       sourceMetrics.push({ metrics, logger: sourceLogger });
       const api = new ApiClient({ config: sourceConfig, logger: sourceLogger, metrics });
       usageReporter.addSource({ id: source.metadata.id, pollUrl: sourceConfig.poll_url,
-        publish: (providers, signal) => api.reportWorkerUsage(providers, signal) });
-      const storeFor = (id: string) => new ConversationStore({
+        publish: (providers, signal) => api.reportWorkerUsage(providers, signal),
+        publishAccounts: (accounts, signal) => api.reportWorkerAccountUsage(accounts, signal) });
+      const storeFor = (runtimeAdapter: RuntimeAdapter, account?: RuntimeAccount) => new ConversationStore({
         directory: conversationDirectory,
         namespace: source.metadata.conversation_namespace,
-        adapterId: id,
-        trackRuntime: isProvider(id),
-        runtimeHome: id === "codex" ? (runtimeEnvironment.CODEX_HOME ?? resolve(homedir(), ".codex"))
-          : id === "claude" ? (runtimeEnvironment.CLAUDE_CONFIG_DIR || resolve(homedir(), ".claude"))
-            : id === "gemini" ? resolve(runtimeEnvironment.HOME || homedir(), ".gemini", "antigravity-cli") : homedir(),
+        adapterId: runtimeAdapter.id,
+        trackRuntime: isProvider(runtimeAdapter.id) || !!runtimeAdapter.accounts,
+        runtimeHome: runtimeAdapter.accounts?.home(account?.environment ?? runtimeEnvironment) ?? homedir(),
+        ...(account?.directory ? { account: account.label } : {}),
         referenceKey: sourceConfig.api_key
       });
-      const conversationStore = storeFor(adapter.id);
-      const claudeStore = claudeEngine ? storeFor("claude") : undefined;
-      let geminiStore: ConversationStore | undefined;
-      const selectRuntime = async (signal?: AbortSignal, cwd?: string, model?: string): Promise<RuntimeSelection | undefined> => {
-        if (dedicatedGemini) {
-          return { id: "gemini", runtimeFactory: primary.runtimeFactory, conversationStore,
-            model: geminiModel, label: providers.gemini.label };
-        }
-        if (!multiProvider) {
-          if (modelProvider(model) === "gemini") throw new WorkerError({
-            code: "GEMINI_ROUTING_UNAVAILABLE", stage: "runtime.route",
-            message: "The selected Gemini model needs the default Codex engine or a dedicated Gemini engine."
-          });
-          return undefined;
-        }
-        const route = await chooseFundingRoute({
-          model,
-          codex: () => checkQuota(primary.readQuota, signal, cwd),
-          ...(signal ? { signal } : {})
+      const conversationStore = storeFor(adapter);
+      const defaultStores = new Map([[adapter.id, conversationStore]]);
+      const selectRuntime = async (signal: AbortSignal | undefined, cwd: string, model: string, context: RuntimeSelectionContext) => {
+        signal?.throwIfAborted();
+        if (adapter.id === "claude" && modelProvider(model) === "gemini") throw new WorkerError({
+          code: "GEMINI_ROUTING_UNAVAILABLE", stage: "runtime.route",
+          message: "The selected Gemini model needs the default Codex engine or a dedicated Gemini engine."
         });
-        const label = isProvider(route) ? providers[route].label : fundingLabels[route];
-        if (route === "gemini") {
-          const gemini = await geminiRuntime();
-          signal?.throwIfAborted();
-          return { id: "gemini", runtimeFactory: gemini.runtimeFactory, conversationStore: geminiStore ??= storeFor("gemini"), label };
-        }
-        if (route === "claude") {
-          if (!claudeEngine || !claudeStore) throw new WorkerError({
-            code: "CLAUDE_INSTALL_REQUIRED", stage: "runtime.route", message: CLAUDE_INSTALL_REQUIRED
-          });
-          return { id: "claude", runtimeFactory: claudeEngine.runtimeFactory, conversationStore: claudeStore, label };
-        }
-        return { id: "codex", runtimeFactory: primary.runtimeFactory, conversationStore, label };
+        const provider = multiProvider ? requestedProvider(model) : adapter.id;
+        const engine = await engineFor(provider);
+        const accounts = await scanAccounts(configDirectory, engine.adapter, runtimeEnvironment);
+        const selected = await selectAccountRuntime({
+          provider, model, cwd, signal, accounts, cursors: accountCursors, context,
+          runtimeFactory: engine.runtimeFactory, readQuota: engine.readQuota,
+          storeFor(account) {
+            if (account.directory) return storeFor(engine.adapter, account);
+            const store = defaultStores.get(provider) ?? storeFor(engine.adapter);
+            defaultStores.set(provider, store);
+            return store;
+          }
+        });
+        if (dedicatedGemini) return { ...selected, model: geminiModel };
+        if (!multiProvider && accounts.length === 1 && !context.active?.account && !selected.rebuild &&
+            !(context.reference && !selected.conversationStore.matches(context.reference))) return undefined;
+        return selected;
       };
       const runner = new TicketRunner({ runtimeFactory: primary.runtimeFactory, api, logger: sourceLogger, metrics, conversationStore,
-        ...(isProvider(adapter.id) ? { selectRuntime } : {}),
+        ...(isProvider(adapter.id) || adapter.accounts ? { selectRuntime } : {}),
         alertSecurityWarning: (alert, signal) => api.alertUserEmergency(alert, signal) });
       let child!: Supervisor;
       const control = new ControlClient({ config: sourceConfig, logger: sourceLogger, metrics,
