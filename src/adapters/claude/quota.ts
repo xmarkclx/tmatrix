@@ -6,7 +6,7 @@ import { z } from "zod";
 import { CGROUP_ENV } from "../../conversation-cgroup.js";
 import { LEASE_ENV } from "../../conversation-recovery.js";
 import type { RuntimeQuota } from "../../runtime-adapter.js";
-import { currentResetTime, planResetsAt, resetWindowDisplay, tightestPlanWindow, type PlanWindow, type ResetCadence } from "../../worker-usage.js";
+import { currentResetTime, planResetsAt, planWindowDisplay, resetWindowDisplay, tightestPlanWindow, type PlanWindow, type ResetCadence } from "../../worker-usage.js";
 import { RuntimeProcess } from "../process.js";
 
 const unknownQuota = { plan: "unknown" } satisfies RuntimeQuota;
@@ -72,9 +72,10 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
     const currentAccount = accountWindows.map(entry => ({ ...entry, resetsAtMs: currentResetTime(entry.window?.resets_at, now) }));
     const measure = (window: NativeWindow | null | undefined, resetsAtMs: number | null): PlanWindow[] =>
       window?.utilization != null && resetsAtMs !== null ? [{ usedPercent: window.utilization, resetsAtMs }] : [];
-    const account = currentAccount.flatMap(({ window, resetsAtMs }) => measure(window, resetsAtMs));
+    const account = currentAccount.flatMap(({ cadence, window, resetsAtMs }) =>
+      measure(window, resetsAtMs).map(measured => ({ ...measured, cadence })));
     if (usage.five_hour?.utilization === 0 && usage.five_hour.resets_at === null) {
-      account.push({ usedPercent: 0, resetsAtMs: null });
+      account.push({ cadence: "five_hour", usedPercent: 0, resetsAtMs: null });
     }
     const active = [...account, ...modelWindows.flatMap(window => measure(window, currentResetTime(window.resets_at, now)))];
     const exhausted = active.some(window => window.usedPercent === 100);
@@ -91,6 +92,9 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
         plan_remaining_percent: limiting ? 100 - limiting.usedPercent : null,
         plan_resets_at: tiedResetUnknown ? null : planResetsAt(limiting),
         ...resetWindowDisplay(currentAccount),
+        ...(limiting ? planWindowDisplay(account.map(({ cadence, usedPercent }) => ({
+          cadence, remainingPercent: 100 - usedPercent
+        }))) : {}),
         credits: { kind: extraDisabled ? "disabled" : "unavailable" }
       }
     };

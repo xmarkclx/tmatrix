@@ -45,12 +45,12 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-const usageResetField = z.enum(["plan_resets_at", "reset_windows"]);
-type UsageResetField = z.infer<typeof usageResetField>;
-type UsageWireRow = Omit<ProviderUsage, UsageResetField> & Partial<Pick<ProviderUsage, UsageResetField>>;
+const usageCompatibilityField = z.enum(["plan_resets_at", "reset_windows", "plan_windows"]);
+type UsageCompatibilityField = z.infer<typeof usageCompatibilityField>;
+type UsageWireRow = Omit<ProviderUsage, UsageCompatibilityField> & Partial<Pick<ProviderUsage, UsageCompatibilityField>>;
 
 class UnsupportedUsageFields {
-  constructor(readonly fields: ReadonlySet<UsageResetField>) {}
+  constructor(readonly fields: ReadonlySet<UsageCompatibilityField>) {}
 }
 
 const legacyUsageRejectionSchema = z.object({
@@ -61,20 +61,20 @@ const legacyUsageRejectionSchema = z.object({
   data: z.object({
     issues: z.array(z.object({
       code: z.literal("unrecognized_keys"),
-      keys: z.array(usageResetField).min(1).max(usageResetField.options.length),
+      keys: z.array(usageCompatibilityField).min(1).max(usageCompatibilityField.options.length),
       path: z.tuple([z.literal("providers"), z.number().int().nonnegative()])
     }))
   })
 });
 
-function rejectedUsageResets(responseText: string, providers: UsageWireRow[]): UnsupportedUsageFields | undefined {
+function rejectedUsageFields(responseText: string, providers: UsageWireRow[]): UnsupportedUsageFields | undefined {
   try {
     const rejection = legacyUsageRejectionSchema.safeParse(parseIdentityJson(responseText));
     if (!rejection.success) return;
     const { issues } = rejection.data.data;
     const rejected = new Set(issues.flatMap(issue => issue.keys));
     if (!rejected.size) return;
-    const fieldsByProvider = new Map<number, Set<UsageResetField>>();
+    const fieldsByProvider = new Map<number, Set<UsageCompatibilityField>>();
     for (const { keys, path: [, index] } of issues) {
       const fields = new Set(keys);
       if (index >= providers.length || fieldsByProvider.has(index) || fields.size !== keys.length) return;
@@ -146,7 +146,7 @@ export class ApiClient implements TicketApi {
       signal.throwIfAborted();
       try {
         const result = await this.request({ ...request, body: { providers: readings },
-          checkUsageCompatibility: responseText => rejectedUsageResets(responseText, readings) });
+          checkUsageCompatibility: responseText => rejectedUsageFields(responseText, readings) });
         if (!(result instanceof UnsupportedUsageFields)) return;
         readings = readings.map(reading => {
           const supported = { ...reading };

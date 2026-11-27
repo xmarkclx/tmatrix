@@ -10,6 +10,8 @@ export interface UsageDisplay {
   /** When the window that sets plan_remaining_percent resets. */
   plan_resets_at: string | null;
   reset_windows?: Partial<Record<ResetCadence, string>>;
+  /** Lowest percentage remaining for each measured 5-hour or weekly limit. */
+  plan_windows?: Partial<Record<ResetCadence, number>>;
   credits: UsageCredits;
 }
 export interface PlanWindow { usedPercent: number; resetsAtMs: number | null }
@@ -31,6 +33,17 @@ export function resetWindowDisplay(windows: readonly { cadence: ResetCadence | n
     if (dates.size === 1 && time !== undefined) reset_windows[cadence] = new Date(time).toISOString();
   }
   return Object.keys(reset_windows).length ? { reset_windows } : {};
+}
+
+export function planWindowDisplay(windows: readonly { cadence: ResetCadence | null; remainingPercent: number | null }[]):
+  Pick<UsageDisplay, "plan_windows"> {
+  const plan_windows: NonNullable<UsageDisplay["plan_windows"]> = {};
+  for (const cadence of ["five_hour", "weekly"] as const) {
+    const remaining = windows.flatMap(window =>
+      window.cadence === cadence && window.remainingPercent !== null ? [window.remainingPercent] : []);
+    if (remaining.length) plan_windows[cadence] = Math.min(...remaining);
+  }
+  return Object.keys(plan_windows).length ? { plan_windows } : {};
 }
 
 /** Picks the most-used window. A tie picks the later (or unknown) reset, the earliest the shown percentage can rise. */
@@ -97,8 +110,13 @@ export class WorkerUsageReporter {
     const checks = await Promise.allSettled(Object.keys(this.probes).filter(isProvider).map(async provider => {
       const quota = await this.probes[provider]?.(signal);
       if (!quota?.display) return;
-      const { plan_remaining_percent, plan_resets_at, reset_windows, credits } = quota.display;
-      return { provider, plan_remaining_percent, plan_resets_at, ...(reset_windows ? { reset_windows } : {}), credits };
+      const { plan_remaining_percent, plan_resets_at, reset_windows, plan_windows, credits } = quota.display;
+      return {
+        provider, plan_remaining_percent, plan_resets_at,
+        ...(reset_windows ? { reset_windows } : {}),
+        ...(plan_windows ? { plan_windows } : {}),
+        credits
+      };
     }));
     const providers = checks.flatMap(check => check.status === "fulfilled" && check.value ? [check.value] : []);
     if (!providers.length || signal.aborted || this.selectedSource() !== source) return;

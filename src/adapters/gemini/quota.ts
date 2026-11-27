@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { RuntimeQuota } from "../../runtime-adapter.js";
-import { currentResetTime, resetWindowDisplay, type ResetCadence, type UsageCredits, type UsageDisplay } from "../../worker-usage.js";
+import { currentResetTime, planWindowDisplay, resetWindowDisplay, type ResetCadence, type UsageCredits, type UsageDisplay } from "../../worker-usage.js";
 import { RuntimeProcess } from "../process.js";
 
 const resultSchema = z.object({
@@ -34,7 +34,7 @@ const nativeEnvironment = new Set([
 type NativeCommand = "usage" | "credits";
 type CommandResult = z.infer<typeof resultSchema>;
 
-function planDisplay(result?: CommandResult): Pick<UsageDisplay, "plan_remaining_percent" | "plan_resets_at" | "reset_windows"> {
+function planDisplay(result?: CommandResult): Omit<UsageDisplay, "credits"> {
   const data = usageSchema.safeParse(result?.command?.data);
   const windows = data.success
     ? data.data.groups.flatMap(entry => {
@@ -66,16 +66,17 @@ function planDisplay(result?: CommandResult): Pick<UsageDisplay, "plan_remaining
   const measured = current.flatMap(window => window.remainingPercent === null ? [] : [{ ...window, remainingPercent: window.remainingPercent }]);
   if (!measured.length) return { plan_remaining_percent: null, plan_resets_at: null, ...namedWindows };
 
+  const planWindows = planWindowDisplay(measured);
   const remaining = Math.min(...measured.map(window => window.remainingPercent));
   let latestReset = now;
   for (const window of measured) {
     if (window.remainingPercent !== remaining) continue;
     if (window.resetsAtMs === null) {
-      return { plan_remaining_percent: remaining, plan_resets_at: null, ...namedWindows };
+      return { plan_remaining_percent: remaining, plan_resets_at: null, ...namedWindows, ...planWindows };
     }
     latestReset = Math.max(latestReset, window.resetsAtMs);
   }
-  return { plan_remaining_percent: remaining, plan_resets_at: new Date(latestReset).toISOString(), ...namedWindows };
+  return { plan_remaining_percent: remaining, plan_resets_at: new Date(latestReset).toISOString(), ...namedWindows, ...planWindows };
 }
 
 function normalizeAmount(amount: string): string {

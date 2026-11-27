@@ -22,6 +22,8 @@ const codexWithWindows = { ...codexUsage, reset_windows: {
 const geminiWithWindows = { ...geminiUsage, reset_windows: {
   weekly: "2026-11-26T19:25:03.000Z"
 } } satisfies ProviderUsage;
+const codexWithPlanWindows = { ...codexWithWindows, plan_windows: { five_hour: 0, weekly: 35 } } satisfies ProviderUsage;
+const geminiWithPlanWindows = { ...geminiWithWindows, plan_windows: { weekly: 43 } } satisfies ProviderUsage;
 
 function clientAt(pollUrl: string, fetch: typeof globalThis.fetch) {
   return new ApiClient({
@@ -147,16 +149,31 @@ describe("worker usage reports", () => {
     ]);
   });
 
-  it("drops both reset fields on a strict schema that supports neither", async () => {
+  it("drops only plan windows when the API supports both reset fields and Gemini", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(Response.json(inputError([
-        resetIssue(0, ["reset_windows", "plan_resets_at"]), resetIssue(1), resetIssue(2, ["plan_resets_at", "reset_windows"])
+        resetIssue(0, ["plan_windows"]), resetIssue(2, ["plan_windows"])
       ]), { status: 400 }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
-    await client.reportWorkerUsage([codexWithWindows, claudeUsage, geminiWithWindows], AbortSignal.timeout(1000));
+    await client.reportWorkerUsage([codexWithPlanWindows, claudeUsage, geminiWithPlanWindows], AbortSignal.timeout(1000));
     expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
-      { providers: [codexWithWindows, claudeUsage, geminiWithWindows] },
+      { providers: [codexWithPlanWindows, claudeUsage, geminiWithPlanWindows] },
+      { providers: [codexWithWindows, claudeUsage, geminiWithWindows] }
+    ]);
+  });
+
+  it("drops all three optional fields when the API rejects them and supports Gemini", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(inputError([
+        resetIssue(0, ["reset_windows", "plan_resets_at", "plan_windows"]), resetIssue(1),
+        resetIssue(2, ["plan_windows", "plan_resets_at", "reset_windows"])
+      ]), { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
+    await client.reportWorkerUsage([codexWithPlanWindows, claudeUsage, geminiWithPlanWindows], AbortSignal.timeout(1000));
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { providers: [codexWithPlanWindows, claudeUsage, geminiWithPlanWindows] },
       { providers: [codexUsage, claudeUsage, geminiUsage].map(({ plan_resets_at, ...usage }) => usage) }
     ]);
   });
@@ -164,14 +181,15 @@ describe("worker usage reports", () => {
   it.each([
     [resetIssue(0, ["reset_windows"]), resetIssue(1, ["reset_windows"])],
     [resetIssue(0, ["reset_windows", "reset_windows"])],
-    [resetIssue(0, ["reset_windows"]), { code: "invalid_format", path: ["providers", 0, "reset_windows", "five_hour"] }]
-  ].map(issues => ({ issues })))("rejects a named reset error that does not establish the legacy schema", async ({ issues }) => {
+    [resetIssue(0, ["reset_windows"]), { code: "invalid_format", path: ["providers", 0, "reset_windows", "five_hour"] }],
+    [resetIssue(0, ["plan_windows"]), { code: "invalid_type", path: ["providers", 0, "credits"] }]
+  ].map(issues => ({ issues })))("rejects validation errors that do not establish the legacy schema", async ({ issues }) => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(inputError(issues), { status: 400 }));
     const client = clientAt("https://tzudo.app/api/v1/ai/poll", fetch);
-    await expect(client.reportWorkerUsage([codexWithWindows, claudeUsage], AbortSignal.timeout(1000)))
+    await expect(client.reportWorkerUsage([codexWithPlanWindows, claudeUsage], AbortSignal.timeout(1000)))
       .rejects.toMatchObject({ code: "HTTP_STATUS_ERROR", details: { status: 400 } });
     expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
-      { providers: [codexWithWindows, claudeUsage] }
+      { providers: [codexWithPlanWindows, claudeUsage] }
     ]);
   });
 
@@ -210,6 +228,7 @@ describe("worker usage reports", () => {
         }
         return { plan: "exhausted", display: {
           plan_remaining_percent: 0, plan_resets_at: codexWithWindows.plan_resets_at,
+          plan_windows: codexWithPlanWindows.plan_windows,
           reset_windows: codexWithWindows.reset_windows, credits: codexWithWindows.credits
         } };
       },
@@ -219,6 +238,7 @@ describe("worker usage reports", () => {
       },
       gemini: async () => ({ plan: "unknown", display: {
         plan_remaining_percent: geminiWithWindows.plan_remaining_percent, plan_resets_at: geminiWithWindows.plan_resets_at,
+        plan_windows: geminiWithPlanWindows.plan_windows,
         reset_windows: geminiWithWindows.reset_windows, credits: geminiWithWindows.credits
       } })
     });
@@ -231,7 +251,7 @@ describe("worker usage reports", () => {
       await vi.advanceTimersByTimeAsync(300_001);
       first.resolve();
       await vi.advanceTimersByTimeAsync(0);
-      expect(history).toEqual([{ source: "production", providers: [codexWithWindows, claudeUsage, geminiWithWindows] }]);
+      expect(history).toEqual([{ source: "production", providers: [codexWithPlanWindows, claudeUsage, geminiWithPlanWindows] }]);
       expect([codexReads, claudeReads]).toEqual([1, 1]);
       await vi.advanceTimersByTimeAsync(300_000);
       expect([codexReads, claudeReads]).toEqual([2, 2]);
