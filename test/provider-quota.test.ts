@@ -68,6 +68,7 @@ describe("Codex subscription and purchased credits", () => {
       }
     } })).toEqual({ plan: "available", credits: false, display: {
       plan_remaining_percent: 41, plan_resets_at: fiveHourReset,
+      plan_windows: { five_hour: 41, weekly: 80 },
       reset_windows: { five_hour: fiveHourReset, weekly: weeklyReset },
       credits: { kind: "amount", amount: "0.00", unit: "credits" }
     } });
@@ -79,6 +80,7 @@ describe("Codex subscription and purchased credits", () => {
       secondary: { usedPercent: 20, resetsAt: 1_893_542_400, windowDurationMins: 10_080 }
     } } })).toEqual({ plan: "available", credits: false, display: {
       plan_remaining_percent: 41, plan_resets_at: "2030-01-01T00:00:00.000Z",
+      plan_windows: { weekly: 80 },
       reset_windows: { weekly: "2030-01-02T00:00:00.000Z" }, credits: { kind: "unavailable" }
     } });
   });
@@ -100,12 +102,25 @@ describe("Codex subscription and purchased credits", () => {
     } })).toMatchObject({ display: { plan_remaining_percent: 20, plan_resets_at: null } });
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: false,
-      rateLimits: { primary: { usedPercent: 40, resetsAt } }
-    } })).toMatchObject({ display: { plan_remaining_percent: 0, plan_resets_at: null } });
+      rateLimits: { primary: { usedPercent: 100, resetsAt, windowDurationMins: 300 } }
+    } })).toMatchObject({ display: {
+      plan_remaining_percent: 0, plan_resets_at: new Date(resetsAt * 1000).toISOString(),
+      plan_windows: { five_hour: 0 }
+    } });
+  });
+
+  it("omits plan windows when exhaustion occurs below 100% usage", async () => {
     expect(await codexQuota({ limits: {
       ordinaryUsageAllowed: false,
-      rateLimits: { primary: { usedPercent: 100, resetsAt } }
-    } })).toMatchObject({ display: { plan_remaining_percent: 0, plan_resets_at: new Date(resetsAt * 1000).toISOString() } });
+      rateLimits: {
+        primary: { usedPercent: 40, resetsAt: 1_893_456_000, windowDurationMins: 300 },
+        secondary: { usedPercent: 70, resetsAt: 1_893_542_400, windowDurationMins: 10_080 }
+      }
+    } })).toEqual({ plan: "exhausted", credits: false, display: {
+      plan_remaining_percent: 0, plan_resets_at: null,
+      reset_windows: { five_hour: "2030-01-01T00:00:00.000Z", weekly: "2030-01-02T00:00:00.000Z" },
+      credits: { kind: "unavailable" }
+    } });
   });
 
   it("reports the later reset when windows are equally used", async () => {
@@ -122,6 +137,7 @@ describe("Codex subscription and purchased credits", () => {
       rateLimits: { primary: { usedPercent: 80, resetsAt, windowDurationMins: 300 }, credits }
     } })).toEqual({ plan: "available", credits: true, display: {
       plan_remaining_percent: 20, plan_resets_at: null,
+      plan_windows: { five_hour: 20 },
       credits: { kind: "amount", amount: "20.2500012345", unit: "credits" }
     } });
   });
@@ -198,6 +214,7 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
   it("reports included usage from a no-prompt control request", async () => {
     expect(await quota({ limits: subscriptionLimits })).toEqual({ plan: "available", display: {
       plan_remaining_percent: 80, plan_resets_at: subscriptionLimits.five_hour.resets_at, credits: { kind: "disabled" },
+      plan_windows: { five_hour: 80, weekly: 90 },
       reset_windows: { five_hour: subscriptionLimits.five_hour.resets_at, weekly: subscriptionLimits.seven_day.resets_at }
     } });
   });
@@ -212,6 +229,7 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     expect(await quota({ limits }, "claude-opus-5-5")).toEqual({
       plan: "available", display: {
         plan_remaining_percent: 83, plan_resets_at: seven_day.resets_at, credits: { kind: "disabled" },
+        plan_windows: { five_hour: 100, weekly: 83 },
         reset_windows: { weekly: seven_day.resets_at }
       }
     });
@@ -222,6 +240,7 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     expect(await quota({ limits: { ...subscriptionLimits, seven_day, extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 750 } } })).toEqual({
       plan: "exhausted", display: {
         plan_remaining_percent: 0, plan_resets_at: seven_day.resets_at, credits: { kind: "unavailable" },
+        plan_windows: { five_hour: 80, weekly: 0 },
         reset_windows: { five_hour: subscriptionLimits.five_hour.resets_at, weekly: seven_day.resets_at }
       }
     });
@@ -235,6 +254,7 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
       extra_usage: { is_enabled: false }
     } })).toEqual({ plan: "exhausted", display: {
       plan_remaining_percent: 0, plan_resets_at: null, credits: { kind: "disabled" },
+      plan_windows: { five_hour: 0 },
       reset_windows: { five_hour: five_hour.resets_at }
     } });
   });
@@ -247,6 +267,7 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     expect(await quota({ limits: { five_hour, seven_day, extra_usage: { is_enabled: false } } })).toEqual({
       plan: "exhausted", display: {
         plan_remaining_percent: 0, plan_resets_at: five_hour.resets_at, credits: { kind: "disabled" },
+        plan_windows: { five_hour: 0 },
         reset_windows: { five_hour: five_hour.resets_at }
       }
     });
@@ -273,9 +294,9 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
     } });
   });
 
-  it("reports Claude's account deadline without treating missing utilization as available quota", async () => {
+  it.each([null, undefined])("reports Claude's account deadlines and omits plan windows when utilization is %j", async utilization => {
     expect(await quota({ limits: {
-      five_hour: { utilization: null, resets_at: "2030-01-01T00:00:00Z" },
+      five_hour: { utilization, resets_at: "2030-01-01T00:00:00Z" },
       seven_day: { utilization: 20, resets_at: "2030-01-02T00:00:00Z" },
       extra_usage: { is_enabled: false }
     } })).toEqual({ plan: "unknown", display: {

@@ -128,6 +128,7 @@ else {
       plan: "unknown",
       display: {
         plan_remaining_percent: 25, plan_resets_at: "2030-01-01T00:00:00.000Z", credits: { kind: "unavailable" },
+        plan_windows: { five_hour: 25, weekly: 40 },
         reset_windows: { five_hour: "2030-01-01T00:00:00.000Z", weekly: "2030-01-02T00:00:00.000Z" }
       }
     });
@@ -159,6 +160,7 @@ else {
       });
       await expect(read()).resolves.toEqual({ plan: "unknown", display: {
         plan_remaining_percent: 25, plan_resets_at: expected, credits: { kind: "amount", amount: "5.001", unit: "credits" },
+        plan_windows: { five_hour: fiveHourRemaining === 0.25 ? 25 : 40, weekly: 25 },
         reset_windows: {
           weekly: "2030-01-01T00:00:00.000Z",
           ...(fiveHourReset === "2030-01-02T00:00:00Z" ? { five_hour: "2030-01-02T00:00:00.000Z" } : {})
@@ -166,7 +168,7 @@ else {
       } });
     });
 
-  it("omits unknown cadences and ambiguous account resets, keeping the limiting timestamp", async () => {
+  it("reports the lowest percentage for duplicate weekly buckets with different resets", async () => {
     const { read } = await fixture({
       usage: { output: { ...usage, command: { name: "usage", data: { groups: [
         { name: "Gemini Models", buckets: [
@@ -183,6 +185,7 @@ else {
     await expect(read()).resolves.toEqual({
       plan: "unknown", display: {
         plan_remaining_percent: 25, plan_resets_at: "2030-01-03T00:00:00.000Z",
+        plan_windows: { weekly: 40 },
         credits: { kind: "amount", amount: "0", unit: "credits" }
       }
     });
@@ -199,6 +202,7 @@ else {
     await expect(read()).resolves.toEqual({
       plan: "unknown", display: {
         plan_remaining_percent: 40, plan_resets_at: "2030-01-02T00:00:00.000Z",
+        plan_windows: { weekly: 40 },
         reset_windows: { five_hour: "2030-01-01T00:00:00.000Z", weekly: "2030-01-02T00:00:00.000Z" },
         credits: { kind: "amount", amount: "0", unit: "credits" }
       }

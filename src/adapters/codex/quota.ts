@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { RuntimeLike, RuntimeQuota } from "../../runtime-adapter.js";
-import { planResetsAt, resetWindowDisplay, tightestPlanWindow, type ResetCadence } from "../../worker-usage.js";
+import { planResetsAt, planWindowDisplay, resetWindowDisplay, tightestPlanWindow, type ResetCadence } from "../../worker-usage.js";
 import { AppServerCodex } from "./app-server.js";
 
 type CodexQuota = RuntimeQuota & { credits: boolean };
@@ -52,15 +52,18 @@ function parseQuota(payload: unknown): CodexQuota {
   const measured = current.flatMap(({ usedPercent, resetsAtMs }) => usedPercent != null ? [{ usedPercent, resetsAtMs }] : []);
   const limiting = tightestPlanWindow(measured);
   const remaining = plan === "exhausted" ? 0 : limiting ? 100 - limiting.usedPercent : null;
+  const exhaustedOutsideWindows = plan === "exhausted" && limiting?.usedPercent !== 100;
   return {
     plan,
     credits: ordinary != null && !spendControlReached && credits?.hasCredits === true &&
       (credits.unlimited || (/^\d+(?:\.\d+)?$/.test(balance) && Number(balance) > 0)),
     display: {
       plan_remaining_percent: remaining,
-      // An exhausted plan below 100% usage was not set by a window, so its reset is unknown.
-      plan_resets_at: plan === "exhausted" && limiting?.usedPercent !== 100 ? null : planResetsAt(limiting),
+      plan_resets_at: exhaustedOutsideWindows ? null : planResetsAt(limiting),
       ...resetWindowDisplay(current),
+      ...(!exhaustedOutsideWindows ? planWindowDisplay(current.map(({ cadence, usedPercent }) => ({
+        cadence, remainingPercent: usedPercent == null ? null : 100 - usedPercent
+      }))) : {}),
       credits: credits?.unlimited === true && credits.hasCredits ? { kind: "unlimited" }
         : balancePattern.test(balance) ? { kind: "amount", amount: balance, unit: "credits" } : { kind: "unavailable" }
     }
