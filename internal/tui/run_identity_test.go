@@ -28,6 +28,15 @@ func TestRunLabelsUseExplicitMetadataAndKeepStopStates(t *testing.T) {
 	}
 }
 
+func TestWorkerDetailShowsNamedAccountAndFunding(t *testing.T) {
+	m, _ := testModel()
+	m.snapshot.Workers[0].RuntimeLabel = "Codex subscription (work)"
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	if got := ansi.Strip(next.(Model).View()); !strings.Contains(got, "Codex subscription (work)") {
+		t.Fatalf("missing account and funding label:\n%s", got)
+	}
+}
+
 func TestWorkerCardsShowRunAndConversationRowsAcrossSizes(t *testing.T) {
 	for _, size := range [][2]int{{40, 16}, {60, 24}, {140, 40}} {
 		for _, portable := range []bool{false, true} {

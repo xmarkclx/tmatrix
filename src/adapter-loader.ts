@@ -9,6 +9,7 @@ const bundledAdapters = new Map<string, () => Promise<{ default: RuntimeAdapter 
   ["gemini", () => import("./adapters/gemini/index.js")]
 ]);
 
+export const bundledAdapterIds = [...bundledAdapters.keys()];
 export const adapterIdPattern = /^[a-z][a-z0-9-]{0,63}$/;
 
 /** Explicit local modules only: no network imports or implicit package installs. */
@@ -70,8 +71,8 @@ export async function setupAdapter(adapter: RuntimeAdapter, context: AdapterSetu
 }
 
 export function createRuntimeFactory(adapter: RuntimeAdapter, context: AdapterContext): RuntimeFactory {
-  return (profile, leaseEnvironment) => {
-    const runtime = adapter.create({ ...context, environment: { ...context.environment, ...leaseEnvironment } }, { ...profile });
+  return (profile, leaseEnvironment, accountEnvironment) => {
+    const runtime = adapter.create({ ...context, environment: { ...(accountEnvironment ?? context.environment), ...leaseEnvironment } }, { ...profile });
     if (!runtime || typeof runtime.startThread !== "function" || typeof runtime.close !== "function" ||
         (runtime.resumeThread !== undefined && typeof runtime.resumeThread !== "function")) {
       throw new Error("Adapter create must return a runtime with startThread and close methods");

@@ -23,7 +23,7 @@ export class RuntimeProcess {
   private readonly tracked: boolean;
 
   constructor(executable: string, args: string[], cwd: string, environment: Record<string, string>,
-    private readonly runtimeName: string, maxOutputBytes?: number) {
+    private readonly runtimeName: string, maxOutputBytes?: number, observeStderr?: (chunk: Buffer) => void) {
     const cgroup = environment[CGROUP_ENV];
     this.tracked = process.platform === "linux" && !!environment[LEASE_ENV];
     if (cgroup && !validLeaseCgroup(cgroup, environment[LEASE_ENV] ?? "")) {
@@ -72,7 +72,8 @@ export class RuntimeProcess {
       });
     });
     this.child.stdin.on("error", () => { this.transportError = true; });
-    this.child.stderr.resume();
+    if (observeStderr) this.child.stderr.on("data", observeStderr);
+    else this.child.stderr.resume();
   }
 
   send(input: string): void {

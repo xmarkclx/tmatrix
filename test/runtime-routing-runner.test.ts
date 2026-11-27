@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,8 +10,8 @@ import { LocalWorkerState } from "../src/local-worker-state.js";
 import { nullLogger } from "../src/logger.js";
 import { Metrics } from "../src/metrics.js";
 import { SteeringMailbox, TicketRunner, type RuntimeSelection } from "../src/runner.js";
-import { chooseFundingRoute, geminiModel } from "../src/runtime-routing.js";
-import type { Input, ThreadLike, WorkerThreadEvent } from "../src/runtime-adapter.js";
+import { chooseFundingRoute, geminiModel, selectAccountRuntime } from "../src/runtime-routing.js";
+import type { Input, ReadRuntimeQuota, ThreadLike, WorkerThreadEvent } from "../src/runtime-adapter.js";
 import type { TicketResult } from "../src/types.js";
 import { makeTicket } from "./helpers.js";
 
@@ -31,8 +32,9 @@ function text(input: Input): string {
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "tmatrix-runtime-routing-"));
   directories.push(directory);
-  const store = (adapterId: string, identity = currentBoot) => new ConversationStore({
+  const store = (adapterId: string, identity = currentBoot, account?: string) => new ConversationStore({
     directory, namespace: "fixture-source", adapterId, referenceKey: "fixture-reference-key",
+    ...(account ? { account, runtimeHome: join(directory, account) } : {}),
     bootIdentity: async () => identity
   });
   const codex = store("codex");
@@ -138,8 +140,98 @@ async function fixture() {
     return { local, result, selectRuntime };
   }
 
-  return { codex, claude, gemini, store, ticket, api, calls, inputs, results, route, run };
+  return { directory, codex, claude, gemini, store, ticket, api, calls, inputs, results, route, run };
 }
+
+async function accountFixture() {
+  const fixtureState = await fixture();
+  const { store, claude, route, ticket } = fixtureState;
+  ticket.model = "sonnet";
+  const work = store("claude", currentBoot, "work");
+  const accounts = [{ label: "default", environment: {} },
+    { label: "work", directory: "/fixture/work", environment: { CLAUDE_CONFIG_DIR: "/fixture/work" } }];
+  const cursors = new Map<string, string>();
+  function select(readQuota: ReadRuntimeQuota, workFollowUp?: string): NonNullable<ConstructorParameters<typeof TicketRunner>[0]["selectRuntime"]> {
+    return (signal, cwd, model, context) => selectAccountRuntime({
+      provider: "claude", accounts, cursors, signal, cwd, model, context, readQuota,
+      storeFor: account => account.directory ? work : claude,
+      runtimeFactory: (profile, lease, environment) => route("claude", {
+        thread: environment?.CLAUDE_CONFIG_DIR === "/fixture/work" ? "work-fresh" : "default-fresh",
+        ...(environment && workFollowUp ? { followUp: workFollowUp } : {})
+      }).runtimeFactory(profile, lease)
+    });
+  }
+  return { ...fixtureState, work, select };
+}
+
+describe("conversation account routing", () => {
+  it("resumes a recorded account even when another has lower usage", async () => {
+    const { api, ticket, work, select, run, calls, results } = await accountFixture();
+    await work.remember(ticket, "prior-work");
+    vi.mocked(api.getHistory).mockResolvedValue({ task: { description: "Keep the existing session." } });
+    const { result, local } = run(select(async (_signal, _cwd, _model, environment) => ({
+      plan: "available", usedPercent: environment ? 90 : 5
+    })));
+    await expect(result).resolves.toMatchObject({ status: "completed" });
+    expect(calls).toEqual(["resume prior-work", "close claude"]);
+    expect(results[0]).toMatchObject({ conversation: work.reference("prior-work") });
+    expect(local.snapshot()).toEqual(expect.arrayContaining([expect.objectContaining({
+      account: "work", runtime_label: "Claude (work)",
+      activity: expect.arrayContaining([expect.objectContaining({ text: "Claude (work)" })])
+    })]));
+  });
+
+  it("resumes a legacy conversation from the implicit default account", async () => {
+    const { api, directory, ticket, claude, select, run, calls, results } = await accountFixture();
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+    const legacyDirectory = join(directory, hash(JSON.stringify(["fixture-source", "claude"])));
+    await mkdir(legacyDirectory, { mode: 0o700 });
+    await writeFile(join(legacyDirectory, `${hash("fixture-task")}.json`), JSON.stringify({
+      version: 1, task: "fixture-task", activeThread: "legacy-claude", tickets: { [ticket.ticket_id]: "legacy-claude" },
+      comments: {}, replacements: {}
+    }), { mode: 0o600 });
+    vi.mocked(api.getHistory).mockResolvedValue({ task: { description: "Keep the legacy session." } });
+    const { result } = run(select(async (_signal, _cwd, _model, environment) => ({
+      plan: "available", usedPercent: environment ? 5 : 90
+    })));
+    await expect(result).resolves.toMatchObject({ status: "completed" });
+    expect(calls).toEqual(["resume legacy-claude", "close claude"]);
+    expect(results[0]).toMatchObject({ conversation: claude.reference("legacy-claude") });
+  });
+
+  it("rebuilds from the durable handoff when the recorded account is exhausted", async () => {
+    const { api, ticket, work, claude, select, run, calls, inputs, results } = await accountFixture();
+    await claude.remember(ticket, "older-default");
+    await work.remember(ticket, "prior-work");
+    vi.mocked(api.getHistory).mockResolvedValue({
+      task: { description: "Launch after approval only." },
+      inherited_context: { content: "Previously verified staging." },
+      conversation: work.reference("prior-work")
+    });
+    const { result } = run(select(async (_signal, _cwd, _model, environment) => ({
+      plan: environment ? "exhausted" : "available"
+    })));
+    await expect(result).resolves.toMatchObject({ status: "completed" });
+    expect(calls).toEqual(["start default-fresh", "close claude"]);
+    expect(inputs[0]).toContain("Previously verified staging.");
+    expect(results[0]).toMatchObject({ conversation: claude.reference("default-fresh") });
+    await expect(work.recordedAccount(ticket)).resolves.toBe("default");
+  });
+
+  it("changes accounts before a queued follow-up and carries the previous turn's handoff", async () => {
+    const { api, select, run, calls, inputs } = await accountFixture();
+    vi.mocked(api.getHistory).mockResolvedValue({ task: { description: "Use the least-used account." } });
+    let workProbes = 0;
+    const { result } = run(select(async (_signal, _cwd, _model, environment) => {
+      if (environment) return ++workProbes === 1 ? { plan: "available", usedPercent: 1 } : { plan: "exhausted" };
+      return { plan: "available", usedPercent: 50 };
+    }, "Check the result once more."));
+    await expect(result).resolves.toMatchObject({ status: "completed" });
+    expect(calls).toEqual(["start work-fresh", "close claude", "start default-fresh", "close claude"]);
+    expect(inputs[1]).toContain("Completed fixture step on work-fresh.");
+    expect(inputs[1]).toContain("Check the result once more.");
+  });
+});
 
 describe("Gemini model selection through the ticket runner", () => {
   it("dispatches a Neon model with its original ID and resumes the provider-scoped conversation", async () => {
@@ -150,9 +242,11 @@ describe("Gemini model selection through the ticket runner", () => {
     });
     const otherProviderProbe = vi.fn(async () => ({ plan: "available" as const }));
     const { result } = run(async (signal, _cwd, model) => {
-      const funding = await chooseFundingRoute({ model, ...(signal ? { signal } : {}), codex: otherProviderProbe });
-      if (funding !== "gemini") throw new Error(`Unexpected provider: ${funding}`);
-      return route(funding);
+      const funding = await chooseFundingRoute({ model, ...(signal ? { signal } : {}), cursors: new Map(),
+        accounts: async provider => ({ readings: [{ account: "default",
+          quota: provider === "codex" ? await otherProviderProbe() : { plan: "unknown" } }] }) });
+      if (funding.provider !== "gemini") throw new Error(`Unexpected provider: ${funding.provider}`);
+      return route(funding.provider);
     });
 
     await expect(result).resolves.toMatchObject({ status: "completed" });
@@ -171,7 +265,7 @@ describe("Gemini model selection through the ticket runner", () => {
     await previous.rememberRuntime?.("gemini", gemini.reference("interrupted-gemini"));
     const { result, selectRuntime } = run([route("gemini")], true);
     await expect(result).resolves.toMatchObject({ status: "completed", threadId: "interrupted-gemini" });
-    expect(selectRuntime).toHaveBeenCalledWith(undefined, expect.any(String), "gemini-4-neon-low");
+    expect(selectRuntime).toHaveBeenCalledWith(undefined, expect.any(String), "gemini-4-neon-low", expect.any(Object));
     expect(calls).toEqual(["resume interrupted-gemini", "close gemini"]);
     expect(results[0]).toMatchObject({ conversation: gemini.reference("interrupted-gemini") });
   });

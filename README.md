@@ -54,6 +54,17 @@ TMatrix reports included plan allowance and available paid balances to Tzu Do wh
 
 To report to one account when several production sources are configured, set `TMATRIX_USAGE_SOURCE_ID` in the engine or service environment to that source's `id` in `config.json`. Use the same setting to opt in to reporting on official Tzu Do staging or a PR preview. Use `legacy` for a single-source legacy engine. A missing or invalid selection on a multi-account engine leaves reporting off.
 
+## Multiple accounts
+
+```sh
+tmatrix accounts add codex work
+tmatrix accounts login codex work
+tmatrix accounts login claude work
+tmatrix accounts login gemini work
+tmatrix accounts list
+tmatrix accounts remove codex work
+```
+
 ## Select Gemini in Tzu Do
 
 1. Run `agy models` as the user that runs TMatrix. Choose a `gemini-*` ID listed for that account, such as `gemini-4-neon-high`.

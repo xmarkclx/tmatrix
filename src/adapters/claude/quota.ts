@@ -85,8 +85,10 @@ function usageQuota(lines: string[], requestId: string, selectedModel: string): 
       ? tightestPlanWindow(account) : undefined;
     const tiedResetUnknown = limiting && accountWindows.some(({ window }) =>
       window?.utilization === limiting.usedPercent && window.resets_at == null);
+    const modelUsage = complete && !exhausted ? tightestPlanWindow(active)?.usedPercent : undefined;
     return {
       plan: exhausted ? "exhausted" : complete && extraDisabled ? "available" : "unknown",
+      ...(modelUsage !== undefined && modelUsage !== limiting?.usedPercent ? { usedPercent: modelUsage } : {}),
       display: {
         plan_remaining_percent: limiting ? 100 - limiting.usedPercent : null,
         plan_resets_at: tiedResetUnknown ? null : planResetsAt(limiting),
@@ -152,7 +154,7 @@ export async function readClaudeQuota(
     const auth = authSchema.safeParse(parseJson(authOutput.lines.join("\n")));
     if (!auth.success) return unknownQuota;
     const { loggedIn, authMethod, subscriptionType } = auth.data;
-    if (authOutput.code === 1 && !loggedIn) return { plan: "unavailable" };
+    if (authOutput.code === 1 && !loggedIn) return { plan: "unavailable", authenticated: false };
     if (authOutput.code !== 0 || !loggedIn) return unknownQuota;
     if (["api_key", "api_key_helper", "third_party"].includes(authMethod)) return { plan: "unavailable" };
     if (authMethod !== "claude.ai") return unknownQuota;

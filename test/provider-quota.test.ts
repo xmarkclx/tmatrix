@@ -294,7 +294,9 @@ describe.skipIf(process.platform === "win32")("Claude subscription quota", () =>
   });
 
   it("identifies a confirmed signed-out session", async () => {
-    expect(await quota({ auth: { loggedIn: false, authMethod: "none" }, limits: subscriptionLimits })).toEqual({ plan: "unavailable" });
+    expect(await quota({ auth: { loggedIn: false, authMethod: "none" }, limits: subscriptionLimits })).toEqual({
+      plan: "unavailable", authenticated: false
+    });
   });
 
   it.each(["api_key", "api_key_helper", "third_party"])("identifies %s as a non-subscription session", async (authMethod) => {

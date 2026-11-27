@@ -121,7 +121,10 @@ func (m Model) workerContent() layoutBlock {
 		}, "\n"), "\n")}
 	}
 	width := m.width - 4
-	runtime := single(worker.WorkerType)
+	runtime := single(worker.RuntimeLabel)
+	if runtime == "" {
+		runtime = single(worker.WorkerType)
+	}
 	if runtime == "" {
 		runtime = "codex"
 	}

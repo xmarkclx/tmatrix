@@ -6,7 +6,7 @@ import { setupAdapter } from "../src/adapter-loader.js";
 import adapter from "../src/adapters/gemini/index.js";
 import type { ReadRuntimeQuota } from "../src/runtime-adapter.js";
 
-type Fixtures = Record<"usage" | "credits", { output?: unknown; code?: number; stall?: boolean; oversized?: boolean }>;
+type Fixtures = Record<"usage" | "credits", { output?: unknown; code?: number; stall?: boolean; oversized?: boolean; signedOut?: boolean }>;
 
 const usage = {
   status: "SUCCESS",
@@ -51,7 +51,10 @@ writeFileSync(join(__dirname, command + ".json"), JSON.stringify({
   leaked: ["API_KEY", "GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "TMATRIX_CONVERSATION_LEASE"]
     .some(key => process.env[key] !== undefined)
 }));
-if (config.oversized) {
+if (config.signedOut) {
+  process.stderr.write("Authentication required. Please visit the URL to log in:\\n");
+  setInterval(() => {}, 1000);
+} else if (config.oversized) {
   process.stdout.write("é".repeat(100000));
   setInterval(() => {}, 1000);
 } else if (config.stall) setInterval(() => {}, 1000);
@@ -248,6 +251,16 @@ else {
   it("omits a display when agy is missing", async () => {
     const { read } = await fixture();
     await expect(read()).resolves.toEqual({ plan: "unknown" });
+  });
+
+  it("identifies a signed-out CLI and stops its login prompt", async () => {
+    const { read, directory } = await fixture({ usage: { signedOut: true }, credits: { stall: true } });
+    await expect(read()).resolves.toEqual({
+      plan: "unknown", authenticated: false,
+      display: { plan_remaining_percent: null, plan_resets_at: null, credits: { kind: "unavailable" } }
+    });
+    const child = JSON.parse(await readFile(join(directory, "usage.json"), "utf8"));
+    expect(() => process.kill(child.pid, 0)).toThrow(/ESRCH/);
   });
 
   it("stops both live processes and removes their working directories on cancellation", async () => {

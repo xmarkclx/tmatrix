@@ -11,6 +11,7 @@ export interface WorkerObservation {
   input_revision?: number;
   steering_id?: string;
   runtime_adapter?: string;
+  account?: string;
   model?: string;
   terminal?: { socket: string; session: string };
 }
@@ -20,6 +21,8 @@ export interface LocalWorkerView {
   ticket_id: string;
   title: string;
   worker_type: string;
+  account?: string;
+  runtime_label?: string;
   model: string;
   status: "running" | "stopping" | "stopped" | "completed" | "failed" | "stop_unverified";
   pinned: boolean;
@@ -73,11 +76,21 @@ export class LocalWorkerState {
       };
       return;
     }
-    if (event.runtime_adapter !== undefined && event.runtime_adapter !== worker.worker_type) {
+    if (event.runtime_adapter !== undefined &&
+        (event.runtime_adapter !== worker.worker_type || (event.kind === "runtime.selected" && event.account !== worker.account))) {
       worker.worker_type = event.runtime_adapter;
       delete worker.thread_id;
       delete worker.run_kind;
       delete worker.terminal;
+    }
+    if (event.kind === "runtime.selected") {
+      if (event.account !== undefined) {
+        worker.account = event.account;
+        worker.runtime_label = event.text;
+      } else {
+        delete worker.account;
+        delete worker.runtime_label;
+      }
     }
     if (event.model !== undefined) worker.model = event.model;
     if (event.terminal !== undefined) worker.terminal = event.terminal;
